@@ -1,0 +1,10 @@
+.git
+.qodo
+.runtime
+node_modules
+**/node_modules
+**/dist
+**/*.log
+**/.DS_Store
+*.local
+.env

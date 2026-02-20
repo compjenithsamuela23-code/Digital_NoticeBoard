@@ -2,7 +2,6 @@ services:
   - type: web
     name: digital-notice-board
     env: docker
-    rootDir: digital-notice-board
     dockerfilePath: ./Dockerfile
     plan: free
     autoDeploy: true
@@ -10,8 +9,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 5001
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY

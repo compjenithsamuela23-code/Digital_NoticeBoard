@@ -47,6 +47,9 @@ const REQUIRED_SUPABASE_TABLES = ['users', 'categories', 'announcements', 'histo
 const OPTIONAL_SUPABASE_TABLES = ['live_state'];
 let maintenanceInFlight = null;
 let historyTableMode = 'unknown';
+let runtimeInitPromise = null;
+let maintenanceIntervalHandle = null;
+let storageBucketReadyPromise = null;
 const LOGIN_HISTORY_ACTIONS = [
   'admin_login',
   'admin_logout',
@@ -78,6 +81,17 @@ const configuredOrigins = (process.env.CLIENT_ORIGIN || process.env.CORS_ORIGIN 
   .filter(Boolean);
 const API_NO_STORE = String(process.env.API_NO_STORE || 'true').toLowerCase() !== 'false';
 const TRUST_PROXY = process.env.TRUST_PROXY || '1';
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const IS_SERVERLESS_RUNTIME = IS_VERCEL || String(process.env.SERVERLESS || '').toLowerCase() === 'true';
+const SUPABASE_STORAGE_BUCKET =
+  String(process.env.SUPABASE_STORAGE_BUCKET || 'notice-board-uploads').trim() || 'notice-board-uploads';
+const SUPABASE_STORAGE_PUBLIC_URL_MARKER = `/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/`;
+const LOCAL_MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
+const SERVERLESS_MAX_UPLOAD_SIZE_BYTES = 4 * 1024 * 1024;
+const MAX_UPLOAD_SIZE_BYTES = IS_SERVERLESS_RUNTIME
+  ? SERVERLESS_MAX_UPLOAD_SIZE_BYTES
+  : LOCAL_MAX_UPLOAD_SIZE_BYTES;
+const MAX_UPLOAD_SIZE_MB = Math.floor(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024));
 
 const corsOrigin = configuredOrigins.length > 0 ? configuredOrigins : '*';
 const UPLOAD_DOWNLOAD_ONLY_EXTENSIONS = new Set([
@@ -98,13 +112,15 @@ const UPLOAD_DOWNLOAD_ONLY_EXTENSIONS = new Set([
 ]);
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: corsOrigin,
-    methods: ['GET', 'POST', 'PUT', 'DELETE']
-  }
-});
+const server = IS_SERVERLESS_RUNTIME ? null : http.createServer(app);
+const io = IS_SERVERLESS_RUNTIME
+  ? { emit: () => {}, on: () => {} }
+  : socketIo(server, {
+      cors: {
+        origin: corsOrigin,
+        methods: ['GET', 'POST', 'PUT', 'DELETE']
+      }
+    });
 
 app.use(
   cors({
@@ -139,21 +155,23 @@ if (hasClientBuild) {
   app.use(express.static(clientDistPath));
 }
 
-const storage = multer.diskStorage({
-  destination: async function destination(req, file, cb) {
-    const uploadDir = path.join(__dirname, 'uploads');
-    try {
-      await fs.access(uploadDir);
-    } catch {
-      await fs.mkdir(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: function filename(req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
+const storage = IS_SERVERLESS_RUNTIME
+  ? multer.memoryStorage()
+  : multer.diskStorage({
+      destination: async function destination(req, file, cb) {
+        const uploadDir = path.join(__dirname, 'uploads');
+        try {
+          await fs.access(uploadDir);
+        } catch {
+          await fs.mkdir(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+      },
+      filename: function filename(req, file, cb) {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + path.extname(file.originalname));
+      }
+    });
 
 const IMAGE_EXTENSIONS = new Set([
   '.jpg',
@@ -246,7 +264,7 @@ const DOCUMENT_EXTENSIONS = new Set([
 
 const upload = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: MAX_UPLOAD_SIZE_BYTES },
   fileFilter: function fileFilter(req, file, cb) {
     const extension = path.extname(file.originalname).toLowerCase();
     const mime = String(file.mimetype || '').toLowerCase();
@@ -330,6 +348,167 @@ function getAttachmentMetadata(uploadedFile) {
     file_mime_type: normalizeUploadedMimeType(uploadedFile.mimetype),
     file_size_bytes: Number.isNaN(size) ? null : Math.max(0, size)
   };
+}
+
+function getStorageObjectPathFromReference(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const normalizedRaw = raw.replace(/\\/g, '/');
+  if (normalizedRaw.startsWith('/uploads/')) {
+    return null;
+  }
+
+  const markerIndex = normalizedRaw.indexOf(SUPABASE_STORAGE_PUBLIC_URL_MARKER);
+  if (markerIndex !== -1) {
+    return decodeURIComponent(
+      normalizedRaw.slice(markerIndex + SUPABASE_STORAGE_PUBLIC_URL_MARKER.length).split('?')[0]
+    );
+  }
+
+  if (!normalizedRaw.includes('://')) {
+    return decodeURIComponent(normalizedRaw.replace(/^\/+/, '').split('?')[0]);
+  }
+
+  return null;
+}
+
+async function ensureStorageBucketReady() {
+  if (storageBucketReadyPromise) {
+    return storageBucketReadyPromise;
+  }
+
+  storageBucketReadyPromise = (async () => {
+    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+    if (listError) {
+      throw new Error(`Error listing Supabase storage buckets: ${listError.message}`);
+    }
+
+    const hasBucket = (buckets || []).some((bucket) => bucket && bucket.name === SUPABASE_STORAGE_BUCKET);
+    if (hasBucket) {
+      return;
+    }
+
+    const { error: createError } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
+      public: true,
+      fileSizeLimit: 50 * 1024 * 1024
+    });
+
+    if (createError) {
+      const message = String(createError.message || '').toLowerCase();
+      if (!message.includes('already exists')) {
+        throw new Error(
+          `Error creating Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}": ${createError.message}`
+        );
+      }
+    }
+
+    console.log(`✅ Supabase storage bucket ready: ${SUPABASE_STORAGE_BUCKET}`);
+  })().catch((error) => {
+    storageBucketReadyPromise = null;
+    throw error;
+  });
+
+  return storageBucketReadyPromise;
+}
+
+function buildStorageObjectPath(uploadedFile) {
+  const extension = path.extname(String(uploadedFile.originalname || '')).toLowerCase();
+  const safeExtension = extension && extension.length <= 16 ? extension : '';
+  const dateSegment = new Date().toISOString().slice(0, 10);
+  return `${dateSegment}/${randomUUID()}${safeExtension}`;
+}
+
+async function cleanupLocalUploadedFile(uploadedFile) {
+  const uploadedPath = uploadedFile && uploadedFile.path ? String(uploadedFile.path) : '';
+  if (!uploadedPath) return;
+
+  try {
+    await fs.unlink(uploadedPath);
+  } catch {
+    // Ignore cleanup failures for local temp uploads.
+  }
+}
+
+async function uploadAttachmentToStorage(uploadedFile) {
+  if (!uploadedFile) {
+    return null;
+  }
+
+  await ensureStorageBucketReady();
+  const objectPath = buildStorageObjectPath(uploadedFile);
+  const contentType = normalizeUploadedMimeType(uploadedFile.mimetype) || 'application/octet-stream';
+
+  let payload = uploadedFile.buffer;
+  if (!payload) {
+    payload = await fs.readFile(uploadedFile.path);
+  }
+
+  try {
+    const { error: uploadError } = await supabase.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .upload(objectPath, payload, {
+        contentType,
+        upsert: false
+      });
+    if (uploadError) {
+      throw new Error(`Error uploading attachment to Supabase Storage: ${uploadError.message}`);
+    }
+  } finally {
+    await cleanupLocalUploadedFile(uploadedFile);
+  }
+
+  const { data: publicData } = supabase.storage.from(SUPABASE_STORAGE_BUCKET).getPublicUrl(objectPath);
+  if (!publicData || !publicData.publicUrl) {
+    throw new Error('Error generating Supabase storage public URL for uploaded attachment.');
+  }
+
+  return {
+    url: publicData.publicUrl,
+    objectPath
+  };
+}
+
+async function deleteAttachmentFromStorage(attachmentReference) {
+  const objectPath = getStorageObjectPathFromReference(attachmentReference);
+  if (!objectPath) {
+    return false;
+  }
+
+  const { error } = await supabase.storage.from(SUPABASE_STORAGE_BUCKET).remove([objectPath]);
+  if (error) {
+    const message = String(error.message || '').toLowerCase();
+    if (!message.includes('not found')) {
+      throw new Error(`Error deleting attachment from Supabase Storage: ${error.message}`);
+    }
+  }
+
+  return true;
+}
+
+async function removeAttachmentReference(attachmentReference) {
+  if (!attachmentReference) return;
+
+  try {
+    const removedFromStorage = await deleteAttachmentFromStorage(attachmentReference);
+    if (removedFromStorage) {
+      return;
+    }
+  } catch (error) {
+    console.log('Note: Could not delete storage attachment:', error.message);
+  }
+
+  const normalizedReference = String(attachmentReference).replace(/\\/g, '/');
+  if (!normalizedReference.startsWith('/uploads/')) {
+    return;
+  }
+
+  const localFilePath = path.join(__dirname, normalizedReference.replace(/^\/+/, ''));
+  try {
+    await fs.unlink(localFilePath);
+  } catch (error) {
+    console.log('Note: Could not delete local attachment:', error.message);
+  }
 }
 
 function createBadRequestError(message) {
@@ -463,17 +642,34 @@ async function verifyUserPassword(user, providedPassword) {
 
 function isVideoMediaPath(mediaPath) {
   if (!mediaPath) return false;
-  return VIDEO_EXTENSIONS.has(path.extname(mediaPath).toLowerCase());
+  return VIDEO_EXTENSIONS.has(getMediaPathExtension(mediaPath));
 }
 
 function isImageMediaPath(mediaPath) {
   if (!mediaPath) return false;
-  return IMAGE_EXTENSIONS.has(path.extname(mediaPath).toLowerCase());
+  return IMAGE_EXTENSIONS.has(getMediaPathExtension(mediaPath));
 }
 
 function isDocumentMediaPath(mediaPath) {
   if (!mediaPath) return false;
-  return DOCUMENT_EXTENSIONS.has(path.extname(mediaPath).toLowerCase());
+  return DOCUMENT_EXTENSIONS.has(getMediaPathExtension(mediaPath));
+}
+
+function getMediaPathExtension(mediaPath) {
+  const raw = String(mediaPath || '').trim();
+  if (!raw) return '';
+
+  const withoutQuery = raw.split('?')[0].split('#')[0];
+  if (/^https?:\/\//i.test(withoutQuery)) {
+    try {
+      const parsed = new URL(withoutQuery);
+      return path.extname(parsed.pathname).toLowerCase();
+    } catch {
+      return path.extname(withoutQuery).toLowerCase();
+    }
+  }
+
+  return path.extname(withoutQuery).toLowerCase();
 }
 
 function getUploadedAttachment(req) {
@@ -1128,6 +1324,7 @@ async function getLiveState() {
 
 async function initializeSupabase() {
   await ensureSupabaseSchemaReady();
+  await ensureStorageBucketReady();
 
   const admin = await getUserByEmail(DEFAULT_ADMIN.email);
   if (!admin) {
@@ -1216,10 +1413,12 @@ io.on('connection', (socket) => {
 });
 
 const uploadsDir = path.join(__dirname, 'uploads');
-fs.access(uploadsDir).catch(async () => {
-  await fs.mkdir(uploadsDir, { recursive: true });
-  console.log('✅ Created uploads directory');
-});
+if (!IS_SERVERLESS_RUNTIME) {
+  fs.access(uploadsDir).catch(async () => {
+    await fs.mkdir(uploadsDir, { recursive: true });
+    console.log('✅ Created uploads directory');
+  });
+}
 
 app.post('/api/auth/register', simpleAuth, requireAdminRole, async (req, res) => {
   try {
@@ -1589,7 +1788,8 @@ app.post(
     }
 
     const uploadedFile = mediaFile || documentFile;
-    const attachmentPath = uploadedFile ? `/uploads/${uploadedFile.filename}` : null;
+    const uploadResult = uploadedFile ? await uploadAttachmentToStorage(uploadedFile) : null;
+    const attachmentPath = uploadResult ? uploadResult.url : null;
     const attachmentMetadata = getAttachmentMetadata(uploadedFile);
     const announcementRow = {
       id: generateId(),
@@ -1654,7 +1854,8 @@ app.put(
     }
 
     const uploadedFile = mediaFile || documentFile;
-    const attachmentPath = uploadedFile ? `/uploads/${uploadedFile.filename}` : existing.image;
+    const uploadResult = uploadedFile ? await uploadAttachmentToStorage(uploadedFile) : null;
+    const attachmentPath = uploadResult ? uploadResult.url : existing.image;
     const existingFileSize = Number.parseInt(existing.file_size_bytes, 10);
     const attachmentMetadata = uploadedFile
       ? getAttachmentMetadata(uploadedFile)
@@ -1663,13 +1864,8 @@ app.put(
           file_mime_type: existing.file_mime_type || null,
           file_size_bytes: Number.isNaN(existingFileSize) ? null : existingFileSize
         };
-    if (uploadedFile && existing.image) {
-      const oldAttachmentPath = path.join(__dirname, existing.image);
-      try {
-        await fs.unlink(oldAttachmentPath);
-      } catch (err) {
-        console.log('Note: Could not delete old attachment:', err.message);
-      }
+    if (uploadResult && existing.image && existing.image !== attachmentPath) {
+      await removeAttachmentReference(existing.image);
     }
 
     const prevStart = toDateOrNull(existing.start_at) || new Date();
@@ -1755,14 +1951,7 @@ app.delete('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (re
       });
     }
 
-    if (existing.image) {
-      const imagePath = path.join(__dirname, existing.image);
-      try {
-        await fs.unlink(imagePath);
-      } catch (err) {
-        console.log('Note: Could not delete image file:', err.message);
-      }
-    }
+    await removeAttachmentReference(existing.image);
 
     await appendHistory(existing, 'deleted', (req.user && req.user.email) || null);
 
@@ -2341,7 +2530,7 @@ app.use((error, req, res, next) => {
 
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'Uploaded file exceeds 50MB size limit.' });
+      return res.status(400).json({ error: `Uploaded file exceeds ${MAX_UPLOAD_SIZE_MB}MB size limit.` });
     }
     return res.status(400).json({ error: error.message || 'File upload failed.' });
   }
@@ -2424,25 +2613,58 @@ process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught exception:', error);
 });
 
-async function startServer() {
-  await initializeSupabase();
-  setInterval(() => {
+function ensureMaintenanceScheduler() {
+  if (IS_SERVERLESS_RUNTIME || maintenanceIntervalHandle) {
+    return;
+  }
+
+  maintenanceIntervalHandle = setInterval(() => {
     runAnnouncementMaintenance();
   }, ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS);
+}
+
+async function ensureRuntimeInitialized() {
+  if (!runtimeInitPromise) {
+    runtimeInitPromise = initializeSupabase().catch((error) => {
+      runtimeInitPromise = null;
+      throw error;
+    });
+  }
+
+  await runtimeInitPromise;
+  ensureMaintenanceScheduler();
+}
+
+async function startServer() {
+  if (!server) {
+    throw new Error('HTTP server is unavailable in serverless runtime.');
+  }
+
+  await ensureRuntimeInitialized();
 
   server.listen(PORT, () => {
     console.log(`✅ Server running on http://localhost:${PORT}`);
     console.log(`📁 Uploads directory: ${uploadsDir}`);
-    console.log('📡 Socket.io ready for real-time updates');
+    console.log(
+      IS_SERVERLESS_RUNTIME
+        ? '📡 Real-time socket transport disabled in serverless runtime'
+        : '📡 Socket.io ready for real-time updates'
+    );
     console.log('🗄️ Database: Supabase PostgreSQL');
     console.log(`👤 Default admin account ensured for ${DEFAULT_ADMIN.email}`);
     console.log(`🔗 Test: http://localhost:${PORT}/api/test`);
   });
 }
 
-startServer().catch((error) => {
-  console.error('❌ Supabase startup error:', error.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error('❌ Supabase startup error:', error.message);
+    process.exit(1);
+  });
+}
 
-module.exports.io = io;
+module.exports = {
+  app,
+  io,
+  ensureRuntimeInitialized
+};

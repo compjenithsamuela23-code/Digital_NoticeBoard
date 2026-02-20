@@ -1,0 +1,11 @@
+{
+  "installCommand": "npm --prefix digital-notice-board/client install",
+  "buildCommand": "npm --prefix digital-notice-board/client run build",
+  "outputDirectory": "digital-notice-board/client/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

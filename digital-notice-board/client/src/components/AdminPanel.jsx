@@ -210,6 +210,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   ]);
 
   useEffect(() => {
+    const livePoll = setInterval(fetchLiveStatus, 5000);
+    const announcementsPoll = setInterval(fetchAnnouncements, 15000);
+
+    return () => {
+      clearInterval(livePoll);
+      clearInterval(announcementsPoll);
+    };
+  }, [fetchAnnouncements, fetchLiveStatus]);
+
+  useEffect(() => {
     if (!socket) return;
 
     socket.on('liveUpdate', (payload) => {

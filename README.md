@@ -81,11 +81,49 @@ If you want dev-mode startup (`5173`) instead:
 
 1. Push repo to GitHub.
 2. In Render, create a Blueprint deploy from this repo (`render.yaml`).
+   - If configuring manually instead of Blueprint:
+   - Environment: `Docker`
+   - Dockerfile Path: `./Dockerfile`
+   - Base Directory: leave empty
 3. Set env vars in Render:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`
    - `JWT_SECRET`
    - `CLIENT_ORIGIN` (your Render app URL, optional but recommended)
+   - Do not set `PORT` manually on Render.
 
 If frontend and backend are hosted on different domains, set frontend env:
 - `VITE_API_BASE_URL=https://your-backend-domain.com`
+
+### Vercel + Supabase deploy (full project)
+
+Deploy as two Vercel projects from the same repo:
+- Backend project root: `digital-notice-board/server`
+- Frontend project root: repository root (uses `vercel.json` to build `digital-notice-board/client`)
+
+1. Prepare Supabase:
+   - Run `digital-notice-board/server/supabase/schema.sql` in Supabase SQL Editor.
+2. Deploy backend (Vercel project #1):
+   - Root Directory: `digital-notice-board/server`
+   - Vercel uses `digital-notice-board/server/api/[[...path]].js` as the API entrypoint.
+   - Set env vars:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_KEY`
+   - `JWT_SECRET`
+   - `JWT_EXPIRES_IN` (optional, default `7d`)
+   - `SUPABASE_STORAGE_BUCKET` (optional, default `notice-board-uploads`)
+   - `CLIENT_ORIGIN=https://your-frontend-domain.vercel.app`
+   - After deploy, verify:
+   - `https://your-backend-domain.vercel.app/api/health`
+3. Deploy frontend (Vercel project #2):
+   - Root Directory: repo root
+   - Set env vars:
+   - `VITE_API_BASE_URL=https://your-backend-domain.vercel.app`
+   - `VITE_ENABLE_SOCKET=false` (recommended on Vercel backend; polling fallback is enabled)
+4. Redeploy frontend after setting env vars.
+5. If backend `CLIENT_ORIGIN` changes, redeploy backend.
+
+Note for Vercel backend uploads:
+- API upload requests are capped for serverless runtime; this backend enforces a 4MB request file limit on Vercel.
+
+If you see `404: NOT_FOUND` on frontend routes like `/admin`, ensure root `vercel.json` is included in the deployment (SPA rewrite to `index.html`).
