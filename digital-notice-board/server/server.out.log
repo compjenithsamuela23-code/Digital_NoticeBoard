@@ -1,0 +1,18 @@
+[dotenv@17.2.3] injecting env (3) from ..\..\.env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+⚠️ live_state table not found. Run server/supabase/schema.sql to enable persisted live status.
+✅ Supabase initialized
+✅ Server running on http://localhost:5001
+📁 Uploads directory: c:\Users\compj\OneDrive\Desktop\digital-notice-board\digital-notice-board\server\uploads
+📡 Socket.io ready for real-time updates
+🗄️ Database: Supabase PostgreSQL
+👤 Default admin: admin@noticeboard.com / admin123
+🔗 Test: http://localhost:5001/api/test
+📡 New client connected
+✅ Updated announcement: hi
+✅ Deleted announcement: TITLE
+📡 Client disconnected
+📡 New client connected
+✅ Updated announcement: hi
+📡 Client disconnected
+📡 New client connected
+^C

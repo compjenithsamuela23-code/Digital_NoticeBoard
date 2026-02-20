@@ -1,523 +1,536 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { useSocket } from '../contexts/SocketContext';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useSocket } from '../hooks/useSocket';
+import { apiUrl, assetUrl } from '../config/api';
+import { clearAdminSession, hasAdminSession, withAuthConfig } from '../config/auth';
+import { apiClient, extractApiError } from '../config/http';
+import {
+  clearDisplaySession,
+  getDisplayCategoryId,
+  getDisplayCategoryLabel,
+  getDisplayUsername,
+  withDisplayAuthConfig
+} from '../config/displayAuth';
+import { useTheme } from '../hooks/useTheme';
+import AttachmentPreview from './AttachmentPreview';
+import TopbarStatus from './TopbarStatus';
 
 const DisplayBoard = () => {
   const [announcements, setAnnouncements] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [isDarkMode, setIsDarkMode] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
-  const { socket } = useSocket();
-  const navigate = useNavigate();
-
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLink, setLiveLink] = useState(null);
   const [categories, setCategories] = useState([]);
-  const [emergencyIndex, setEmergencyIndex] = useState(null);
+  const [mediaPreviewError, setMediaPreviewError] = useState(false);
+  const [isAudioMuted, setIsAudioMuted] = useState(true);
+  const [videoVolume, setVideoVolume] = useState(1);
+  const [audioStatusHint, setAudioStatusHint] = useState('');
+  const [requestError, setRequestError] = useState('');
+  const liveVideoRef = useRef(null);
 
-  // helper to extract youtube id
+  const navigate = useNavigate();
+  const { socket } = useSocket();
+  const { isDark, toggleTheme } = useTheme();
+
+  const isAdmin = hasAdminSession();
+  const displayCategoryId = getDisplayCategoryId();
+  const displayCategoryLabel = getDisplayCategoryLabel();
+  const displayUsername = getDisplayUsername();
+
   const getYouTubeID = (url) => {
-    const r = /(?:youtube\.com.*v=|youtu\.be\/)([^&\n?#]+)/;
-    const m = url && url.match(r);
-    return m ? m[1] : null;
+    const regex = /(?:youtube\.com.*v=|youtu\.be\/)([^&\n?#]+)/;
+    const match = url && url.match(regex);
+    return match ? match[1] : null;
   };
 
-  // Get category name by ID
+  const isVideoMedia = (announcement) => {
+    if (!announcement || !announcement.image) return false;
+    if (String(announcement.type || '').toLowerCase().includes('video')) return true;
+    return /\.(mp4|m4v|m4p|mov|avi|mkv|webm|ogg|ogv|flv|f4v|wmv|asf|ts|m2ts|mts|3gp|3g2|mpg|mpeg|mpe|vob|mxf|rm|rmvb|qt|hevc|h265|h264|r3d|braw|cdng|prores|dnxhd|dnxhr|dv|mjpeg)$/i.test(
+      announcement.image
+    );
+  };
+
+  const isImageMedia = (announcement) => {
+    if (!announcement || !announcement.image) return false;
+    if (String(announcement.type || '').toLowerCase().includes('image')) return true;
+    return /\.(jpg|jpeg|png|gif|bmp|tif|tiff|webp|avif|heif|heic|apng|svg|ai|eps|psd|raw|dng|cr2|cr3|nef|arw|orf|rw2)$/i.test(
+      announcement.image
+    );
+  };
+
+  const isDocumentMedia = (announcement) => {
+    if (!announcement || !announcement.image) return false;
+    const type = String(announcement.type || '').toLowerCase();
+    if (type.includes('document')) return true;
+    if (isVideoMedia(announcement)) return false;
+    if (isImageMedia(announcement)) return false;
+    return true;
+  };
+
   const getCategoryName = (categoryId) => {
     if (!categoryId) return null;
-    const cat = categories.find(c => c.id === categoryId);
-    return cat ? cat.name : null;
+    const category = categories.find((item) => item.id === categoryId);
+    return category ? category.name : null;
   };
 
-  useEffect(() => {
-    const fetchLive = async () => {
-      try {
-        const res = await axios.get('http://localhost:5001/api/status');
-        setLiveStatus(res.data.status || 'OFF');
-        setLiveLink(res.data.link || null);
-      } catch (err) {
-        // ignore
-      }
-    };
+  const fetchAnnouncements = useCallback(async () => {
+    try {
+      const categoryFilter = String(displayCategoryId || 'all').trim();
+      const response = await apiClient.get(apiUrl('/api/announcements/public'), {
+        params: categoryFilter && categoryFilter !== 'all' ? { category: categoryFilter } : {}
+      });
+      setAnnouncements(response.data || []);
+      setRequestError('');
+    } catch (error) {
+      console.error('Error fetching announcements:', error);
+      setRequestError(extractApiError(error, 'Unable to load announcements.'));
+    }
+  }, [displayCategoryId]);
 
-    fetchLive();
-    const iv = setInterval(fetchLive, 2000);
-    return () => clearInterval(iv);
+  const fetchCategories = useCallback(async () => {
+    try {
+      const response = await apiClient.get(apiUrl('/api/categories'));
+      setCategories(response.data || []);
+      setRequestError('');
+    } catch (error) {
+      console.error('Error fetching categories:', error);
+      setRequestError(extractApiError(error, 'Unable to load categories.'));
+    }
+  }, []);
+
+  const fetchLiveStatus = useCallback(async () => {
+    try {
+      const response = await apiClient.get(apiUrl('/api/status'));
+      setLiveStatus(response.data.status || 'OFF');
+      setLiveLink(response.data.link || null);
+      setRequestError('');
+    } catch (error) {
+      console.error('Error fetching live status:', error);
+      setRequestError(extractApiError(error, 'Unable to load live status.'));
+    }
   }, []);
 
   useEffect(() => {
+    const initialFetch = setTimeout(() => {
+      fetchAnnouncements();
+      fetchCategories();
+      fetchLiveStatus();
+    }, 0);
+
+    const livePoll = setInterval(fetchLiveStatus, 5000);
+    const announcementsPoll = setInterval(fetchAnnouncements, 15000);
+
+    const syncVisibleDisplay = () => {
+      fetchAnnouncements();
+      fetchLiveStatus();
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        syncVisibleDisplay();
+      }
+    };
+
+    window.addEventListener('focus', syncVisibleDisplay);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearTimeout(initialFetch);
+      clearInterval(livePoll);
+      clearInterval(announcementsPoll);
+      window.removeEventListener('focus', syncVisibleDisplay);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [fetchAnnouncements, fetchCategories, fetchLiveStatus]);
+
+  useEffect(() => {
     if (!socket) return;
+
+    const syncOnConnect = () => {
+      fetchAnnouncements();
+      fetchLiveStatus();
+    };
+
+    socket.on('connect', syncOnConnect);
+    socket.on('announcementUpdate', fetchAnnouncements);
     socket.on('liveUpdate', (data) => {
       setLiveStatus(data.status || 'OFF');
       setLiveLink(data.link || null);
     });
-    return () => socket.off('liveUpdate');
-  }, [socket]);
-
-  // Color Themes
-  const themes = {
-    light: {
-      primary: '#6366f1', // Indigo
-      secondary: '#8b5cf6', // Violet
-      accent: '#10b981', // Emerald
-      background: '#f8fafc',
-      card: '#ffffff',
-      text: '#1e293b',
-      textSecondary: '#64748b',
-      border: '#e2e8f0',
-      adminBtn: '#dc2626' // Red for admin button
-    },
-    dark: {
-      primary: '#818cf8',
-      secondary: '#a78bfa',
-      accent: '#34d399',
-      background: '#0f172a',
-      card: '#1e293b',
-      text: '#f1f5f9',
-      textSecondary: '#94a3b8',
-      border: '#334155',
-      adminBtn: '#ef4444' // Red for admin button
-    }
-  };
-
-  const theme = isDarkMode ? themes.dark : themes.light;
-
-  // Clock and Weather (moved up so hooks order is stable)
-  const [now, setNow] = useState(new Date());
-  const [weather, setWeather] = useState(null);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // Attempt to fetch basic weather using IP-based location (best-effort)
-  useEffect(() => {
-    const fetchWeather = async () => {
-      try {
-        const ipRes = await axios.get('https://ipapi.co/json/');
-        const { latitude, longitude } = ipRes.data;
-        if (latitude && longitude) {
-          const w = await axios.get(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true&temperature_unit=celsius`);
-          setWeather(w.data.current_weather || null);
-        }
-      } catch (err) {
-        // ignore failures - show N/A
-      }
-    };
-    fetchWeather();
-  }, []);
-
-  useEffect(() => {
-    fetchAnnouncements();
-    fetchCategories();
-
-    // Socket.io for real-time updates
-    if (socket) {
-      socket.on('announcementUpdate', (data) => {
-        fetchAnnouncements(); // Refresh announcements on any update
-      });
-    }
 
     return () => {
-      if (socket) {
-        socket.off('announcementUpdate');
+      socket.off('connect', syncOnConnect);
+      socket.off('announcementUpdate', fetchAnnouncements);
+      socket.off('liveUpdate');
+    };
+  }, [fetchAnnouncements, fetchLiveStatus, socket]);
+
+  const emergencyIndex = useMemo(
+    () => announcements.findIndex((item) => item && item.priority === 0),
+    [announcements]
+  );
+  const hasEmergency = emergencyIndex !== -1;
+
+  const activeSlideIndex = useMemo(() => {
+    if (!announcements.length) return 0;
+    if (hasEmergency) return emergencyIndex;
+    return Math.min(currentIndex, announcements.length - 1);
+  }, [announcements.length, currentIndex, emergencyIndex, hasEmergency]);
+
+  useEffect(() => {
+    if (!isPlaying || announcements.length <= 1 || hasEmergency) return;
+
+    const interval = setInterval(() => {
+      setCurrentIndex((previous) => (previous + 1) % announcements.length);
+    }, 8000);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, announcements.length, hasEmergency]);
+
+  const currentAnnouncement = announcements[activeSlideIndex] || null;
+  const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
+  const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
+  const currentAnnouncementVideoUrl = currentAnnouncementHasVideo
+    ? assetUrl(currentAnnouncement.image)
+    : null;
+  const activeYouTubeId = getYouTubeID(liveLink);
+
+  const categoryLabel = currentAnnouncement
+    ? getCategoryName(currentAnnouncement.category)
+    : null;
+
+  const liveBadgeClass = liveStatus === 'ON' ? 'pill pill--success' : 'pill pill--danger';
+  const isEmergency = hasEmergency;
+
+  const actionHint = useMemo(() => {
+    if (!announcements.length) return 'No scheduled announcements';
+    return `Slide ${activeSlideIndex + 1} of ${announcements.length}`;
+  }, [announcements.length, activeSlideIndex]);
+
+  const handleNext = () => {
+    if (!announcements.length || hasEmergency) return;
+    setCurrentIndex((previous) => (previous + 1) % announcements.length);
+  };
+
+  const handlePrev = () => {
+    if (!announcements.length || hasEmergency) return;
+    setCurrentIndex((previous) => (previous - 1 + announcements.length) % announcements.length);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiClient.post(apiUrl('/api/auth/logout'), {}, withAuthConfig());
+    } catch (error) {
+      console.error('Error logging out:', error);
+    } finally {
+      clearAdminSession();
+      window.location.reload();
+    }
+  };
+
+  const handleDisplayLogout = async () => {
+    try {
+      await apiClient.post(apiUrl('/api/display-auth/logout'), {}, withDisplayAuthConfig());
+    } catch (error) {
+      console.error('Error logging out display access:', error);
+    } finally {
+      clearDisplaySession();
+      navigate('/display/login');
+    }
+  };
+
+  const handleAudioToggle = () => {
+    setAudioStatusHint('');
+    setIsAudioMuted((value) => !value);
+  };
+
+  const handleVolumeChange = (event) => {
+    const raw = Number.parseFloat(event.target.value);
+    const next = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 1;
+    setVideoVolume(next);
+    if (next === 0) {
+      setIsAudioMuted(true);
+    } else {
+      setIsAudioMuted(false);
+    }
+  };
+
+  useEffect(() => {
+    setMediaPreviewError(false);
+    setAudioStatusHint('');
+  }, [currentAnnouncementVideoUrl]);
+
+  useEffect(() => {
+    if (!currentAnnouncementHasVideo) return;
+    const videoElement = liveVideoRef.current;
+    if (!videoElement) return;
+
+    videoElement.volume = videoVolume;
+    videoElement.muted = isAudioMuted;
+
+    const tryPlay = async () => {
+      try {
+        await videoElement.play();
+      } catch {
+        if (!isAudioMuted) {
+          videoElement.muted = true;
+          setIsAudioMuted(true);
+          setAudioStatusHint('Autoplay with sound was blocked. Click Unmute to enable audio.');
+        }
       }
     };
-  }, [socket]);
 
-  useEffect(() => {
-    if (isPlaying && announcements.length > 1) {
-      // If an emergency announcement is active, don't auto-rotate
-      if (emergencyIndex !== null) {
-        return; // An emergency announcement is active — stop auto-rotation
-      }
+    tryPlay();
+  }, [currentAnnouncementHasVideo, currentAnnouncementVideoUrl, isAudioMuted, videoVolume]);
 
-      const interval = setInterval(() => {
-        setCurrentIndex(prev => (prev + 1) % announcements.length);
-      }, 8000); // 8 seconds per slide
-      return () => clearInterval(interval);
-    }
-  }, [isPlaying, announcements.length, currentIndex, announcements, emergencyIndex]);
-
-  // Ensure emergency announcement (priority 0) is shown first and blocks rotation
-  useEffect(() => {
-    if (!announcements || announcements.length === 0) {
-      setEmergencyIndex(null);
-      return;
-    }
-
-    const idx = announcements.findIndex(a => a && a.priority === 0);
-    if (idx !== -1) {
-      setEmergencyIndex(idx);
-      // show emergency immediately
-      setCurrentIndex(idx);
-    } else {
-      // no emergency present
-      setEmergencyIndex(null);
-      // ensure currentIndex is within bounds when emergency is removed
-      setCurrentIndex(prev => Math.min(prev, Math.max(0, announcements.length - 1)));
-    }
-  }, [announcements]);
-
-  const fetchAnnouncements = async () => {
-    try {
-      const response = await axios.get('http://localhost:5001/api/announcements/public');
-      setAnnouncements(response.data);
-    } catch (error) {
-      console.error('Error fetching announcements:', error);
-    }
-  };
-
-  const fetchCategories = async () => {
-    try {
-      const response = await axios.get('http://localhost:5001/api/categories');
-      setCategories(response.data);
-    } catch (error) {
-      console.error('Error fetching categories:', error);
-    }
-  };
-
-  const nextSlide = () => {
-    if (announcements.length > 0) {
-      setCurrentIndex(prev => (prev + 1) % announcements.length);
-    }
-  };
-
-  const prevSlide = () => {
-    if (announcements.length > 0) {
-      setCurrentIndex(prev => (prev - 1 + announcements.length) % announcements.length);
-    }
-  };
-
-  const handleAdminLogin = () => {
-    navigate('/admin/login');
-  };
-
-  if (announcements.length === 0) {
+  if (!currentAnnouncement) {
     return (
-      <div style={{
-        minHeight: '100vh',
-        width: '100vw',
-        backgroundColor: theme.background,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        transition: 'all 0.3s ease',
-        padding: '20px',
-        margin: 0,
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        overflow: 'auto',
-        boxSizing: 'border-box'
-      }}>
-        <div style={{
-          textAlign: 'center',
-          padding: '40px',
-          maxWidth: '800px',
-          width: '100%'
-        }}>
-          <div style={{
-            fontSize: '5rem',
-            marginBottom: '20px',
-            color: theme.primary
-          }}>
-          </div>
-          <h1 style={{
-            fontSize: '3rem',
-            color: theme.text,
-            marginBottom: '15px',
-            fontWeight: '800'
-          }}>
-            Digital Notice Board
-          </h1>
-          <p style={{
-            color: theme.textSecondary,
-            fontSize: '1.3rem',
-            marginBottom: '40px',
-            maxWidth: '600px',
-            margin: '0 auto 40px'
-          }}>
-            Welcome to the Digital Notice Board System. No announcements at the moment.
-          </p>
+      <div className="display-page fade-up">
+        <div className="display-shell">
+          <header className="display-header">
+            <div className="display-header__brand">
+              <p className="topbar__eyebrow">Digital Notice Board</p>
+              <h2>Public Display</h2>
+            </div>
+            <div className="display-header__title">
+              <h1>No Announcements Yet</h1>
+              <p>
+                {displayCategoryLabel
+                  ? `No announcements in ${displayCategoryLabel}.`
+                  : 'No announcements are available.'}
+              </p>
+            </div>
+            <div className="display-meta display-meta--header">
+              <TopbarStatus className="topbar-status--display" />
+              <div className="display-meta__actions">
+                <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                  {isDark ? 'Light Mode' : 'Dark Mode'}
+                </button>
+                <button className="btn btn--danger btn--tiny" type="button" onClick={handleDisplayLogout}>
+                  Display Logout
+                </button>
+                {isAdmin ? (
+                  <button className="btn btn--danger btn--tiny" type="button" onClick={handleLogout}>
+                    Admin Logout
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </header>
 
-          <div style={{
-            display: 'flex',
-            gap: '20px',
-            justifyContent: 'center',
-            flexWrap: 'wrap'
-          }}>
-            <button
-              onClick={() => setIsDarkMode(!isDarkMode)}
-              style={{
-                padding: '15px 30px',
-                backgroundColor: theme.primary,
-                color: 'white',
-                border: 'none',
-                borderRadius: '50px',
-                cursor: 'pointer',
-                fontSize: '1.1rem',
-                fontWeight: '600',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                transition: 'all 0.3s',
-                minWidth: '180px'
-              }}
-              onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
-              onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
-            >
-              {isDarkMode ? 'Light Mode' : 'Dark Mode'}
-            </button>
+          {requestError ? <div className="auth-error">{requestError}</div> : null}
 
-            <button
-              onClick={handleAdminLogin}
-              style={{
-                padding: '15px 30px',
-                backgroundColor: theme.adminBtn,
-                color: 'white',
-                border: 'none',
-                borderRadius: '50px',
-                cursor: 'pointer',
-                fontSize: '1.1rem',
-                fontWeight: '600',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                transition: 'all 0.3s',
-                minWidth: '180px'
-              }}
-              onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
-              onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
-            >
-              Admin Login
-            </button>
-          </div>
-
-          <div style={{
-            marginTop: '50px',
-            padding: '25px',
-            backgroundColor: theme.card,
-            borderRadius: '20px',
-            maxWidth: '500px',
-            margin: '50px auto 0',
-            border: `1px solid ${theme.border}`
-          }}>
-            <p style={{
-              color: theme.textSecondary,
-              fontSize: '0.95rem',
-              marginBottom: '10px'
-            }}>
-              <strong>Tip:</strong> This system supports real-time updates, image uploads, and priority-based announcements.
+          <main className="card section empty-state">
+            <h3 className="display-empty-title">Display Is Ready</h3>
+            <p className="display-empty-copy">
+              The board is online and waiting for published announcements.
             </p>
-          </div>
+          </main>
+
+          <footer className="display-footer">
+            <p className="footer-hint">Publish notices from Admin to start the display cycle.</p>
+          </footer>
         </div>
       </div>
     );
   }
 
-  const currentAnnouncement = announcements[currentIndex];
-
-  // (moved above) clock/weather hooks are declared earlier to preserve hook order
-
-  const isAdmin = !!localStorage.getItem('admin');
-
-  const handleLogout = () => {
-    localStorage.removeItem('admin');
-    window.location.reload();
-  };
-
-  // Emergency mode: if emergencyIndex is not null, set red theme
-  const isEmergency = emergencyIndex !== null;
   return (
-    <div style={{
-      minHeight: '100vh',
-      width: '100vw',
-      backgroundColor: isEmergency ? '#b91c1c' : theme.background,
-      transition: 'all 0.3s ease',
-      padding: 0,
-      margin: 0,
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      overflow: 'hidden',
-      boxSizing: 'border-box',
-      color: isEmergency ? '#fff' : theme.text
-    }}>
-      {/* Top Bar */}
-      <div style={{
-        height: '100px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 30px',
-        boxSizing: 'border-box',
-        borderBottom: `1px solid ${theme.border}`,
-        backgroundColor: theme.background
-      }}>
-        {/* Left - Admin */}
-        <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
-          {isAdmin ? (
-            <button onClick={handleLogout} style={{ padding: '10px 18px', backgroundColor: theme.adminBtn, color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700 }}>Logout</button>
-          ) : (
-            <button onClick={handleAdminLogin} style={{ padding: '10px 18px', backgroundColor: theme.primary, color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700 }}>Admin Login</button>
-          )}
-        </div>
-
-        {/* Center - Title */}
-        <div style={{ textAlign: 'center', flex: 1 }}>
-          <h1 style={{ margin: 0, fontSize: '2.4rem', fontWeight: 800, color: isEmergency ? '#fff' : theme.text }}>
-            {isEmergency ? '🚨 EMERGENCY NOTICE 🚨' : 'SMART NOTICE BOARD'}
-          </h1>
-        </div>
-
-        {/* Right - Time / Date / Weather */}
-        <div style={{ textAlign: 'right', minWidth: '220px' }}>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>{now.toLocaleTimeString()}</div>
-          <div style={{ fontSize: '0.9rem', opacity: 0.9 }}>{now.toLocaleDateString()}</div>
-          <div style={{ fontSize: '0.9rem', marginTop: '6px', color: theme.textSecondary }}>{weather ? `${weather.temperature}°C • Wind ${weather.windspeed}km/h` : 'Weather: N/A'}</div>
-        </div>
-      </div>
-
-      {/* Main area: top spacer + bottom half split for video/announcement */}
-      <div style={{ height: 'calc(100vh - 100px)', display: 'flex', flexDirection: 'column' }}>
-        {/* Top spacer (can be used for extra content) */}
-        <div style={{ flex: 1 }} />
-
-        {/* Bottom half - full-width split 50/50 */}
-        <div style={{ height: '50vh', display: 'grid', gridTemplateColumns: '1fr 1fr', width: '100%' }}>
-          {/* Left: Live video - occupy entire half without card chrome */}
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' }}>
-            {liveStatus === 'ON' && liveLink && getYouTubeID(liveLink) ? (
-              <iframe
-                title="Live Stream"
-                src={`https://www.youtube.com/embed/${getYouTubeID(liveLink)}?autoplay=1&mute=1`}
-                style={{ width: '100%', height: '100%', border: 'none' }}
-                allow="autoplay; encrypted-media"
-                allowFullScreen
-              />
-            ) : (
-              <div style={{ color: '#fff', textAlign: 'center' }}>
-                <div style={{ fontSize: '3rem', opacity: 0.6 }}></div>
-                <div style={{ fontSize: '1.1rem', opacity: 0.8 }}>No Live Broadcast</div>
-              </div>
-            )}
+    <div className={`display-page fade-up ${isEmergency ? 'display-page--emergency' : ''}`}>
+      <div className="display-shell">
+        <header className="display-header">
+          <div className="display-header__brand">
+            <p className="topbar__eyebrow">Digital Notice Board</p>
+            <div className={`${liveBadgeClass} live-status-pill`}>
+              <span className="badge-dot" />
+              Live Status: {liveStatus}
+            </div>
           </div>
 
-          {/* Right: Announcement - full half, minimal framing */}
-          <div style={{
-            width: '100%',
-            height: '100%',
-            overflow: 'auto',
-            padding: isEmergency ? '40px' : '28px',
-            boxSizing: 'border-box',
-            backgroundColor: isEmergency ? '#991b1b' : theme.card,
-            border: isEmergency ? '6px solid #fff' : undefined,
-            borderRadius: isEmergency ? '24px' : undefined,
-            boxShadow: isEmergency ? '0 0 40px 10px #dc2626' : undefined,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexDirection: 'column',
-            position: 'relative'
-          }}>
-            <div style={{
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              alignItems: 'center',
-              width: '100%'
-            }}>
-              <div style={{
-                color: isEmergency ? '#fff' : theme.textSecondary,
-                fontWeight: 900,
-                marginBottom: '10px',
-                fontSize: isEmergency ? '2.2rem' : '1.1rem',
-                letterSpacing: isEmergency ? '2px' : undefined,
-                textShadow: isEmergency ? '0 0 10px #dc2626, 0 0 20px #fff' : undefined,
-                animation: isEmergency ? 'pulse 1.2s infinite' : undefined
-              }}>
-                {isEmergency ? 'EMERGENCY ANNOUNCEMENT' : `PRIORITY ${currentAnnouncement.priority || 1}`} {currentAnnouncement.category && getCategoryName(currentAnnouncement.category) ? `• ${getCategoryName(currentAnnouncement.category)}` : ''}
+          <div className="display-header__title display-header__title--main">
+            <h1>{isEmergency ? 'Emergency Broadcast Mode' : 'Smart Notice Display'}</h1>
+            <p>
+              {categoryLabel
+                ? `Category: ${categoryLabel}`
+                : displayCategoryLabel
+                  ? `Viewing: ${displayCategoryLabel}`
+                  : 'General Announcements'}
+            </p>
+            <p className="topbar__subtitle">User: {displayUsername || 'Display User'}</p>
+            {isEmergency ? <span className="emergency-banner">Emergency Active</span> : null}
+          </div>
+
+          <div className="display-meta display-meta--header">
+            <TopbarStatus className="topbar-status--display" />
+            <div className="display-meta__actions">
+              <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                {isDark ? 'Light Mode' : 'Dark Mode'}
+              </button>
+              <button className="btn btn--danger btn--tiny" type="button" onClick={handleDisplayLogout}>
+                Display Logout
+              </button>
+              {isAdmin ? (
+                <button className="btn btn--danger btn--tiny" type="button" onClick={handleLogout}>
+                  Admin Logout
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </header>
+
+        {requestError ? <div className="auth-error">{requestError}</div> : null}
+
+        <main className="display-main">
+          <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
+            <div className="panel-head">
+              <h2>Live Broadcast</h2>
+              <div className="inline-actions live-panel-actions">
+                <p className="topbar__subtitle">
+                  {currentAnnouncementHasVideo
+                    ? 'Playing uploaded video'
+                    : currentAnnouncementHasDocument
+                      ? 'Document attachment available'
+                      : liveStatus === 'ON'
+                        ? 'Streaming from live link'
+                        : 'No active stream'}
+                </p>
+                {currentAnnouncementHasVideo || (liveStatus === 'ON' && activeYouTubeId) ? (
+                  <button className="btn btn--ghost btn--tiny" type="button" onClick={handleAudioToggle}>
+                    {isAudioMuted ? 'Unmute' : 'Mute'}
+                  </button>
+                ) : null}
+                {currentAnnouncementHasVideo ? (
+                  <label className="volume-control">
+                    <span>Vol</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={videoVolume}
+                      onChange={handleVolumeChange}
+                    />
+                  </label>
+                ) : null}
               </div>
-              <h2 style={{
-                fontSize: isEmergency ? '3.2rem' : '2.6rem',
-                margin: '6px 0 20px',
-                color: isEmergency ? '#fff' : theme.text,
-                lineHeight: 1.05,
-                textShadow: isEmergency ? '0 0 10px #fff, 0 0 20px #dc2626' : undefined,
-                fontWeight: isEmergency ? 900 : 700
-              }}>{currentAnnouncement.title}</h2>
-              {currentAnnouncement.image && (
-                <div style={{ marginBottom: '20px' }}>
-                  <img src={currentAnnouncement.image.startsWith('http') ? currentAnnouncement.image : `http://localhost:5001${currentAnnouncement.image}`} alt="Announcement" style={{ width: '100%', height: 'auto', objectFit: 'contain', border: isEmergency ? '4px solid #fff' : undefined, boxShadow: isEmergency ? '0 0 20px #fff' : undefined }} />
+            </div>
+            <div className="live-body">
+              {currentAnnouncementHasVideo ? (
+                !mediaPreviewError ? (
+                  <video
+                    ref={liveVideoRef}
+                    key={currentAnnouncementVideoUrl}
+                    src={currentAnnouncementVideoUrl}
+                    autoPlay
+                    controls
+                    loop
+                    muted={isAudioMuted}
+                    playsInline
+                    onError={() => setMediaPreviewError(true)}
+                  />
+                ) : (
+                  <div className="live-placeholder">
+                    <h3>Video Format Not Previewable</h3>
+                    <p>Open or download this file to view it with an external player.</p>
+                    <a className="btn btn--primary btn--tiny" href={currentAnnouncementVideoUrl} target="_blank" rel="noreferrer">
+                      Open Video File
+                    </a>
+                  </div>
+                )
+              ) : liveStatus === 'ON' && activeYouTubeId ? (
+                <iframe
+                  key={`${activeYouTubeId}-${isAudioMuted ? 'muted' : 'sound'}`}
+                  title="Live Broadcast"
+                  src={`https://www.youtube.com/embed/${activeYouTubeId}?autoplay=1&mute=${
+                    isAudioMuted ? 1 : 0
+                  }&controls=1&playsinline=1&rel=0&modestbranding=1`}
+                  allow="autoplay; encrypted-media; fullscreen"
+                  allowFullScreen
+                />
+              ) : currentAnnouncementHasDocument ? (
+                <div className="live-document-wrap">
+                  <AttachmentPreview
+                    filePath={currentAnnouncement.image}
+                    fileName={currentAnnouncement.fileName}
+                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                    className="document-preview--full live-document-preview"
+                    documentPreview
+                    title={currentAnnouncement.title}
+                    imageAlt={currentAnnouncement.title}
+                  />
+                </div>
+              ) : (
+                <div className="live-placeholder">
+                  <h3>Live Broadcast Offline</h3>
+                  <p>Use admin controls to start a live stream or upload a video announcement.</p>
                 </div>
               )}
-              <div style={{
-                fontSize: isEmergency ? '2.1rem' : '1.6rem',
-                color: isEmergency ? '#fff' : theme.textSecondary,
-                whiteSpace: 'pre-line',
-                lineHeight: 1.6,
-                textShadow: isEmergency ? '0 0 10px #fff' : undefined,
-                fontWeight: isEmergency ? 700 : 400,
-                textAlign: 'center',
-                padding: isEmergency ? '10px 0' : undefined
-              }}>{currentAnnouncement.content}</div>
             </div>
-            {isEmergency && (
-              <div style={{
-                position: 'absolute',
-                top: 10,
-                right: 20,
-                background: '#fff',
-                color: '#b91c1c',
-                fontWeight: 900,
-                fontSize: '1.2rem',
-                padding: '8px 18px',
-                borderRadius: '12px',
-                boxShadow: '0 0 10px #fff',
-                letterSpacing: '1px',
-                zIndex: 2
-              }}>
-                EMERGENCY MODE
-              </div>
-            )}
-          </div>
-        </div>
-        {/* Footer */}
-        <div style={{
-          marginTop: '50px',
-          textAlign: 'center',
-          color: isEmergency ? '#fff' : theme.textSecondary,
-          fontSize: '0.9rem',
-          padding: '20px',
-          borderTop: `1px solid ${isEmergency ? '#fff' : theme.border}`,
-          width: '100%',
-          background: isEmergency ? 'rgba(220,38,38,0.2)' : undefined
-        }}>
-          <p>Digital Notice Board System v2.0 • Real-time Updates • Image Support • Priority Management</p>
-          <p style={{ marginTop: '10px', opacity: 0.7 }}>
-            Click the <strong>Admin</strong> button to manage announcements
-          </p>
-        </div>
-      </div>
+            {audioStatusHint ? <p className="file-help">{audioStatusHint}</p> : null}
+          </section>
 
-      <style>{`
-        @keyframes pulse {
-          0%, 100% {
-            opacity: 1;
-          }
-          50% {
-            opacity: 0.7;
-          }
-        }
-      `}</style>
+          <section className={`announcement-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
+            <div className="panel-head">
+              <h2>Current Announcement</h2>
+              <div className="inline-actions">
+                <span className="pill pill--info">Priority {currentAnnouncement.priority || 1}</span>
+                {categoryLabel ? <span className="pill">{categoryLabel}</span> : null}
+              </div>
+            </div>
+
+            <div className="announcement-body">
+              <p className="announcement-kicker">
+                {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
+              </p>
+              <h3 className="announcement-title">{currentAnnouncement.title}</h3>
+
+              {currentAnnouncement.image && !currentAnnouncementHasVideo ? (
+                <AttachmentPreview
+                  filePath={currentAnnouncement.image}
+                  fileName={currentAnnouncement.fileName}
+                  typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                  fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                  className="media-preview--full"
+                  documentPreview
+                  title={currentAnnouncement.title}
+                  imageAlt={currentAnnouncement.title}
+                />
+              ) : null}
+
+              <p className="announcement-content">{currentAnnouncement.content}</p>
+            </div>
+          </section>
+        </main>
+
+        <footer className="display-footer">
+          <p className="footer-hint">{actionHint}</p>
+
+          <div className="controls">
+            <button className="btn btn--ghost btn--tiny" type="button" onClick={handlePrev}>
+              Previous
+            </button>
+            <button
+              className="btn btn--primary btn--tiny"
+              type="button"
+              onClick={() => setIsPlaying((value) => !value)}
+            >
+              {isPlaying ? 'Pause Auto-Rotate' : 'Resume Auto-Rotate'}
+            </button>
+            <button className="btn btn--ghost btn--tiny" type="button" onClick={handleNext}>
+              Next
+            </button>
+          </div>
+
+          <div className="dot-pager">
+            {announcements.slice(0, 12).map((item, index) => (
+              <span key={`${item.id}-${index}`} className={index === activeSlideIndex ? 'is-active' : ''} />
+            ))}
+          </div>
+        </footer>
+      </div>
     </div>
   );
 };

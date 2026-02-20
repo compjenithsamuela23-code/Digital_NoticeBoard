@@ -1,0 +1,12 @@
+{
+  "name": "digital-notice-board-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev:up": "node scripts/local-control.js dev-up",
+    "dev:down": "node scripts/local-control.js dev-down",
+    "serve:up": "node scripts/local-control.js serve-up",
+    "serve:down": "node scripts/local-control.js serve-down",
+    "local:status": "node scripts/local-control.js status"
+  }
+}

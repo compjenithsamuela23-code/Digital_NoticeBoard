@@ -1,1 +1,91 @@
-# Digital-notesboard
+# Digital Notice Board
+
+## Supabase Setup
+
+1. Open Supabase SQL Editor and run `digital-notice-board/server/supabase/schema.sql`.
+2. Add these variables in the root `.env`:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_KEY`
+   - `JWT_SECRET`
+   - `JWT_EXPIRES_IN` (optional, default `7d`)
+3. Run automatic setup (Supabase check + optional legacy migration):
+   - `cd digital-notice-board/server`
+   - `npm run setup:supabase`
+4. Start the backend:
+   - `npm run dev`
+
+The backend is now Supabase-only (no file DB or MongoDB fallback).
+If `check:supabase` reports missing required tables, run `server/supabase/schema.sql` again in Supabase SQL Editor.
+`setup:supabase` only runs legacy migration when `server/database.json` exists.
+You can manually run `npm run migrate:supabase` if you want to import old `database.json` data.
+If only `live_state` is missing, setup/startup continue with an in-memory fallback for live status.
+For internet hosting readiness checks, use:
+- `GET /api/health` (uptime + database health)
+- `GET /api/test` (basic API smoke test)
+- `cd digital-notice-board/server && npm run check:smoke` (automated login/options/API flow)
+- From project root: `npm run check:all` (frontend + backend + smoke flow)
+
+## Hosting
+
+### Local production host
+
+1. Build frontend:
+   - `cd digital-notice-board/client`
+   - `npm run build`
+2. Start backend (serves API + built frontend):
+   - `cd ../server`
+   - `npm start`
+3. Open `http://localhost:5001`
+
+### Permanent Local Run (No More localhost:5173 Refused)
+
+Use the built-in process manager from `digital-notice-board/`:
+
+1. Start stable local host (single URL, production mode):
+   - `npm run serve:up`
+2. Open:
+   - `http://localhost:5001/admin`
+   - `http://localhost:5173/admin` (auto-redirects to `5001` in stable mode)
+3. Check status anytime:
+   - `npm run local:status`
+4. Stop:
+   - `npm run serve:down`
+
+If you specifically want dev mode on `5173`:
+
+1. Start both backend + frontend:
+   - `npm run dev:up`
+2. Open:
+   - `http://localhost:5173/admin`
+3. Stop both:
+   - `npm run dev:down`
+
+### Start Automatically On Windows Login (No CMD Needed)
+
+From project root `digital-notice-board`:
+
+1. Install auto-start in hidden mode (recommended stable mode on `5001`):
+   - `npm run autostart:install`
+2. Check if installed:
+   - `npm run autostart:status`
+3. Open:
+   - `http://localhost:5001/admin`
+   - `http://localhost:5173/admin` (auto-redirects to `5001`)
+4. Remove auto-start:
+   - `npm run autostart:remove`
+
+If you want dev-mode startup (`5173`) instead:
+- `npm run autostart:install:dev`
+
+### Render deploy (single service)
+
+1. Push repo to GitHub.
+2. In Render, create a Blueprint deploy from this repo (`render.yaml`).
+3. Set env vars in Render:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_KEY`
+   - `JWT_SECRET`
+   - `CLIENT_ORIGIN` (your Render app URL, optional but recommended)
+
+If frontend and backend are hosted on different domains, set frontend env:
+- `VITE_API_BASE_URL=https://your-backend-domain.com`

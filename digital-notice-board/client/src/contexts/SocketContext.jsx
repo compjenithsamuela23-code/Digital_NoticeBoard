@@ -1,22 +1,27 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import io from 'socket.io-client';
-
-const SocketContext = createContext(null);
-
-export const useSocket = () => useContext(SocketContext);
+import { SOCKET_URL } from '../config/api';
+import { SocketContext } from './socket-context';
 
 export const SocketProvider = ({ children }) => {
-  const [socket, setSocket] = useState(null);
+  const socket = useMemo(
+    () =>
+      io(SOCKET_URL, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 20000
+      }),
+    []
+  );
 
   useEffect(() => {
-    // Connect to backend socket
-    const newSocket = io('http://localhost:5001');
-    setSocket(newSocket);
-
     return () => {
-      newSocket.close();
+      socket.close();
     };
-  }, []);
+  }, [socket]);
 
   return (
     <SocketContext.Provider value={{ socket }}>

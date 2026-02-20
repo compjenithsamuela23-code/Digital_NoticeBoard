@@ -1,0 +1,19 @@
+{
+  "name": "digital-notice-board-root",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev:up": "node digital-notice-board/scripts/local-control.js dev-up",
+    "dev:down": "node digital-notice-board/scripts/local-control.js dev-down",
+    "serve:up": "node digital-notice-board/scripts/local-control.js serve-up",
+    "serve:down": "node digital-notice-board/scripts/local-control.js serve-down",
+    "local:status": "node digital-notice-board/scripts/local-control.js status",
+    "autostart:install": "node digital-notice-board/scripts/windows-autostart.js install serve",
+    "autostart:install:dev": "node digital-notice-board/scripts/windows-autostart.js install dev",
+    "autostart:install:serve": "node digital-notice-board/scripts/windows-autostart.js install serve",
+    "autostart:remove": "node digital-notice-board/scripts/windows-autostart.js remove",
+    "autostart:status": "node digital-notice-board/scripts/windows-autostart.js status",
+    "autostart:run-now": "node digital-notice-board/scripts/windows-autostart.js run-now serve",
+    "check:all": "npm --prefix digital-notice-board/client run lint && npm --prefix digital-notice-board/client run build && npm --prefix digital-notice-board/server run check:supabase && npm --prefix digital-notice-board/server run check:smoke"
+  }
+}

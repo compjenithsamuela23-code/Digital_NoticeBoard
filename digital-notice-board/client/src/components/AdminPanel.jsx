@@ -1,13 +1,43 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useSocket } from '../contexts/SocketContext';
+import { useSocket } from '../hooks/useSocket';
+import { apiUrl } from '../config/api';
+import { clearAdminSession, hasAdminSession, withAuthConfig } from '../config/auth';
+import { clearStaffSession, hasStaffSession, withStaffAuthConfig } from '../config/staffAuth';
+import { apiClient, extractApiError } from '../config/http';
+import { useTheme } from '../hooks/useTheme';
+import DocumentAttachment from './DocumentAttachment';
+import AttachmentPreview from './AttachmentPreview';
+import TopbarStatus from './TopbarStatus';
 
-const AdminPanel = () => {
+const toInputDateTime = (value) => {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+};
+
+const getDefaultStart = () => toInputDateTime(new Date());
+
+const getDefaultEnd = () => {
+  const date = new Date();
+  date.setDate(date.getDate() + 7);
+  return toInputDateTime(date);
+};
+
+const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
+const MEDIA_ACCEPT =
+  'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
+
+const AdminPanel = ({ workspaceRole = 'admin' }) => {
+  const isStaffWorkspace = workspaceRole === 'staff';
+  const isAdminWorkspace = !isStaffWorkspace;
   const [announcements, setAnnouncements] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [image, setImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const [documentFile, setDocumentFile] = useState(null);
+  const [documentPreviewUrl, setDocumentPreviewUrl] = useState(null);
   const [formData, setFormData] = useState({
     title: '',
     content: '',
@@ -15,197 +45,196 @@ const AdminPanel = () => {
     duration: 7,
     isActive: true,
     category: '',
-    startAt: new Date().toISOString().slice(0, 16),
-    endAt: (() => {
-      const d = new Date();
-      d.setDate(d.getDate() + 7);
-      return d.toISOString().slice(0, 16);
-    })()
+    startAt: getDefaultStart(),
+    endAt: getDefaultEnd()
   });
   const [loading, setLoading] = useState(false);
-  const { socket } = useSocket();
   const [liveLinkInput, setLiveLinkInput] = useState('');
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLink, setLiveLink] = useState(null);
   const [categories, setCategories] = useState([]);
   const [newCategory, setNewCategory] = useState('');
-  const navigate = useNavigate();
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [deleteCategoryId, setDeleteCategoryId] = useState('');
+  const [categoryDeleting, setCategoryDeleting] = useState(false);
+  const [displayUsers, setDisplayUsers] = useState([]);
+  const [staffUsers, setStaffUsers] = useState([]);
+  const [showAccessManager, setShowAccessManager] = useState(false);
+  const [credentialsSection, setCredentialsSection] = useState('display');
+  const [accessForm, setAccessForm] = useState({
+    username: '',
+    password: '',
+    category: ''
+  });
+  const [accessSaving, setAccessSaving] = useState(false);
+  const [staffAccessForm, setStaffAccessForm] = useState({
+    username: '',
+    password: ''
+  });
+  const [staffAccessSaving, setStaffAccessSaving] = useState(false);
+  const [requestError, setRequestError] = useState('');
+  const mediaInputRef = useRef(null);
+  const documentInputRef = useRef(null);
 
-  useEffect(() => {
-    // Check if user is logged in
-    const isAdmin = localStorage.getItem('isAdmin');
-    if (!isAdmin) {
-      navigate('/admin/login');
+  const navigate = useNavigate();
+  const { socket } = useSocket();
+  const { isDark, toggleTheme } = useTheme();
+
+  const applyWorkspaceAuth = useCallback(
+    (config = {}) => (isStaffWorkspace ? withStaffAuthConfig(config) : withAuthConfig(config)),
+    [isStaffWorkspace]
+  );
+
+  const clearWorkspaceSession = useCallback(() => {
+    if (isStaffWorkspace) {
+      clearStaffSession();
       return;
     }
+    clearAdminSession();
+  }, [isStaffWorkspace]);
+
+  const workspaceLoginRoute = isStaffWorkspace ? '/staff/login' : '/admin/login';
+  const workspaceHistoryRoute = isStaffWorkspace ? '/staff/history' : '/admin/history';
+
+  const handleAuthFailure = useCallback(() => {
+    clearWorkspaceSession();
+    navigate(workspaceLoginRoute);
+  }, [clearWorkspaceSession, navigate, workspaceLoginRoute]);
+
+  const handleRequestError = useCallback(
+    (error, fallbackMessage) => {
+      if (error.response?.status === 401) {
+        handleAuthFailure();
+        return true;
+      }
+
+      setRequestError(extractApiError(error, fallbackMessage));
+      return false;
+    },
+    [handleAuthFailure]
+  );
+
+  const summary = useMemo(() => {
+    const total = announcements.length;
+    const active = announcements.filter((announcement) => announcement.isActive !== false).length;
+    const emergency = announcements.filter((announcement) => announcement.priority === 0).length;
+    return { total, active, emergency };
+  }, [announcements]);
+
+  const fetchAnnouncements = useCallback(async () => {
+    try {
+      const response = await apiClient.get(apiUrl('/api/announcements'), applyWorkspaceAuth());
+      setAnnouncements(response.data || []);
+      setRequestError('');
+    } catch (error) {
+      if (handleRequestError(error, 'Unable to load announcements.')) return;
+      console.error('Error fetching announcements:', error);
+    }
+  }, [applyWorkspaceAuth, handleRequestError]);
+
+  const fetchLiveStatus = useCallback(async () => {
+    try {
+      const response = await apiClient.get(apiUrl('/api/status'));
+      setLiveStatus(response.data.status || 'OFF');
+      setLiveLink(response.data.link || null);
+    } catch (error) {
+      console.error('Error fetching live status:', error);
+    }
+  }, []);
+
+  const fetchCategories = useCallback(async () => {
+    try {
+      const response = await apiClient.get(apiUrl('/api/categories'), applyWorkspaceAuth());
+      setCategories(response.data || []);
+      setRequestError('');
+    } catch (error) {
+      if (handleRequestError(error, 'Unable to load categories.')) return;
+      console.error('Error fetching categories:', error);
+    }
+  }, [applyWorkspaceAuth, handleRequestError]);
+
+  const fetchDisplayUsers = useCallback(async () => {
+    if (!isAdminWorkspace) {
+      setDisplayUsers([]);
+      return;
+    }
+    try {
+      const response = await apiClient.get(apiUrl('/api/display-users'), applyWorkspaceAuth());
+      setDisplayUsers(response.data || []);
+      setRequestError('');
+    } catch (error) {
+      if (handleRequestError(error, 'Unable to load display users.')) return;
+      console.error('Error fetching display users:', error);
+    }
+  }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace]);
+
+  const fetchStaffUsers = useCallback(async () => {
+    if (!isAdminWorkspace) {
+      setStaffUsers([]);
+      return;
+    }
+    try {
+      const response = await apiClient.get(apiUrl('/api/staff-users'), applyWorkspaceAuth());
+      setStaffUsers(response.data || []);
+      setRequestError('');
+    } catch (error) {
+      if (handleRequestError(error, 'Unable to load staff users.')) return;
+      console.error('Error fetching staff users:', error);
+    }
+  }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace]);
+
+  useEffect(() => {
+    const hasWorkspaceSession = isStaffWorkspace ? hasStaffSession() : hasAdminSession();
+    if (!hasWorkspaceSession) {
+      navigate(workspaceLoginRoute);
+      return;
+    }
+
     fetchAnnouncements();
     fetchLiveStatus();
     fetchCategories();
-  }, [navigate]);
+    if (isAdminWorkspace) {
+      fetchDisplayUsers();
+      fetchStaffUsers();
+    }
+  }, [
+    fetchAnnouncements,
+    fetchCategories,
+    fetchDisplayUsers,
+    fetchLiveStatus,
+    fetchStaffUsers,
+    isAdminWorkspace,
+    isStaffWorkspace,
+    navigate,
+    workspaceLoginRoute
+  ]);
 
   useEffect(() => {
     if (!socket) return;
-    socket.on('liveUpdate', (data) => {
-      setLiveStatus(data.status || 'OFF');
-      setLiveLink(data.link || null);
+
+    socket.on('liveUpdate', (payload) => {
+      setLiveStatus(payload.status || 'OFF');
+      setLiveLink(payload.link || null);
     });
+
+    socket.on('announcementUpdate', fetchAnnouncements);
 
     return () => {
       socket.off('liveUpdate');
+      socket.off('announcementUpdate', fetchAnnouncements);
     };
-  }, [socket]);
+  }, [fetchAnnouncements, socket]);
 
-  const fetchLiveStatus = async () => {
-    try {
-      const res = await axios.get('http://localhost:5001/api/status');
-      setLiveStatus(res.data.status || 'OFF');
-      setLiveLink(res.data.link || null);
-    } catch (err) {
-      console.error('Error fetching live status', err);
-    }
-  };
-
-  const startLive = async () => {
-    if (!liveLinkInput) {
-      alert('Paste YouTube Link!');
-      return;
-    }
-    try {
-      await axios.post('http://localhost:5001/api/start', { link: liveLinkInput });
-      setLiveStatus('ON');
-      setLiveLink(liveLinkInput);
-      setLiveLinkInput('');
-      alert('LIVE STARTED');
-    } catch (err) {
-      console.error('Error starting live', err);
-      alert('Failed to start live');
-    }
-  };
-
-  const stopLive = async () => {
-    try {
-      await axios.post('http://localhost:5001/api/stop');
-      setLiveStatus('OFF');
-      setLiveLink(null);
-      alert('LIVE STOPPED');
-    } catch (err) {
-      console.error('Error stopping live', err);
-      alert('Failed to stop live');
-    }
-  };
-
-  const fetchCategories = async () => {
-    try {
-      const response = await axios.get('http://localhost:5001/api/categories');
-      setCategories(response.data);
-    } catch (error) {
-      console.error('Error fetching categories:', error);
-    }
-  };
-
-  const addCategory = async () => {
-    if (!newCategory.trim()) {
-      alert('Enter category name');
-      return;
-    }
-    try {
-      await axios.post('http://localhost:5001/api/categories', { name: newCategory });
-      setNewCategory('');
-      fetchCategories();
-      alert('Category added');
-    } catch (err) {
-      alert(err.response?.data?.error || 'Error adding category');
-    }
-  };
-
-  const deleteCategory = async (id) => {
-    if (!window.confirm('Delete this category?')) return;
-    try {
-      await axios.delete(`http://localhost:5001/api/categories/${id}`);
-      fetchCategories();
-    } catch (error) {
-      alert('Error deleting category');
-    }
-  };
-
-  const fetchAnnouncements = async () => {
-    try {
-      const response = await axios.get('http://localhost:5001/api/announcements');
-      setAnnouncements(response.data);
-    } catch (error) {
-      console.error('Error fetching announcements:', error);
-    }
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-
-    try {
-      const data = new FormData();
-      data.append('title', formData.title);
-      data.append('content', formData.content);
-      data.append('priority', formData.priority.toString());
-      data.append('duration', formData.duration.toString());
-      data.append('active', formData.isActive.toString());
-      data.append('category', formData.category);
-      data.append('startAt', formData.startAt);
-      data.append('endAt', formData.endAt);
-      
-      if (image) {
-        data.append('image', image);
+  useEffect(() => {
+    return () => {
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview);
       }
-
-      if (editingId) {
-        await axios.put(`http://localhost:5001/api/announcements/${editingId}`, data, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        });
-      } else {
-        await axios.post('http://localhost:5001/api/announcements', data, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        });
+      if (documentPreviewUrl) {
+        URL.revokeObjectURL(documentPreviewUrl);
       }
-
-      resetForm();
-      fetchAnnouncements();
-      setImagePreview(null);
-      alert(`Announcement ${editingId ? 'updated' : 'created'} successfully!`);
-    } catch (error) {
-      console.error('Error saving announcement:', error);
-      console.error('Error details:', error.response?.data);
-      alert(error.response?.data?.error || 'Error saving announcement. Check console for details.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this announcement?')) return;
-
-    try {
-      await axios.delete(`http://localhost:5001/api/announcements/${id}`);
-      fetchAnnouncements();
-    } catch (error) {
-      console.error('Error deleting announcement:', error);
-      alert('Error deleting announcement');
-    }
-  };
-
-  const handleEdit = (announcement) => {
-    setEditingId(announcement.id);
-    setFormData({
-      title: announcement.title,
-      content: announcement.content,
-      priority: announcement.priority,
-      duration: announcement.duration || 7,
-      isActive: announcement.isActive !== false,
-      category: announcement.category || '',
-      startAt: announcement.startAt ? new Date(announcement.startAt).toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16),
-      endAt: announcement.endAt ? new Date(announcement.endAt).toISOString().slice(0, 16) : (() => { const d = new Date(); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 16); })()
-    });
-    setImage(null);
-    setImagePreview(null);
-  };
+    };
+  }, [documentPreviewUrl, imagePreview]);
 
   const resetForm = () => {
     setEditingId(null);
@@ -216,1005 +245,1018 @@ const AdminPanel = () => {
       duration: 7,
       isActive: true,
       category: '',
-      startAt: new Date().toISOString().slice(0, 16),
-      endAt: (() => { const d = new Date(); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 16); })()
+      startAt: getDefaultStart(),
+      endAt: getDefaultEnd()
     });
     setImage(null);
     setImagePreview(null);
+    setDocumentFile(null);
+    if (documentPreviewUrl) {
+      URL.revokeObjectURL(documentPreviewUrl);
+      setDocumentPreviewUrl(null);
+    }
+    if (mediaInputRef.current) mediaInputRef.current.value = '';
+    if (documentInputRef.current) documentInputRef.current.value = '';
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('isAdmin');
-    localStorage.removeItem('userEmail');
-    navigate('/admin/login');
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setRequestError('');
+
+    try {
+      const payload = new FormData();
+      payload.append('title', formData.title);
+      payload.append('content', formData.content);
+      payload.append('priority', String(formData.priority));
+      payload.append('duration', String(formData.duration));
+      payload.append('active', String(formData.isActive));
+      payload.append('category', formData.category || '');
+      payload.append('startAt', formData.startAt);
+      payload.append('endAt', formData.endAt);
+
+      if (image) {
+        payload.append('image', image);
+      }
+
+      if (documentFile) {
+        payload.append('document', documentFile);
+      }
+
+      if (editingId) {
+        await apiClient.put(apiUrl(`/api/announcements/${editingId}`), payload, {
+          ...applyWorkspaceAuth({
+            headers: { 'Content-Type': 'multipart/form-data' }
+          })
+        });
+      } else {
+        await apiClient.post(apiUrl('/api/announcements'), payload, {
+          ...applyWorkspaceAuth({
+            headers: { 'Content-Type': 'multipart/form-data' }
+          })
+        });
+      }
+
+      await fetchAnnouncements();
+      resetForm();
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to save announcement.')) return;
+      console.error('Error saving announcement:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleImageChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setImage(file);
-      setImagePreview(URL.createObjectURL(file));
+  const handleDelete = async (id) => {
+    const accepted = window.confirm('Delete this announcement?');
+    if (!accepted) return;
+
+    try {
+      setRequestError('');
+      await apiClient.delete(apiUrl(`/api/announcements/${id}`), applyWorkspaceAuth());
+      await fetchAnnouncements();
+      if (editingId === id) {
+        resetForm();
+      }
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to delete announcement.')) return;
+      console.error('Error deleting announcement:', error);
+    }
+  };
+
+  const handleEdit = (announcement) => {
+    setEditingId(announcement.id);
+    setFormData({
+      title: announcement.title || '',
+      content: announcement.content || '',
+      priority: announcement.priority ?? 1,
+      duration: announcement.duration ?? 7,
+      isActive: announcement.isActive !== false,
+      category: announcement.category || '',
+      startAt: toInputDateTime(announcement.startAt),
+      endAt: toInputDateTime(announcement.endAt)
+    });
+    setImage(null);
+    setImagePreview(null);
+    setDocumentFile(null);
+    if (documentPreviewUrl) {
+      URL.revokeObjectURL(documentPreviewUrl);
+      setDocumentPreviewUrl(null);
+    }
+    if (mediaInputRef.current) mediaInputRef.current.value = '';
+    if (documentInputRef.current) documentInputRef.current.value = '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleImageChange = (event) => {
+    const file = event.target.files[0];
+
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
+
+    if (!file) {
+      setImage(null);
+      setImagePreview(null);
+      return;
+    }
+
+    setDocumentFile(null);
+    if (documentPreviewUrl) {
+      URL.revokeObjectURL(documentPreviewUrl);
+      setDocumentPreviewUrl(null);
+    }
+    if (documentInputRef.current) documentInputRef.current.value = '';
+    setImage(file);
+    setImagePreview(URL.createObjectURL(file));
+  };
+
+  const handleDocumentChange = (event) => {
+    const file = event.target.files[0];
+    if (documentPreviewUrl) {
+      URL.revokeObjectURL(documentPreviewUrl);
+      setDocumentPreviewUrl(null);
+    }
+
+    if (!file) {
+      setDocumentFile(null);
+      return;
+    }
+
+    const mime = String(file.type || '').toLowerCase();
+    if (mime.startsWith('image/') || mime.startsWith('video/')) {
+      setRequestError('Please use the Media Upload field for image or video files.');
+      setDocumentFile(null);
+      if (documentInputRef.current) documentInputRef.current.value = '';
+      return;
+    }
+
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
+    setDocumentFile(file);
+    setDocumentPreviewUrl(URL.createObjectURL(file));
+    setImage(null);
+    setImagePreview(null);
+    if (mediaInputRef.current) mediaInputRef.current.value = '';
+  };
+
+  const startLive = async () => {
+    const trimmed = liveLinkInput.trim();
+    if (!trimmed) {
+      setRequestError('Paste a live YouTube link first.');
+      return;
+    }
+
+    try {
+      setRequestError('');
+      await apiClient.post(apiUrl('/api/start'), { link: trimmed }, applyWorkspaceAuth());
+      setLiveStatus('ON');
+      setLiveLink(trimmed);
+      setLiveLinkInput('');
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to start live feed.')) return;
+      console.error('Error starting live:', error);
+    }
+  };
+
+  const stopLive = async () => {
+    try {
+      setRequestError('');
+      await apiClient.post(apiUrl('/api/stop'), {}, applyWorkspaceAuth());
+      setLiveStatus('OFF');
+      setLiveLink(null);
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to stop live feed.')) return;
+      console.error('Error stopping live:', error);
+    }
+  };
+
+  const addCategory = async () => {
+    const trimmed = newCategory.trim();
+    if (!trimmed) {
+      setRequestError('Enter a category name first.');
+      return;
+    }
+    if (categorySaving) return;
+
+    setCategorySaving(true);
+    setRequestError('');
+    try {
+      await apiClient.post(apiUrl('/api/categories'), { name: trimmed }, applyWorkspaceAuth());
+      setNewCategory('');
+      await fetchCategories();
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to create category.')) return;
+    } finally {
+      setCategorySaving(false);
+    }
+  };
+
+  const handleTopbarCategorySubmit = async (event) => {
+    event.preventDefault();
+    await addCategory();
+  };
+
+  const deleteCategory = async (id) => {
+    const accepted = window.confirm('Delete this category?');
+    if (!accepted) return false;
+
+    setCategoryDeleting(true);
+    setRequestError('');
+    try {
+      await apiClient.delete(apiUrl(`/api/categories/${id}`), applyWorkspaceAuth());
+      await fetchCategories();
+      if (deleteCategoryId === id) {
+        setDeleteCategoryId('');
+      }
+      return true;
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to delete category.')) return false;
+      console.error('Error deleting category:', error);
+      return false;
+    } finally {
+      setCategoryDeleting(false);
+    }
+  };
+
+  const handleTopbarCategoryDelete = async (event) => {
+    event.preventDefault();
+    if (!deleteCategoryId) {
+      setRequestError('Select a category to delete.');
+      return;
+    }
+    await deleteCategory(deleteCategoryId);
+  };
+
+  const toggleEmergency = async (announcement) => {
+    const nextPriority = announcement.priority === 0 ? 1 : 0;
+
+    try {
+      setRequestError('');
+      const payload = new FormData();
+      payload.append('priority', String(nextPriority));
+
+      await apiClient.put(apiUrl(`/api/announcements/${announcement.id}`), payload, {
+        ...applyWorkspaceAuth({
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
+      });
+
+      await fetchAnnouncements();
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to update emergency status.')) return;
+      console.error('Error changing emergency state:', error);
+    }
+  };
+
+  const createDisplayUser = async (event) => {
+    event.preventDefault();
+    const username = accessForm.username.trim().toLowerCase();
+    const password = accessForm.password.trim();
+    const category = accessForm.category.trim();
+
+    if (!username || !password || !category) {
+      setRequestError('Username, password, and category are required.');
+      return;
+    }
+
+    setAccessSaving(true);
+    setRequestError('');
+    try {
+      await apiClient.post(
+        apiUrl('/api/display-users'),
+        { username, password, category },
+        applyWorkspaceAuth()
+      );
+      setAccessForm({ username: '', password: '', category: '' });
+      await fetchDisplayUsers();
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to create display access user.')) return;
+    } finally {
+      setAccessSaving(false);
+    }
+  };
+
+  const deleteDisplayUser = async (id) => {
+    const accepted = window.confirm('Delete this display access user?');
+    if (!accepted) return;
+
+    try {
+      setRequestError('');
+      await apiClient.delete(apiUrl(`/api/display-users/${id}`), applyWorkspaceAuth());
+      await fetchDisplayUsers();
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to delete display access user.')) return;
+    }
+  };
+
+  const createStaffUser = async (event) => {
+    event.preventDefault();
+    const username = staffAccessForm.username.trim().toLowerCase();
+    const password = staffAccessForm.password.trim();
+
+    if (!username || !password) {
+      setRequestError('Username and password are required.');
+      return;
+    }
+
+    setStaffAccessSaving(true);
+    setRequestError('');
+    try {
+      await apiClient.post(apiUrl('/api/staff-users'), { username, password }, applyWorkspaceAuth());
+      setStaffAccessForm({ username: '', password: '' });
+      await fetchStaffUsers();
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to create staff access user.')) return;
+    } finally {
+      setStaffAccessSaving(false);
+    }
+  };
+
+  const deleteStaffUser = async (id) => {
+    const accepted = window.confirm('Delete this staff access user?');
+    if (!accepted) return;
+
+    try {
+      setRequestError('');
+      await apiClient.delete(apiUrl(`/api/staff-users/${id}`), applyWorkspaceAuth());
+      await fetchStaffUsers();
+    } catch (error) {
+      if (handleRequestError(error, 'Failed to delete staff access user.')) return;
+    }
+  };
+
+  const handleLogout = async () => {
+    const logoutEndpoint = isStaffWorkspace ? '/api/staff-auth/logout' : '/api/auth/logout';
+    try {
+      await apiClient.post(apiUrl(logoutEndpoint), {}, applyWorkspaceAuth());
+    } catch (error) {
+      console.error('Error logging out:', error);
+    } finally {
+      clearWorkspaceSession();
+      navigate(workspaceLoginRoute);
     }
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      width: '100vw',
-      backgroundColor: '#0f172a',
-      background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
-      margin: 0,
-      padding: 0,
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      overflow: 'auto'
-    }}>
-      {/* Header */}
-      <div style={{
-        backgroundColor: 'rgba(15, 23, 42, 0.8)',
-        backdropFilter: 'blur(10px)',
-        color: 'white',
-        padding: '20px',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-        borderBottom: '1px solid rgba(255,255,255,0.1)'
-      }}>
-        <div style={{
-          maxWidth: '1400px',
-          margin: '0 auto',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: '2rem', fontWeight: '700' }}>
-              Admin Panel
-            </h1>
-            <p style={{ margin: '8px 0 0', opacity: 0.8, fontSize: '1rem' }}>
-              Manage Announcements & Content
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
-            <span style={{
-              padding: '8px 16px',
-              backgroundColor: 'rgba(96, 165, 250, 0.2)',
-              borderRadius: '8px',
-              fontSize: '0.9rem'
-            }}>
-              Admin
+    <div className="app-shell app-shell--admin fade-up">
+      <header className={`topbar topbar--admin card${isStaffWorkspace ? ' topbar--staff' : ''}`}>
+        <div className="topbar__brand topbar__brand--admin topbar-admin__intro">
+          <p className="topbar__eyebrow">{isStaffWorkspace ? 'Staff Workspace' : 'Control Workspace'}</p>
+          <h1 className="topbar__title">
+            {isStaffWorkspace
+              ? 'Digital Notice Board Staff Dashboard'
+              : 'Digital Notice Board Admin'}
+          </h1>
+          <p className="topbar__subtitle">
+            {isStaffWorkspace
+              ? 'Publish announcements and control live media with staff permissions.'
+              : 'Publish updates, control live media, and manage secure display access.'}
+          </p>
+          <div className="topbar-admin__kpis">
+            <span className="pill pill--info">Total: {summary.total}</span>
+            <span className="pill pill--success">Active: {summary.active}</span>
+            <span className="pill pill--danger">
+              Emergency: {summary.emergency}
             </span>
-            <button
-              onClick={() => navigate('/admin/history')}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: 'rgba(255,255,255,0.1)',
-                color: 'white',
-                border: '1px solid rgba(255,255,255,0.2)',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: '500',
-                transition: 'all 0.3s',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px'
-              }}
-              onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.2)'}
-              onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.1)'}
-            >
-              Announcement History
-            </button>
-            <button
-              onClick={() => navigate('/')}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: 'rgba(255,255,255,0.1)',
-                color: 'white',
-                border: '1px solid rgba(255,255,255,0.2)',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: '500',
-                transition: 'all 0.3s',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px'
-              }}
-              onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.2)'}
-              onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.1)'}
-            >
-              View Display
-            </button>
-            <button
-              onClick={handleLogout}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: '#dc2626',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: '500',
-                transition: 'all 0.3s',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px'
-              }}
-              onMouseEnter={e => e.currentTarget.style.backgroundColor = '#b91c1c'}
-              onMouseLeave={e => e.currentTarget.style.backgroundColor = '#dc2626'}
-            >
-              Logout
-            </button>
           </div>
+          {isAdminWorkspace ? (
+            <div className="topbar-admin__status-wrap">
+              <TopbarStatus className="topbar-status--admin" />
+            </div>
+          ) : null}
         </div>
-      </div>
 
-      <div style={{ 
-        maxWidth: '1400px', 
-        margin: '0 auto', 
-        padding: '30px 20px',
-        minHeight: 'calc(100vh - 80px)'
-      }}>
-        {/* Form Card */}
-        <div style={{
-          backgroundColor: 'rgba(30, 41, 59, 0.7)',
-          backdropFilter: 'blur(10px)',
-          padding: '40px',
-          borderRadius: '20px',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.3)',
-          marginBottom: '40px',
-          border: '1px solid rgba(255,255,255,0.1)'
-        }}>
-          <h2 style={{ 
-            marginTop: 0, 
-            color: '#ffffff', 
-            fontSize: '1.8rem',
-            marginBottom: '30px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px'
-          }}>
-            {editingId ? 'Edit Announcement' : 'Create New Announcement'}
-          </h2>
-
-          <div style={{ marginBottom: '20px', display: 'flex', gap: '12px', alignItems: 'center' }}>
-            <input
-              type="text"
-              placeholder="Paste YouTube Link to broadcast"
-              value={liveLinkInput}
-              onChange={(e) => setLiveLinkInput(e.target.value)}
-              style={{
-                flex: 1,
-                padding: '14px',
-                borderRadius: '10px',
-                border: '1px solid #334155',
-                backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                color: 'white',
-                fontSize: '0.95rem'
-              }}
-            />
-            <button
-              type="button"
-              onClick={startLive}
-              style={{ padding: '12px 18px', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '10px', cursor: 'pointer' }}
-            >
-              Start Live
-            </button>
-            <button
-              type="button"
-              onClick={stopLive}
-              style={{ padding: '12px 18px', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '10px', cursor: 'pointer' }}
-            >
-              Stop Live
-            </button>
-            <div style={{ color: '#94a3b8', marginLeft: '10px', fontSize: '0.95rem' }}>
-              Status: {liveStatus}
-            </div>
+        {isStaffWorkspace ? (
+          <div className="topbar-admin__status-column">
+            <TopbarStatus className="topbar-status--admin" />
           </div>
+        ) : null}
 
-          {/* Category Management */}
-          <div style={{
-            backgroundColor: 'rgba(30, 41, 59, 0.7)',
-            padding: '25px',
-            borderRadius: '15px',
-            marginBottom: '20px',
-            border: '1px solid rgba(255,255,255,0.1)'
-          }}>
-            <h3 style={{ marginTop: 0, color: '#e2e8f0', marginBottom: '15px' }}>
-              Manage Categories
-            </h3>
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
-              <input
-                type="text"
-                placeholder="New category name"
-                value={newCategory}
-                onChange={(e) => setNewCategory(e.target.value)}
-                style={{
-                  flex: 1,
-                  padding: '10px',
-                  borderRadius: '8px',
-                  border: '1px solid #334155',
-                  backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                  color: 'white',
-                  fontSize: '0.95rem'
-                }}
-              />
-              <button
-                type="button"
-                onClick={addCategory}
-                style={{
-                  padding: '10px 18px',
-                  backgroundColor: '#3b82f6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontWeight: '600'
-                }}
-              >
-                Add
-              </button>
-            </div>
-            {categories.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                {categories.map((cat) => (
-                  <div
-                    key={cat.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      backgroundColor: 'rgba(59, 130, 246, 0.2)',
-                      color: '#60a5fa',
-                      padding: '8px 12px',
-                      borderRadius: '20px',
-                      fontSize: '0.9rem',
-                      fontWeight: '500'
-                    }}
-                  >
-                    {cat.name}
+        <div className="topbar__workspace topbar-admin__center">
+          <div className="topbar__control-row">
+            <div className="topbar__actions topbar__actions--admin topbar-admin__actions">
+              {isAdminWorkspace ? (
+                <>
+                  <div className="topbar-admin__category">
+                    <div className="topbar-admin__category-head">
+                      <span className="topbar__mini-heading">Category controls</span>
+                    </div>
+                    <form className="topbar-category-form" onSubmit={handleTopbarCategorySubmit}>
+                      <input
+                        type="text"
+                        value={newCategory}
+                        onChange={(event) => setNewCategory(event.target.value)}
+                        placeholder="New category"
+                        aria-label="New category name"
+                      />
+                      <button className="btn btn--primary btn--tiny" type="submit" disabled={categorySaving}>
+                        {categorySaving ? 'Adding...' : 'Add'}
+                      </button>
+                    </form>
+                    <form className="topbar-category-form" onSubmit={handleTopbarCategoryDelete}>
+                      <select
+                        value={deleteCategoryId}
+                        onChange={(event) => setDeleteCategoryId(event.target.value)}
+                        aria-label="Select category to delete"
+                        disabled={categories.length === 0 || categoryDeleting}
+                      >
+                        <option value="">
+                          {categories.length === 0 ? 'No categories' : 'Select to delete'}
+                        </option>
+                        {categories.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="btn btn--danger btn--tiny"
+                        type="submit"
+                        disabled={!deleteCategoryId || categoryDeleting}
+                      >
+                        {categoryDeleting ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="topbar-admin__divider" />
+                </>
+              ) : null}
+
+              {isAdminWorkspace ? (
+                <>
+                  <div className="topbar-admin__action-row">
+                    <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                      {isDark ? 'Light Mode' : 'Dark Mode'}
+                    </button>
                     <button
+                      className="btn btn--ghost btn--tiny"
                       type="button"
-                      onClick={() => deleteCategory(cat.id)}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: '#ef4444',
-                        cursor: 'pointer',
-                        fontSize: '1rem',
-                        padding: 0,
-                        marginLeft: '5px'
-                      }}
+                      onClick={() => setShowAccessManager((value) => !value)}
                     >
-                      X
+                      {showAccessManager ? 'Hide Credentials' : 'Credentials'}
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  <div className="topbar-admin__action-row">
+                    <button
+                      className="btn btn--ghost"
+                      type="button"
+                      onClick={() => navigate(workspaceHistoryRoute)}
+                    >
+                      View History
+                    </button>
+                    <button
+                      className="btn btn--ghost"
+                      type="button"
+                      onClick={() => navigate('/display/login')}
+                    >
+                      Open Display
+                    </button>
+                  </div>
+
+                  <button
+                    className="btn btn--danger topbar__logout"
+                    type="button"
+                    onClick={handleLogout}
+                  >
+                    Logout
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="topbar-admin__action-row topbar-admin__action-row--staff-main">
+                    <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                      {isDark ? 'Light Mode' : 'Dark Mode'}
+                    </button>
+                    <button
+                      className="btn btn--ghost btn--tiny"
+                      type="button"
+                      onClick={() => navigate(workspaceHistoryRoute)}
+                    >
+                      View History
+                    </button>
+                    <button
+                      className="btn btn--ghost btn--tiny"
+                      type="button"
+                      onClick={() => navigate('/display/login')}
+                    >
+                      Open Display
+                    </button>
+                  </div>
+
+                  <button
+                    className="btn btn--danger topbar__logout topbar__logout--wide"
+                    type="button"
+                    onClick={handleLogout}
+                  >
+                    Logout
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {requestError ? <div className="auth-error">{requestError}</div> : null}
+
+      {showAccessManager && isAdminWorkspace ? (
+        <section className="card section fade-up-delay">
+          <div className="section-title">
+            <div className="section-title__text">
+              <h2>{credentialsSection === 'display' ? 'Display Access Credentials' : 'Staff Access Credentials'}</h2>
+              <p>
+                {credentialsSection === 'display'
+                  ? 'Create username/password accounts and assign one category per credential.'
+                  : 'Create staff credentials for staff dashboard access.'}
+              </p>
+            </div>
+            <div className="inline-actions">
+              <button
+                className={credentialsSection === 'display' ? 'btn btn--primary btn--tiny' : 'btn btn--ghost btn--tiny'}
+                type="button"
+                onClick={() => setCredentialsSection('display')}
+              >
+                Display Access
+              </button>
+              <button
+                className={credentialsSection === 'staff' ? 'btn btn--primary btn--tiny' : 'btn btn--ghost btn--tiny'}
+                type="button"
+                onClick={() => setCredentialsSection('staff')}
+              >
+                Staff Access
+              </button>
+              <span className="pill pill--info">
+                {credentialsSection === 'display' ? displayUsers.length : staffUsers.length} users
+              </span>
+            </div>
           </div>
 
-          <form onSubmit={handleSubmit}>
-            <div style={{ marginBottom: '25px' }}>
-              <label style={{ 
-                display: 'block', 
-                marginBottom: '12px', 
-                fontWeight: '600',
-                color: '#e2e8f0',
-                fontSize: '1rem'
-              }}>
-                Category
-              </label>
+          {credentialsSection === 'display' ? (
+            <>
+              <form className="access-user-form" onSubmit={createDisplayUser}>
+                <div className="field">
+                  <label htmlFor="display-user-username">Username</label>
+                  <input
+                    id="display-user-username"
+                    type="text"
+                    value={accessForm.username}
+                    onChange={(event) =>
+                      setAccessForm((prev) => ({ ...prev, username: event.target.value }))
+                    }
+                    placeholder="display_user"
+                    required
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="display-user-password">Password</label>
+                  <input
+                    id="display-user-password"
+                    type="text"
+                    value={accessForm.password}
+                    onChange={(event) =>
+                      setAccessForm((prev) => ({ ...prev, password: event.target.value }))
+                    }
+                    placeholder="minimum 6 characters"
+                    required
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="display-user-category">Category</label>
+                  <select
+                    id="display-user-category"
+                    value={accessForm.category}
+                    onChange={(event) =>
+                      setAccessForm((prev) => ({ ...prev, category: event.target.value }))
+                    }
+                    required
+                  >
+                    <option value="">Select category</option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  className="btn btn--primary"
+                  type="submit"
+                  disabled={accessSaving || categories.length === 0}
+                >
+                  {accessSaving ? 'Creating...' : 'Create'}
+                </button>
+              </form>
+              {categories.length === 0 ? (
+                <p className="file-help">Create at least one category before creating credentials.</p>
+              ) : null}
+
+              {displayUsers.length === 0 ? (
+                <div className="empty-state">No display access users yet.</div>
+              ) : (
+                <div className="access-user-grid">
+                  {displayUsers.map((user) => (
+                    <article key={user.id} className="access-user-card">
+                      <p className="access-user-card__name">{user.username}</p>
+                      <p className="access-user-card__meta">
+                        Category:{' '}
+                        {user.categoryName ||
+                          categories.find((category) => category.id === user.categoryId)?.name ||
+                          'Unknown'}
+                      </p>
+                      <p className="access-user-card__meta">
+                        Created: {new Date(user.createdAt || Date.now()).toLocaleString()}
+                      </p>
+                      <button
+                        className="btn btn--danger btn--tiny"
+                        type="button"
+                        onClick={() => deleteDisplayUser(user.id)}
+                      >
+                        Delete
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <form className="access-user-form access-user-form--staff" onSubmit={createStaffUser}>
+                <div className="field">
+                  <label htmlFor="staff-user-username">Username</label>
+                  <input
+                    id="staff-user-username"
+                    type="text"
+                    value={staffAccessForm.username}
+                    onChange={(event) =>
+                      setStaffAccessForm((prev) => ({ ...prev, username: event.target.value }))
+                    }
+                    placeholder="staff_user"
+                    required
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="staff-user-password">Password</label>
+                  <input
+                    id="staff-user-password"
+                    type="text"
+                    value={staffAccessForm.password}
+                    onChange={(event) =>
+                      setStaffAccessForm((prev) => ({ ...prev, password: event.target.value }))
+                    }
+                    placeholder="minimum 6 characters"
+                    required
+                  />
+                </div>
+
+                <button className="btn btn--primary" type="submit" disabled={staffAccessSaving}>
+                  {staffAccessSaving ? 'Creating...' : 'Create'}
+                </button>
+              </form>
+
+              {staffUsers.length === 0 ? (
+                <div className="empty-state">No staff access users yet.</div>
+              ) : (
+                <div className="access-user-grid">
+                  {staffUsers.map((user) => (
+                    <article key={user.id} className="access-user-card">
+                      <p className="access-user-card__name">{user.username}</p>
+                      <p className="access-user-card__meta">Role: Staff Dashboard</p>
+                      <p className="access-user-card__meta">
+                        Created: {new Date(user.createdAt || Date.now()).toLocaleString()}
+                      </p>
+                      <button
+                        className="btn btn--danger btn--tiny"
+                        type="button"
+                        onClick={() => deleteStaffUser(user.id)}
+                      >
+                        Delete
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      ) : null}
+
+      <div className="grid-2">
+        <section className="card section fade-up-delay">
+          <div className="section-title">
+            <div className="section-title__text">
+              <h2>Live Broadcast</h2>
+              <p>Start or stop the external live stream shown on public display.</p>
+            </div>
+            <span className={liveStatus === 'ON' ? 'pill pill--success' : 'pill pill--danger'}>
+              <span className="badge-dot" />
+              {liveStatus}
+            </span>
+          </div>
+
+          <div className="field">
+            <label htmlFor="live-link">YouTube Live Link</label>
+            <input
+              id="live-link"
+              type="text"
+              value={liveLinkInput}
+              onChange={(event) => setLiveLinkInput(event.target.value)}
+              placeholder="https://www.youtube.com/watch?v=..."
+            />
+          </div>
+
+          <div className="inline-actions">
+            <button className="btn btn--success" type="button" onClick={startLive}>
+              Start Live
+            </button>
+            <button className="btn btn--danger" type="button" onClick={stopLive}>
+              Stop Live
+            </button>
+          </div>
+
+          {liveLink ? (
+            <p className="file-help">
+              Current live link:{' '}
+              <a href={liveLink} target="_blank" rel="noreferrer">
+                {liveLink}
+              </a>
+            </p>
+          ) : (
+            <p className="file-help">No live link is currently active.</p>
+          )}
+
+          <div className="section-title section-title--spaced">
+            <div className="section-title__text">
+              <h2>Category Overview</h2>
+              <p>Manage categories from top controls. Active categories are listed here.</p>
+            </div>
+          </div>
+
+          {categories.length === 0 ? (
+            <div className="empty-state empty-state--compact">No categories yet. Add one from the top bar.</div>
+          ) : (
+            <div className="category-chips">
+              {categories.map((category) => (
+                <span className="category-chip category-chip--static" key={category.id}>
+                  {category.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="card section fade-up-delay">
+          <div className="section-title">
+            <div className="section-title__text">
+              <h2>{editingId ? 'Edit Announcement' : 'Create Announcement'}</h2>
+              <p>Write the message, attach media, and schedule visibility window.</p>
+            </div>
+            {editingId ? <span className="pill pill--info">Editing mode</span> : null}
+          </div>
+
+          <form className="stack" onSubmit={handleSubmit}>
+            <div className="field">
+              <label htmlFor="announcement-category">Category</label>
               <select
+                id="announcement-category"
                 value={formData.category}
-                onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                  border: '2px solid #334155',
-                  borderRadius: '12px',
-                  fontSize: '16px',
-                  color: '#ffffff',
-                  boxSizing: 'border-box',
-                  appearance: 'none'
-                }}
+                onChange={(event) => setFormData({ ...formData, category: event.target.value })}
               >
-                <option value="">Select category (optional)</option>
-                {categories.map((cat) => (
-                  <option key={cat.id} value={cat.id} style={{ backgroundColor: '#1e293b' }}>
-                    {cat.name}
+                <option value="">All categories (global)</option>
+                {categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
                   </option>
                 ))}
               </select>
             </div>
 
-            <div style={{ marginBottom: '25px' }}>
-              <label style={{ 
-                display: 'block', 
-                marginBottom: '12px', 
-                fontWeight: '600',
-                color: '#e2e8f0',
-                fontSize: '1rem'
-              }}>
-                Title *
-              </label>
+            <div className="field">
+              <label htmlFor="announcement-title">Title</label>
               <input
+                id="announcement-title"
                 type="text"
-                required
                 value={formData.title}
-                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                  border: '2px solid #334155',
-                  borderRadius: '12px',
-                  fontSize: '16px',
-                  color: '#ffffff',
-                  boxSizing: 'border-box',
-                  transition: 'all 0.3s'
-                }}
-                placeholder="Enter announcement title"
-                onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-                onBlur={(e) => e.target.style.borderColor = '#334155'}
-              />
-            </div>
-
-            <div style={{ marginBottom: '25px' }}>
-              <label style={{ 
-                display: 'block', 
-                marginBottom: '12px', 
-                fontWeight: '600',
-                color: '#e2e8f0',
-                fontSize: '1rem'
-              }}>
-                Content *
-              </label>
-              <textarea
+                onChange={(event) => setFormData({ ...formData, title: event.target.value })}
+                placeholder="Exam timetable updated for semester 2"
                 required
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="announcement-content">Content</label>
+              <textarea
+                id="announcement-content"
                 value={formData.content}
-                onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-                rows="5"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                  border: '2px solid #334155',
-                  borderRadius: '12px',
-                  fontSize: '16px',
-                  color: '#ffffff',
-                  boxSizing: 'border-box',
-                  resize: 'vertical',
-                  transition: 'all 0.3s'
-                }}
-                placeholder="Enter announcement content"
-                onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-                onBlur={(e) => e.target.style.borderColor = '#334155'}
+                onChange={(event) => setFormData({ ...formData, content: event.target.value })}
+                placeholder="Add detailed message for students and staff"
+                required
               />
             </div>
 
-            {/* Image Upload Field */}
-            <div style={{ marginBottom: '25px' }}>
-              <label style={{ 
-                display: 'block', 
-                marginBottom: '12px', 
-                fontWeight: '600',
-                color: '#e2e8f0',
-                fontSize: '1rem'
-              }}>
-                Upload Image (Optional)
-              </label>
+            <div className="field">
+              <label htmlFor="announcement-media">Media Upload (Image/Video)</label>
               <input
+                id="announcement-media"
                 type="file"
-                accept="image/*"
+                accept={MEDIA_ACCEPT}
                 onChange={handleImageChange}
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                  border: '2px dashed #475569',
-                  borderRadius: '12px',
-                  fontSize: '16px',
-                  color: '#94a3b8',
-                  boxSizing: 'border-box',
-                  cursor: 'pointer',
-                  transition: 'all 0.3s'
-                }}
-                onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-                onBlur={(e) => e.target.style.borderColor = '#475569'}
+                ref={mediaInputRef}
               />
-              {imagePreview && (
-                <div style={{ marginTop: '15px' }}>
-                  <img 
-                    src={imagePreview} 
-                    alt="Preview" 
-                    style={{ 
-                      maxWidth: '300px', 
-                      maxHeight: '200px', 
-                      borderRadius: '12px',
-                      border: '2px solid #475569'
-                    }} 
-                  />
-                  <p style={{ color: '#94a3b8', fontSize: '0.9rem', marginTop: '8px' }}>
-                    Image will be displayed on the notice board
-                  </p>
-                </div>
-              )}
+              <p className="file-help">Supported video: mp4, webm, ogg, mov, m4v, avi, mkv.</p>
             </div>
 
-            <div style={{ 
-              display: 'grid', 
-              gridTemplateColumns: '1fr 1fr', 
-              gap: '25px', 
-              marginBottom: '25px' 
-            }}>
-              <div>
-                <label style={{ 
-                  display: 'block', 
-                  marginBottom: '12px', 
-                  fontWeight: '600',
-                  color: '#e2e8f0',
-                  fontSize: '1rem'
-                }}>
-                  Priority
-                </label>
+            <div className="field">
+              <label htmlFor="announcement-document">Document Upload (PDF/Word/PPT/Etc)</label>
+              <input
+                id="announcement-document"
+                type="file"
+                accept={DOCUMENT_ACCEPT}
+                onChange={handleDocumentChange}
+                ref={documentInputRef}
+              />
+              <p className="file-help">
+                All document formats are accepted. The board will attempt inline preview and fall back to open/download when browser limits apply.
+              </p>
+            </div>
+
+            {imagePreview ? (
+              <AttachmentPreview
+                fileUrl={imagePreview}
+                fileName={image && image.name}
+                typeHint={image && image.type}
+                fileSizeBytes={image && image.size}
+                title="Media preview"
+              />
+            ) : null}
+
+            {documentFile && documentPreviewUrl ? (
+              <DocumentAttachment
+                fileUrl={documentPreviewUrl}
+                fileName={documentFile.name}
+                mimeType={documentFile.type}
+                fileSizeBytes={documentFile.size}
+                title="Document preview"
+                className="document-preview--full"
+              />
+            ) : null}
+
+            <div className="grid-2-equal">
+              <div className="field">
+                <label htmlFor="announcement-priority">Priority</label>
                 <select
+                  id="announcement-priority"
                   value={formData.priority}
-                  onChange={(e) => setFormData({ ...formData, priority: parseInt(e.target.value) })}
-                  style={{
-                    width: '100%',
-                    padding: '16px',
-                    backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                    border: '2px solid #334155',
-                    borderRadius: '12px',
-                    fontSize: '16px',
-                    color: '#ffffff',
-                    boxSizing: 'border-box',
-                    transition: 'all 0.3s',
-                    appearance: 'none'
-                  }}
-                  onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-                  onBlur={(e) => e.target.style.borderColor = '#334155'}
+                  onChange={(event) =>
+                    setFormData({ ...formData, priority: Number.parseInt(event.target.value, 10) })
+                  }
                 >
-                  <option value={0} style={{ backgroundColor: '#1e293b' }}>
-                    Emergency (Stays until removed)
-                  </option>
-                  {[1, 2, 3, 4, 5].map(num => (
-                    <option key={num} value={num} style={{ backgroundColor: '#1e293b' }}>
-                      {num === 1 ? 'Priority 1 (Highest)' : 
-                       num === 2 ? 'Priority 2' :
-                       num === 3 ? 'Priority 3' :
-                       num === 4 ? 'Priority 4' :
-                       'Priority 5 (Lowest)'}
-                    </option>
-                  ))}
+                  <option value={0}>Emergency (Top)</option>
+                  <option value={1}>Priority 1 (High)</option>
+                  <option value={2}>Priority 2 (Normal)</option>
+                  <option value={3}>Priority 3 (Low)</option>
                 </select>
               </div>
 
-              <div>
-                <label style={{ 
-                  display: 'block', 
-                  marginBottom: '12px', 
-                  fontWeight: '600',
-                  color: '#e2e8f0',
-                  fontSize: '1rem'
-                }}>
-                  Duration (days)
-                </label>
+              <div className="field">
+                <label htmlFor="announcement-duration">Duration (days)</label>
                 <input
+                  id="announcement-duration"
                   type="number"
                   min="1"
                   value={formData.duration}
-                  onChange={(e) => setFormData({ ...formData, duration: parseInt(e.target.value) })}
-                  style={{
-                    width: '100%',
-                    padding: '16px',
-                    backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                    border: '2px solid #334155',
-                    borderRadius: '12px',
-                    fontSize: '16px',
-                    color: '#ffffff',
-                    boxSizing: 'border-box',
-                    transition: 'all 0.3s'
-                  }}
-                  onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-                  onBlur={(e) => e.target.style.borderColor = '#334155'}
+                  onChange={(event) =>
+                    setFormData({ ...formData, duration: Number.parseInt(event.target.value, 10) || 1 })
+                  }
                 />
               </div>
             </div>
 
-            {/* Start and End DateTime Pickers */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '25px' }}>
-              <div>
-                <label style={{
-                  display: 'block',
-                  marginBottom: '12px',
-                  fontWeight: '600',
-                  color: '#e2e8f0',
-                  fontSize: '1rem'
-                }}>
-                  Start Date & Time
-                </label>
+            <div className="grid-2-equal">
+              <div className="field">
+                <label htmlFor="announcement-start">Start Date & Time</label>
                 <input
+                  id="announcement-start"
                   type="datetime-local"
                   value={formData.startAt}
-                  onChange={e => setFormData({ ...formData, startAt: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '16px',
-                    backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                    border: '2px solid #334155',
-                    borderRadius: '12px',
-                    fontSize: '16px',
-                    color: '#ffffff',
-                    boxSizing: 'border-box',
-                    transition: 'all 0.3s'
-                  }}
-                  onFocus={e => e.target.style.borderColor = '#3b82f6'}
-                  onBlur={e => e.target.style.borderColor = '#334155'}
+                  onChange={(event) => setFormData({ ...formData, startAt: event.target.value })}
                 />
               </div>
-              <div>
-                <label style={{
-                  display: 'block',
-                  marginBottom: '12px',
-                  fontWeight: '600',
-                  color: '#e2e8f0',
-                  fontSize: '1rem'
-                }}>
-                  End Date & Time
-                </label>
+
+              <div className="field">
+                <label htmlFor="announcement-end">End Date & Time</label>
                 <input
+                  id="announcement-end"
                   type="datetime-local"
                   value={formData.endAt}
-                  onChange={e => setFormData({ ...formData, endAt: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '16px',
-                    backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                    border: '2px solid #334155',
-                    borderRadius: '12px',
-                    fontSize: '16px',
-                    color: '#ffffff',
-                    boxSizing: 'border-box',
-                    transition: 'all 0.3s'
-                  }}
-                  onFocus={e => e.target.style.borderColor = '#3b82f6'}
-                  onBlur={e => e.target.style.borderColor = '#334155'}
+                  onChange={(event) => setFormData({ ...formData, endAt: event.target.value })}
                 />
               </div>
             </div>
 
-            <div style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              marginBottom: '35px',
-              padding: '20px',
-              backgroundColor: 'rgba(15, 23, 42, 0.5)',
-              borderRadius: '12px',
-              border: '1px solid #334155'
-            }}>
+            <label className="checkbox-row" htmlFor="announcement-active">
               <input
+                id="announcement-active"
                 type="checkbox"
-                id="isActive"
                 checked={formData.isActive}
-                onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
-                style={{ 
-                  marginRight: '15px',
-                  width: '20px',
-                  height: '20px',
-                  cursor: 'pointer'
-                }}
+                onChange={(event) => setFormData({ ...formData, isActive: event.target.checked })}
               />
-              <label htmlFor="isActive" style={{ 
-                cursor: 'pointer',
-                color: '#e2e8f0',
-                fontSize: '1rem',
-                fontWeight: '500'
-              }}>
-                <span style={{ color: formData.isActive ? '#10b981' : '#94a3b8' }}>
-                  {formData.isActive ? 'Active' : 'Inactive'}
-                </span> - Visible on display board
-              </label>
-            </div>
+              <span>{formData.isActive ? 'Active and visible on board' : 'Inactive and hidden from board'}</span>
+            </label>
 
-            <div style={{ display: 'flex', gap: '20px' }}>
-              <button
-                type="submit"
-                disabled={loading}
-                style={{
-                  padding: '18px 36px',
-                  background: loading 
-                    ? '#475569' 
-                    : 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '12px',
-                  fontSize: '1.1rem',
-                  fontWeight: '700',
-                  cursor: loading ? 'not-allowed' : 'pointer',
-                  opacity: loading ? 0.7 : 1,
-                  transition: 'all 0.3s',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                  flex: 1,
-                  justifyContent: 'center'
-                }}
-                onMouseEnter={e => !loading && (e.target.style.transform = 'translateY(-3px)')}
-                onMouseLeave={e => !loading && (e.target.style.transform = 'translateY(0)')}
-              >
-                {loading ? (
-                  <>
-                    <span style={{ animation: 'spin 1s linear infinite' }}></span>
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    {editingId ? 'Update Announcement' : 'Create Announcement'}
-                  </>
-                )}
+            <div className="form-footer">
+              <button className="btn btn--primary" type="submit" disabled={loading}>
+                {loading ? 'Saving...' : editingId ? 'Update Announcement' : 'Create Announcement'}
               </button>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  style={{
-                    padding: '18px 36px',
-                    backgroundColor: 'rgba(255,255,255,0.1)',
-                    color: '#94a3b8',
-                    border: '1px solid #475569',
-                    borderRadius: '12px',
-                    fontSize: '1.1rem',
-                    fontWeight: '600',
-                    cursor: 'pointer',
-                    transition: 'all 0.3s',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px'
-                  }}
-                  onMouseEnter={e => {
-                    e.target.style.color = '#e2e8f0';
-                    e.target.style.borderColor = '#64748b';
-                    e.target.style.transform = 'translateY(-3px)';
-                  }}
-                  onMouseLeave={e => {
-                    e.target.style.color = '#94a3b8';
-                    e.target.style.borderColor = '#475569';
-                    e.target.style.transform = 'translateY(0)';
-                  }}
-                >
-                  <span>❌</span>
-                  Cancel
+              {editingId ? (
+                <button className="btn btn--ghost" type="button" onClick={resetForm}>
+                  Cancel Editing
                 </button>
-              )}
+              ) : null}
             </div>
           </form>
-        </div>
-
-        {/* Announcements List */}
-        <div style={{
-          backgroundColor: 'rgba(30, 41, 59, 0.7)',
-          backdropFilter: 'blur(10px)',
-          padding: '40px',
-          borderRadius: '20px',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.3)',
-          border: '1px solid rgba(255,255,255,0.1)'
-        }}>
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center',
-            marginBottom: '30px'
-          }}>
-            <h2 style={{ 
-              margin: 0, 
-              color: '#ffffff', 
-              fontSize: '1.8rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px'
-            }}>
-              All Announcements <span style={{
-                backgroundColor: '#3b82f6',
-                color: 'white',
-                padding: '6px 14px',
-                borderRadius: '20px',
-                fontSize: '0.9rem',
-                fontWeight: '600'
-              }}>{announcements.length}</span>
-            </h2>
-            
-            {announcements.length > 0 && (
-              <div style={{ color: '#94a3b8', fontSize: '0.95rem' }}>
-                Click on any announcement to edit
-              </div>
-            )}
-          </div>
-
-          {announcements.length === 0 ? (
-            <div style={{ 
-              textAlign: 'center', 
-              padding: '60px 40px',
-              border: '2px dashed #475569',
-              borderRadius: '15px',
-              backgroundColor: 'rgba(15, 23, 42, 0.3)'
-            }}>
-              <div style={{ fontSize: '4rem', marginBottom: '20px', opacity: 0.5 }}>
-                📭
-              </div>
-              <h3 style={{ color: '#e2e8f0', marginBottom: '15px' }}>
-                No Announcements Yet
-              </h3>
-              <p style={{ color: '#94a3b8', maxWidth: '500px', margin: '0 auto' }}>
-                Create your first announcement using the form above. 
-                It will appear here and on the public display board.
-              </p>
-            </div>
-          ) : (
-            <div style={{ 
-              display: 'grid', 
-              gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', 
-              gap: '25px'
-            }}>
-              {announcements.map((ann) => (
-                <div
-                  key={ann.id}
-                  style={{
-                    backgroundColor: 'rgba(15, 23, 42, 0.5)',
-                    padding: '25px',
-                    borderRadius: '15px',
-                    border: `2px solid ${ann.isActive !== false ? '#334155' : '#475569'}`,
-                    transition: 'all 0.3s',
-                    position: 'relative',
-                    cursor: 'pointer'
-                  }}
-                  onClick={() => handleEdit(ann)}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.transform = 'translateY(-8px)';
-                    e.currentTarget.style.borderColor = ann.isActive !== false ? '#3b82f6' : '#94a3b8';
-                    e.currentTarget.style.boxShadow = '0 15px 30px rgba(0,0,0,0.2)';
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.transform = 'translateY(0)';
-                    e.currentTarget.style.borderColor = ann.isActive !== false ? '#334155' : '#475569';
-                    e.currentTarget.style.boxShadow = 'none';
-                  }}
-                >
-                  {/* Emergency Button */}
-                  <button
-                    type="button"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const newPriority = ann.priority === 0 ? 1 : 0;
-                      const form = new FormData();
-                      form.append('priority', newPriority);
-                      form.append('title', ann.title);
-                      form.append('content', ann.content);
-                      form.append('duration', ann.duration);
-                      form.append('isActive', ann.isActive);
-                      form.append('category', ann.category || '');
-                      form.append('startAt', ann.startAt || '');
-                      form.append('endAt', ann.endAt || '');
-                      try {
-                        await axios.put(`http://localhost:5001/api/announcements/${ann.id}`, form, {
-                          headers: { 'Content-Type': 'multipart/form-data' }
-                        });
-                        fetchAnnouncements();
-                        alert(newPriority === 0 ? 'Marked as Emergency!' : 'Emergency removed.');
-                      } catch (err) {
-                        alert('Failed to update emergency status.');
-                      }
-                    }}
-                    style={{
-                      position: 'absolute',
-                      top: 15,
-                      left: 15,
-                      backgroundColor: ann.priority === 0 ? '#b91c1c' : '#f59e42',
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: '8px',
-                      padding: '7px 14px',
-                      fontWeight: 700,
-                      fontSize: '0.95rem',
-                      cursor: 'pointer',
-                      zIndex: 2,
-                      boxShadow: ann.priority === 0 ? '0 0 10px #b91c1c' : '0 0 6px #f59e42',
-                      transition: 'all 0.2s'
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.backgroundColor = ann.priority === 0 ? '#991b1b' : '#fbbf24'}
-                    onMouseLeave={e => e.currentTarget.style.backgroundColor = ann.priority === 0 ? '#b91c1c' : '#f59e42'}
-                  >
-                    {ann.priority === 0 ? 'Unset Emergency' : 'Mark as Emergency'}
-                  </button>
-                  {/* Priority Badge */}
-                  <div style={{
-                    position: 'absolute',
-                    top: '15px',
-                    right: '15px',
-                    width: '40px',
-                    height: '40px',
-                    background: 'linear-gradient(135deg, #3b82f6, #1d4ed8)',
-                    color: 'white',
-                    borderRadius: '50%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontWeight: '700',
-                    fontSize: '1.1rem',
-                    boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
-                  }}>
-                    {ann.priority}
-                  </div>
-
-                  {/* Status Badge */}
-                  <div style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    backgroundColor: ann.isActive !== false ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                    color: ann.isActive !== false ? '#10b981' : '#ef4444',
-                    padding: '8px 15px',
-                    borderRadius: '20px',
-                    marginBottom: '20px',
-                    fontWeight: '600',
-                    fontSize: '0.85rem'
-                  }}>
-                    <div style={{
-                      width: '8px',
-                      height: '8px',
-                      backgroundColor: ann.isActive !== false ? '#10b981' : '#ef4444',
-                      borderRadius: '50%'
-                    }} />
-                    {ann.isActive !== false ? 'Active' : 'Inactive'}
-                  </div>
-
-                  {/* Title */}
-                  <h3 style={{
-                    color: '#ffffff',
-                    marginBottom: '15px',
-                    fontSize: '1.4rem',
-                    fontWeight: '600',
-                    paddingRight: '50px',
-                    minHeight: '60px'
-                  }}>
-                    {ann.title}
-                  </h3>
-
-                  {/* Image Thumbnail if available */}
-                  {ann.image && (
-                    <div style={{
-                      marginBottom: '15px',
-                      borderRadius: '12px',
-                      overflow: 'hidden',
-                      height: '120px',
-                      border: '1px solid #334155'
-                    }}>
-                      <img
-                        src={ann.image.startsWith('http')
-                          ? ann.image
-                          : `http://localhost:5001${ann.image}`}
-                        alt="Thumbnail"
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'cover'
-                        }}
-                      />
-                    </div>
-                  )}
-
-                  {/* Content Preview */}
-                  <p style={{
-                    color: '#94a3b8',
-                    fontSize: '0.95rem',
-                    lineHeight: '1.6',
-                    marginBottom: '20px',
-                    display: '-webkit-box',
-                    WebkitLineClamp: 3,
-                    WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden',
-                    minHeight: '70px'
-                  }}>
-                    {ann.content}
-                  </p>
-
-                  {/* Footer */}
-                  <div style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    paddingTop: '20px',
-                    borderTop: '1px solid #334155'
-                  }}>
-                    <div style={{ color: '#64748b', fontSize: '0.85rem' }}>
-                      {new Date(ann.createdAt).toLocaleDateString()}
-                    </div>
-                    
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEdit(ann);
-                        }}
-                        style={{
-                          padding: '8px 16px',
-                          backgroundColor: 'rgba(59, 130, 246, 0.2)',
-                          color: '#60a5fa',
-                          border: '1px solid rgba(59, 130, 246, 0.3)',
-                          borderRadius: '8px',
-                          cursor: 'pointer',
-                          fontSize: '0.85rem',
-                          fontWeight: '500',
-                          transition: 'all 0.2s'
-                        }}
-                        onMouseEnter={e => {
-                          e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.3)';
-                        }}
-                        onMouseLeave={e => {
-                          e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.2)';
-                        }}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(ann.id);
-                        }}
-                        style={{
-                          padding: '8px 16px',
-                          backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                          color: '#f87171',
-                          border: '1px solid rgba(239, 68, 68, 0.3)',
-                          borderRadius: '8px',
-                          cursor: 'pointer',
-                          fontSize: '0.85rem',
-                          fontWeight: '500',
-                          transition: 'all 0.2s'
-                        }}
-                        onMouseEnter={e => {
-                          e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.3)';
-                        }}
-                        onMouseLeave={e => {
-                          e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.2)';
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        </section>
       </div>
 
-      <style>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-        
-        ::-webkit-scrollbar {
-          width: 10px;
-        }
-        
-        ::-webkit-scrollbar-track {
-          background: #0f172a;
-        }
-        
-        ::-webkit-scrollbar-thumb {
-          background: #334155;
-          border-radius: 5px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-          background: #475569;
-        }
-      `}</style>
+      <section className="card section">
+        <div className="section-title">
+          <div className="section-title__text">
+            <h2>Published Announcements</h2>
+            <p>Select any card to quickly load it into edit form.</p>
+          </div>
+          <span className="pill">{announcements.length} records</span>
+        </div>
+
+        {announcements.length === 0 ? (
+          <div className="empty-state">No announcements yet. Create your first one from the form above.</div>
+        ) : (
+          <div className="notice-grid">
+            {announcements.map((announcement) => (
+              <article className="notice-card" key={announcement.id} onClick={() => handleEdit(announcement)}>
+                <div className="notice-card__top">
+                  <span className={announcement.isActive !== false ? 'pill pill--success' : 'pill pill--danger'}>
+                    <span className="badge-dot" />
+                    {announcement.isActive !== false ? 'Active' : 'Inactive'}
+                  </span>
+                  <span className="pill">P{announcement.priority ?? 1}</span>
+                </div>
+
+                <h3 className="notice-card__title">{announcement.title}</h3>
+
+                {announcement.image ? (
+                  <AttachmentPreview
+                    filePath={announcement.image}
+                    fileName={announcement.fileName}
+                    typeHint={announcement.fileMimeType || announcement.type}
+                    fileSizeBytes={announcement.fileSizeBytes}
+                    className="media-preview--full"
+                    documentPreview={false}
+                    title={announcement.title}
+                    imageAlt={announcement.title}
+                  />
+                ) : null}
+
+                <p className="notice-card__content">{announcement.content}</p>
+
+                <div className="notice-card__meta">
+                  <div>
+                    Category:{' '}
+                    {categories.find((category) => category.id === announcement.category)?.name ||
+                      'All categories'}
+                  </div>
+                  <div>Created: {new Date(announcement.createdAt).toLocaleString()}</div>
+                </div>
+
+                <div className="notice-card__footer" onClick={(event) => event.stopPropagation()}>
+                  <div className="inline-actions">
+                    <button className="btn btn--ghost btn--tiny" type="button" onClick={() => handleEdit(announcement)}>
+                      Edit
+                    </button>
+                    <button
+                      className="btn btn--danger btn--tiny"
+                      type="button"
+                      onClick={() => handleDelete(announcement.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+
+                  <button className="btn btn--primary btn--tiny" type="button" onClick={() => toggleEmergency(announcement)}>
+                    {announcement.priority === 0 ? 'Remove Emergency' : 'Mark Emergency'}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 };

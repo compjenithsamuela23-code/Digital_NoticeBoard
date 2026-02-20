@@ -1,268 +1,149 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import { apiUrl } from '../config/api';
+import { setAdminSession } from '../config/auth';
+import { apiClient, extractApiError } from '../config/http';
+import { useTheme } from '../hooks/useTheme';
+import TopbarStatus from './TopbarStatus';
 
 const AdminLogin = () => {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { isDark, toggleTheme } = useTheme();
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
+  const handleLogin = async (event) => {
+    event.preventDefault();
     setError('');
     setLoading(true);
+    const normalizedUsername = username.trim().toLowerCase();
 
     try {
-      const response = await axios.post('http://localhost:5001/api/auth/login', {
-        email: email.trim(),
+      const response = await apiClient.post(apiUrl('/api/auth/login'), {
+        username: normalizedUsername,
         password: password.trim()
       });
 
-      console.log('Login response:', response.data);
-
-      if (response.data.success || response.data.message === 'Login successful') {
-        localStorage.setItem('isAdmin', 'true');
-        localStorage.setItem('userEmail', email);
+      if ((response.data.success || response.data.message === 'Login successful') && response.data.token) {
+        setAdminSession({
+          email: normalizedUsername,
+          token: response.data.token
+        });
         navigate('/admin');
-      } else {
-        setError('Invalid credentials');
+        return;
       }
+
+      setError('Invalid credentials');
     } catch (err) {
-      console.error('Login error:', err.response?.data || err.message);
-      setError(err.response?.data?.error || err.response?.data?.message || 'Login failed. Please check credentials.');
+      const responseData = err.response?.data || {};
+      if (responseData.accountType === 'staff') {
+        navigate('/staff/login', {
+          state: {
+            prefillUsername: normalizedUsername,
+            handoffMessage: 'This username is for Staff Dashboard. Continue in Staff Login.'
+          }
+        });
+        return;
+      }
+
+      if (responseData.accountType === 'display') {
+        navigate('/display/login', {
+          state: {
+            prefillUsername: normalizedUsername,
+            prefillCategoryId: responseData.displayCategoryId || '',
+            prefillCategory: responseData.displayCategoryName || '',
+            handoffMessage:
+              'This username is a display credential. Continue in Display Access and enter its assigned category.'
+          }
+        });
+        return;
+      }
+
+      setError(extractApiError(err, 'Login failed. Please try again.'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      width: '100vw',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: '#0f172a',
-      background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
-      margin: 0,
-      padding: '20px',
-      boxSizing: 'border-box',
-      position: 'absolute',
-      top: 0,
-      left: 0
-    }}>
-      <div style={{
-        backgroundColor: 'rgba(255, 255, 255, 0.05)',
-        backdropFilter: 'blur(10px)',
-        padding: '50px',
-        borderRadius: '20px',
-        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-        width: '100%',
-        maxWidth: '450px',
-        border: '1px solid rgba(255, 255, 255, 0.1)'
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-          <div style={{
-            width: '80px',
-            height: '80px',
-            backgroundColor: 'rgba(37, 99, 235, 0.2)',
-            borderRadius: '50%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '0 auto 20px',
-            fontSize: '2.5rem'
-          }}>
-          </div>
-          <h1 style={{
-            color: '#ffffff',
-            marginBottom: '10px',
-            fontSize: '2rem',
-            fontWeight: '700'
-          }}>
-            Admin Portal
-          </h1>
-          <p style={{
-            color: '#94a3b8',
-            fontSize: '1rem'
-          }}>
-            Digital Notice Board Management System
+    <div className="auth-page fade-up">
+      <div className="auth-shell">
+        <aside className="auth-side">
+          <p className="topbar__eyebrow auth-brand-eyebrow">
+            Digital Notice Board
           </p>
-        </div>
-
-        <form onSubmit={handleLogin}>
-          <div style={{ marginBottom: '25px' }}>
-            <label style={{
-              display: 'block',
-              marginBottom: '10px',
-              color: '#e2e8f0',
-              fontWeight: '600',
-              fontSize: '0.95rem'
-            }}>
-              Email Address
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              style={{
-                width: '100%',
-                padding: '16px',
-                backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                border: '2px solid #334155',
-                borderRadius: '10px',
-                fontSize: '16px',
-                color: '#ffffff',
-                boxSizing: 'border-box',
-                transition: 'all 0.3s'
-              }}
-              placeholder="Enter admin email"
-              onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-              onBlur={(e) => e.target.style.borderColor = '#334155'}
-            />
+          <h1>Control Center For Broadcast, Notices, And Campus Updates</h1>
+          <p>
+            This panel lets you run daily communication with confidence. Publish urgent alerts,
+            schedule notices, and control live media from one clean workspace.
+          </p>
+          <div className="auth-highlights">
+            <div className="auth-highlight">Real-time announcement publishing</div>
+            <div className="auth-highlight">Image and video notice support</div>
+            <div className="auth-highlight">Live stream controls and status tracking</div>
           </div>
+        </aside>
 
-          <div style={{ marginBottom: '30px' }}>
-            <label style={{
-              display: 'block',
-              marginBottom: '10px',
-              color: '#e2e8f0',
-              fontWeight: '600',
-              fontSize: '0.95rem'
-            }}>
-              Password
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              style={{
-                width: '100%',
-                padding: '16px',
-                backgroundColor: 'rgba(15, 23, 42, 0.7)',
-                border: '2px solid #334155',
-                borderRadius: '10px',
-                fontSize: '16px',
-                color: '#ffffff',
-                boxSizing: 'border-box',
-                transition: 'all 0.3s'
-              }}
-              placeholder="Enter your password"
-              onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-              onBlur={(e) => e.target.style.borderColor = '#334155'}
-            />
-          </div>
-
-          {error && (
-            <div style={{
-              backgroundColor: 'rgba(239, 68, 68, 0.2)',
-              color: '#fca5a5',
-              padding: '15px',
-              borderRadius: '10px',
-              marginBottom: '25px',
-              fontSize: '14px',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px'
-            }}>
-              <span style={{ fontSize: '1.2rem' }}>⚠️</span>
-              <span>{error}</span>
+        <section className="auth-card card fade-up-delay">
+          <div className="auth-card__head">
+            <TopbarStatus className="topbar-status--auth topbar-status--auth-card" />
+            <div className="auth-card__tools">
+              <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                {isDark ? 'Light Mode' : 'Dark Mode'}
+              </button>
             </div>
-          )}
+          </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            style={{
-              width: '100%',
-              padding: '18px',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
-              color: 'white',
-              border: 'none',
-              borderRadius: '12px',
-              fontSize: '16px',
-              fontWeight: '700',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              opacity: loading ? 0.7 : 1,
-              transition: 'all 0.3s',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px'
-            }}
-            onMouseEnter={e => !loading && (e.target.style.transform = 'translateY(-2px)')}
-            onMouseLeave={e => !loading && (e.target.style.transform = 'translateY(0)')}
-          >
-            {loading ? (
-              <>
-                <span style={{ animation: 'spin 1s linear infinite' }}></span>
-                Authenticating...
-              </>
-            ) : (
-              <>
-                Access Admin Panel
-              </>
-            )}
-          </button>
-        </form>
+          <div className="section-title__text">
+            <p className="topbar__eyebrow">Access</p>
+            <h2>Sign In</h2>
+            <p>Enter admin workspace credentials. Staff and display accounts use their own login pages.</p>
+          </div>
 
-        <div style={{
-          marginTop: '30px',
-          textAlign: 'center',
-          paddingTop: '25px',
-          borderTop: '1px solid rgba(255, 255, 255, 0.1)'
-        }}>
-          <button
-            onClick={() => navigate('/')}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: 'transparent',
-              color: '#94a3b8',
-              border: '1px solid #475569',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontSize: '15px',
-              fontWeight: '500',
-              transition: 'all 0.3s',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-            onMouseEnter={e => {
-              e.target.style.color = '#e2e8f0';
-              e.target.style.borderColor = '#64748b';
-            }}
-            onMouseLeave={e => {
-              e.target.style.color = '#94a3b8';
-              e.target.style.borderColor = '#475569';
-            }}
-          >
-            <span>←</span>
-            Back to Notice Board
-          </button>
-          
-          <p style={{
-            color: '#64748b',
-            fontSize: '0.85rem',
-            marginTop: '20px',
-            lineHeight: '1.5'
-          }}>
-            <strong>Note:</strong> Contact system administrator if you need access credentials.
-          </p>
-        </div>
+          <form className="auth-form" onSubmit={handleLogin}>
+            <div className="field">
+              <label htmlFor="email">Username</label>
+              <input
+                id="email"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="workspace_user"
+                required
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                required
+              />
+            </div>
+
+            {error ? <div className="auth-error">{error}</div> : null}
+
+            <button className="btn btn--primary btn--wide" type="submit" disabled={loading}>
+              {loading ? 'Authenticating...' : 'Access'}
+            </button>
+          </form>
+
+          <div className="auth-footer-actions">
+            <button className="btn btn--ghost" type="button" onClick={() => navigate('/staff/login')}>
+              Staff Dashboard Login
+            </button>
+            <button className="btn btn--ghost" type="button" onClick={() => navigate('/display/login')}>
+              Back To Display Access
+            </button>
+          </div>
+        </section>
       </div>
-
-      <style>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 };
