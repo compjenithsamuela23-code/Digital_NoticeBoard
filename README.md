@@ -105,6 +105,9 @@ Deploy as two Vercel projects from the same repo:
    - Run `digital-notice-board/server/supabase/schema.sql` in Supabase SQL Editor.
 2. Deploy backend (Vercel project #1):
    - Root Directory: `digital-notice-board/server`
+   - Install Command: `npm install`
+   - Build Command: `npm run build`
+   - Output Directory: leave empty
    - Vercel uses `digital-notice-board/server/api/[[...path]].js` as the API entrypoint.
    - Set env vars:
    - `SUPABASE_URL`
@@ -117,6 +120,9 @@ Deploy as two Vercel projects from the same repo:
    - `https://your-backend-domain.vercel.app/api/health`
 3. Deploy frontend (Vercel project #2):
    - Root Directory: `digital-notice-board/client`
+   - Install Command: `npm install`
+   - Build Command: `npm run build`
+   - Output Directory: `dist`
    - Set env vars:
    - `VITE_API_BASE_URL=https://your-backend-domain.vercel.app`
    - `VITE_ENABLE_SOCKET=false` (recommended on Vercel backend; polling fallback is enabled)

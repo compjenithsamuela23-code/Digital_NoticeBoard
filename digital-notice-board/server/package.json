@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "echo \"No build step required for backend serverless API\"",
     "start": "node index.js",
     "dev": "nodemon index.js",
     "setup:supabase": "node scripts/setup-supabase.js",
