@@ -95,7 +95,29 @@ If you want dev-mode startup (`5173`) instead:
 If frontend and backend are hosted on different domains, set frontend env:
 - `VITE_API_BASE_URL=https://your-backend-domain.com`
 
-### Vercel + Supabase deploy (full project)
+### Vercel + Supabase deploy
+
+#### Option A: Single Vercel project from repo root (quick 404 fix)
+
+This repo now includes root `vercel.json` + `api/[[...path]].js`, so deploying the top-level repository works without `404: NOT_FOUND`.
+
+1. Prepare Supabase:
+   - Run `digital-notice-board/server/supabase/schema.sql` in Supabase SQL Editor.
+2. Create one Vercel project from this repo (root directory left empty).
+3. Set env vars:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_KEY`
+   - `JWT_SECRET`
+   - `JWT_EXPIRES_IN` (optional, default `7d`)
+   - `SUPABASE_STORAGE_BUCKET` (optional, default `notice-board-uploads`)
+   - `CLIENT_ORIGIN=https://your-project.vercel.app` (optional, recommended)
+   - `VITE_ENABLE_SOCKET=false` (recommended on Vercel serverless)
+   - `VITE_API_BASE_URL` (optional; leave unset to use same-domain `/api`)
+4. After deploy, verify:
+   - `https://your-project.vercel.app/api/health`
+   - `https://your-project.vercel.app/admin`
+
+#### Option B: Two Vercel projects from the same repo (split frontend/backend)
 
 Deploy as two Vercel projects from the same repo:
 - Backend project root: `digital-notice-board/server`
@@ -132,4 +154,7 @@ Deploy as two Vercel projects from the same repo:
 Note for Vercel backend uploads:
 - API upload requests are capped for serverless runtime; this backend enforces a 4MB request file limit on Vercel.
 
-If you see `404: NOT_FOUND` on frontend routes like `/admin`, ensure `digital-notice-board/client/vercel.json` is present (SPA rewrite to `index.html`).
+If you see `404: NOT_FOUND` right after Vercel deploy, confirm you either:
+- deploy repo root (uses root `vercel.json`), or
+- set project Root Directory to `digital-notice-board/client` for frontend-only deployment.
+# Digital_NoticeBoard
