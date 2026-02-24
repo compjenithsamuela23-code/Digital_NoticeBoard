@@ -25,6 +25,15 @@ const getDefaultEnd = () => {
   return toInputDateTime(date);
 };
 
+const toApiDateTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const normalized = raw.includes(' ') && !raw.includes('T') ? raw.replace(' ', 'T') : raw;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toISOString();
+};
+
 const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
 const MEDIA_ACCEPT =
   'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
@@ -211,7 +220,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   useEffect(() => {
     const livePoll = setInterval(fetchLiveStatus, 5000);
-    const announcementsPoll = setInterval(fetchAnnouncements, 15000);
+    const announcementsPoll = setInterval(fetchAnnouncements, 5000);
 
     return () => {
       clearInterval(livePoll);
@@ -276,14 +285,20 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     try {
       const payload = new FormData();
+      const startAtIso = toApiDateTime(formData.startAt);
+      const endAtIso = toApiDateTime(formData.endAt);
       payload.append('title', formData.title);
       payload.append('content', formData.content);
       payload.append('priority', String(formData.priority));
       payload.append('duration', String(formData.duration));
       payload.append('active', String(formData.isActive));
       payload.append('category', formData.category || '');
-      payload.append('startAt', formData.startAt);
-      payload.append('endAt', formData.endAt);
+      if (startAtIso) {
+        payload.append('startAt', startAtIso);
+      }
+      if (endAtIso) {
+        payload.append('endAt', endAtIso);
+      }
 
       if (image) {
         payload.append('image', image);
