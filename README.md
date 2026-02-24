@@ -99,7 +99,7 @@ If frontend and backend are hosted on different domains, set frontend env:
 
 #### Option A: Single Vercel project from repo root (quick 404 fix)
 
-This repo now includes root `vercel.json` + `api/[[...path]].js`, so deploying the top-level repository works without `404: NOT_FOUND`.
+This repo now includes root `vercel.json` + `api/[...path].js`, so deploying the top-level repository works without `404: NOT_FOUND`.
 
 1. Prepare Supabase:
    - Run `digital-notice-board/server/supabase/schema.sql` in Supabase SQL Editor.
@@ -130,7 +130,7 @@ Deploy as two Vercel projects from the same repo:
    - Install Command: `npm install`
    - Build Command: `npm run build`
    - Output Directory: leave empty
-   - Vercel uses `digital-notice-board/server/api/[[...path]].js` as the API entrypoint.
+   - Vercel uses `digital-notice-board/server/api/[...path].js` as the API entrypoint.
    - Set env vars:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`

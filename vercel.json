@@ -3,7 +3,7 @@
   "buildCommand": "npm --prefix digital-notice-board/client run build",
   "outputDirectory": "digital-notice-board/client/dist",
   "functions": {
-    "api/[[...path]].js": {
+    "api/[...path].js": {
       "maxDuration": 60
     }
   },
