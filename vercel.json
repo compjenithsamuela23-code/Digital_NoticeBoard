@@ -1,0 +1,19 @@
+{
+  "installCommand": "npm install --prefix digital-notice-board/client && npm install --prefix digital-notice-board/server",
+  "buildCommand": "npm --prefix digital-notice-board/client run build",
+  "outputDirectory": "digital-notice-board/client/dist",
+  "functions": {
+    "api/[[...path]].js": {
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}
