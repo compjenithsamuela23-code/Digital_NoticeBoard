@@ -978,6 +978,18 @@ textarea {
   display: block;
 }
 
+.media-preview.media-preview--display {
+  background: var(--announcement-media-bg);
+}
+
+.media-preview.media-preview--display img,
+.media-preview.media-preview--display video {
+  width: 100%;
+  height: min(56vh, 520px);
+  object-fit: contain;
+  object-position: center;
+}
+
 .document-preview {
   border-radius: 14px;
   border: 1px solid var(--line);

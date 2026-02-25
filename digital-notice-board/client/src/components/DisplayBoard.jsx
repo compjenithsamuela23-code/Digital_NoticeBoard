@@ -494,7 +494,7 @@ const DisplayBoard = () => {
                   fileName={currentAnnouncement.fileName}
                   typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
                   fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                  className="media-preview--full"
+                  className="media-preview--full media-preview--display"
                   documentPreview
                   title={currentAnnouncement.title}
                   imageAlt={currentAnnouncement.title}
