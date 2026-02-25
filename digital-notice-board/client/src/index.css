@@ -980,14 +980,21 @@ textarea {
 
 .media-preview.media-preview--display {
   background: var(--announcement-media-bg);
+  display: grid;
+  place-items: center;
+  padding: clamp(6px, 0.9vw, 12px);
+  min-height: clamp(220px, 36vh, 360px);
+  max-height: min(72vh, 760px);
 }
 
 .media-preview.media-preview--display img,
 .media-preview.media-preview--display video {
   width: 100%;
-  height: min(56vh, 520px);
+  height: auto;
+  max-height: min(70vh, 720px);
   object-fit: contain;
   object-position: center;
+  image-orientation: from-image;
 }
 
 .document-preview {
