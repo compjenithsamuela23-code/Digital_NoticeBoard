@@ -651,132 +651,120 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   return (
     <div className="app-shell app-shell--admin fade-up">
-      <header className={`topbar topbar--admin card${isStaffWorkspace ? ' topbar--staff' : ''}`}>
-        <div className="topbar__brand topbar__brand--admin topbar-admin__intro">
-          <p className="topbar__eyebrow">{isStaffWorkspace ? 'Staff Workspace' : 'Control Workspace'}</p>
-          <h1 className="topbar__title">
-            {isStaffWorkspace
-              ? 'Digital Notice Board Staff Dashboard'
-              : 'Digital Notice Board Admin'}
-          </h1>
-          <p className="topbar__subtitle">
-            {isStaffWorkspace
-              ? 'Publish announcements and control live media with staff permissions.'
-              : 'Publish updates, control live media, and manage secure display access.'}
-          </p>
-          <div className="topbar-admin__kpis">
-            <span className="pill pill--info">Total: {summary.total}</span>
-            <span className="pill pill--success">Active: {summary.active}</span>
-            <span className="pill pill--danger">
-              Emergency: {summary.emergency}
-            </span>
-          </div>
-          {isAdminWorkspace ? (
-            <div className="topbar-admin__status-wrap">
+      <header className={`topbar topbar--admin card${isStaffWorkspace ? ' topbar--staff' : ' topbar--admin-v2'}`}>
+        {isAdminWorkspace ? (
+          <>
+            <div className="topbar__brand topbar__brand--admin topbar-admin__intro topbar-admin-v2__left">
+              <p className="topbar__eyebrow">Control Workspace</p>
+              <h1 className="topbar__title">Digital Notice Board Admin</h1>
+              <p className="topbar__subtitle">Manage the credentials and view History of the announcements</p>
+              <div className="topbar-admin__kpis">
+                <span className="pill pill--info">Total: {summary.total}</span>
+                <span className="pill pill--success">Active: {summary.active}</span>
+                <span className="pill pill--danger">Emergency: {summary.emergency}</span>
+              </div>
+            </div>
+
+            <div className="topbar-admin-v2__middle">
+              <TopbarStatus className="topbar-status--admin" />
+              <div className="topbar-admin-v2__category">
+                <div className="topbar-admin__category-head">
+                  <span className="topbar__mini-heading">Category controls</span>
+                </div>
+                <form className="topbar-category-form" onSubmit={handleTopbarCategorySubmit}>
+                  <input
+                    type="text"
+                    value={newCategory}
+                    onChange={(event) => setNewCategory(event.target.value)}
+                    placeholder="New category"
+                    aria-label="New category name"
+                  />
+                  <button className="btn btn--primary btn--tiny" type="submit" disabled={categorySaving}>
+                    {categorySaving ? 'Adding...' : 'Add'}
+                  </button>
+                </form>
+                <form className="topbar-category-form" onSubmit={handleTopbarCategoryDelete}>
+                  <select
+                    value={deleteCategoryId}
+                    onChange={(event) => setDeleteCategoryId(event.target.value)}
+                    aria-label="Select category to delete"
+                    disabled={categories.length === 0 || categoryDeleting}
+                  >
+                    <option value="">
+                      {categories.length === 0 ? 'No categories' : 'Select to delete'}
+                    </option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn--danger btn--tiny"
+                    type="submit"
+                    disabled={!deleteCategoryId || categoryDeleting}
+                  >
+                    {categoryDeleting ? 'Deleting...' : 'Delete'}
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            <div className="topbar-admin-v2__right">
+              <div className="topbar-admin-v2__right-row">
+                <button className="btn btn--ghost btn--tiny" type="button" onClick={() => navigate('/display/login')}>
+                  Open Display
+                </button>
+                <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                  {isDark ? 'Light Mode' : 'Dark Mode'}
+                </button>
+              </div>
+
+              <button
+                className="btn btn--ghost"
+                type="button"
+                onClick={() => setShowAccessManager((value) => !value)}
+              >
+                Credentials
+              </button>
+
+              <button
+                className="btn btn--ghost"
+                type="button"
+                onClick={() => navigate(workspaceHistoryRoute)}
+              >
+                View History
+              </button>
+
+              <button
+                className="btn btn--danger topbar__logout topbar__logout--wide"
+                type="button"
+                onClick={handleLogout}
+              >
+                Logout
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="topbar__brand topbar__brand--admin topbar-admin__intro">
+              <p className="topbar__eyebrow">Staff Workspace</p>
+              <h1 className="topbar__title">Digital Notice Board Staff Dashboard</h1>
+              <p className="topbar__subtitle">Publish announcements and control live media with staff permissions.</p>
+              <div className="topbar-admin__kpis">
+                <span className="pill pill--info">Total: {summary.total}</span>
+                <span className="pill pill--success">Active: {summary.active}</span>
+                <span className="pill pill--danger">Emergency: {summary.emergency}</span>
+              </div>
+            </div>
+
+            <div className="topbar-admin__status-column">
               <TopbarStatus className="topbar-status--admin" />
             </div>
-          ) : null}
-        </div>
 
-        {isStaffWorkspace ? (
-          <div className="topbar-admin__status-column">
-            <TopbarStatus className="topbar-status--admin" />
-          </div>
-        ) : null}
-
-        <div className="topbar__workspace topbar-admin__center">
-          <div className="topbar__control-row">
-            <div className="topbar__actions topbar__actions--admin topbar-admin__actions">
-              {isAdminWorkspace ? (
-                <>
-                  <div className="topbar-admin__category">
-                    <div className="topbar-admin__category-head">
-                      <span className="topbar__mini-heading">Category controls</span>
-                    </div>
-                    <form className="topbar-category-form" onSubmit={handleTopbarCategorySubmit}>
-                      <input
-                        type="text"
-                        value={newCategory}
-                        onChange={(event) => setNewCategory(event.target.value)}
-                        placeholder="New category"
-                        aria-label="New category name"
-                      />
-                      <button className="btn btn--primary btn--tiny" type="submit" disabled={categorySaving}>
-                        {categorySaving ? 'Adding...' : 'Add'}
-                      </button>
-                    </form>
-                    <form className="topbar-category-form" onSubmit={handleTopbarCategoryDelete}>
-                      <select
-                        value={deleteCategoryId}
-                        onChange={(event) => setDeleteCategoryId(event.target.value)}
-                        aria-label="Select category to delete"
-                        disabled={categories.length === 0 || categoryDeleting}
-                      >
-                        <option value="">
-                          {categories.length === 0 ? 'No categories' : 'Select to delete'}
-                        </option>
-                        {categories.map((category) => (
-                          <option key={category.id} value={category.id}>
-                            {category.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        className="btn btn--danger btn--tiny"
-                        type="submit"
-                        disabled={!deleteCategoryId || categoryDeleting}
-                      >
-                        {categoryDeleting ? 'Deleting...' : 'Delete'}
-                      </button>
-                    </form>
-                  </div>
-
-                  <div className="topbar-admin__divider" />
-                </>
-              ) : null}
-
-              {isAdminWorkspace ? (
-                <>
-                  <div className="topbar-admin__action-row">
-                    <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
-                      {isDark ? 'Light Mode' : 'Dark Mode'}
-                    </button>
-                    <button
-                      className="btn btn--ghost btn--tiny"
-                      type="button"
-                      onClick={() => setShowAccessManager((value) => !value)}
-                    >
-                      {showAccessManager ? 'Hide Credentials' : 'Credentials'}
-                    </button>
-                  </div>
-
-                  <div className="topbar-admin__action-row">
-                    <button
-                      className="btn btn--ghost"
-                      type="button"
-                      onClick={() => navigate(workspaceHistoryRoute)}
-                    >
-                      View History
-                    </button>
-                    <button
-                      className="btn btn--ghost"
-                      type="button"
-                      onClick={() => navigate('/display/login')}
-                    >
-                      Open Display
-                    </button>
-                  </div>
-
-                  <button
-                    className="btn btn--danger topbar__logout"
-                    type="button"
-                    onClick={handleLogout}
-                  >
-                    Logout
-                  </button>
-                </>
-              ) : (
-                <>
+            <div className="topbar__workspace topbar-admin__center">
+              <div className="topbar__control-row">
+                <div className="topbar__actions topbar__actions--admin topbar-admin__actions">
                   <div className="topbar-admin__action-row topbar-admin__action-row--staff-main">
                     <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
                       {isDark ? 'Light Mode' : 'Dark Mode'}
@@ -804,11 +792,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                   >
                     Logout
                   </button>
-                </>
-              )}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
       </header>
 
       {requestError ? <div className="auth-error">{requestError}</div> : null}
