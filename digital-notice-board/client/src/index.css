@@ -1217,7 +1217,7 @@ textarea {
 .auth-card__head {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px;
   flex-wrap: wrap;
 }

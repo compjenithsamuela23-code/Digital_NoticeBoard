@@ -4,7 +4,6 @@ import { apiUrl } from '../config/api';
 import { apiClient, extractApiError } from '../config/http';
 import { hasDisplaySession, setDisplaySession } from '../config/displayAuth';
 import { useTheme } from '../hooks/useTheme';
-import TopbarStatus from './TopbarStatus';
 
 const normalizeCategories = (payload) => {
   if (Array.isArray(payload)) return payload;
@@ -146,7 +145,6 @@ const DisplayLogin = () => {
       <div className="auth-shell">
         <section className="auth-card card fade-up-delay">
           <div className="auth-card__head">
-            <TopbarStatus className="topbar-status--auth topbar-status--auth-card" />
             <div className="auth-card__tools">
               <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
                 {isDark ? 'Light Mode' : 'Dark Mode'}
