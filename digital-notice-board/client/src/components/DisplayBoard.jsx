@@ -166,7 +166,10 @@ const DisplayBoard = () => {
   }, [fetchAnnouncements, fetchLiveStatus, socket]);
 
   const emergencyIndex = useMemo(
-    () => announcements.findIndex((item) => item && item.priority === 0),
+    () =>
+      announcements.findIndex(
+        (item) => item && (item.isEmergency === true || Number(item.priority) === 0)
+      ),
     [announcements]
   );
   const hasEmergency = emergencyIndex !== -1;
@@ -191,6 +194,7 @@ const DisplayBoard = () => {
   const currentAnnouncementHasImage = isImageMedia(currentAnnouncement);
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
   const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
+  const currentAnnouncementHasAnyMedia = Boolean(currentAnnouncement && currentAnnouncement.image);
   const currentAnnouncementVideoUrl = currentAnnouncementHasVideo
     ? assetUrl(currentAnnouncement.image)
     : null;
@@ -336,6 +340,81 @@ const DisplayBoard = () => {
           <footer className="display-footer">
             <p className="footer-hint">Publish notices from Admin to start the display cycle.</p>
           </footer>
+        </div>
+      </div>
+    );
+  }
+
+  if (isEmergency) {
+    return (
+      <div className="display-page display-page--emergency display-page--emergency-override fade-up">
+        <div className="display-shell display-shell--emergency-override">
+          <header className="emergency-override-header card emergency-frame">
+            <div className="emergency-override-header__left">
+              <p className="topbar__eyebrow emergency-override-header__eyebrow">Emergency Override</p>
+              <h1>Emergency Broadcast Mode</h1>
+              <p className="emergency-override-header__meta">
+                {categoryLabel
+                  ? `Category: ${categoryLabel}`
+                  : displayCategoryLabel
+                    ? `Viewing: ${displayCategoryLabel}`
+                    : 'General Announcements'}
+              </p>
+              <span className="emergency-banner emergency-banner--strong">
+                Emergency Announcement Active
+              </span>
+            </div>
+
+            <div className="emergency-override-header__right">
+              <TopbarStatus className="topbar-status--display" />
+              <div className="display-meta__actions">
+                <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                  {isDark ? 'Light Mode' : 'Dark Mode'}
+                </button>
+                <button className="btn btn--danger btn--tiny" type="button" onClick={handleDisplayLogout}>
+                  Display Logout
+                </button>
+                {isAdmin ? (
+                  <button className="btn btn--danger btn--tiny" type="button" onClick={handleLogout}>
+                    Admin Logout
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </header>
+
+          {requestError ? <div className="auth-error">{requestError}</div> : null}
+
+          <main className="emergency-override-main card emergency-frame">
+            <div
+              className={`emergency-override-main__grid ${
+                currentAnnouncementHasAnyMedia ? 'emergency-override-main__grid--with-media' : ''
+              }`.trim()}
+            >
+              {currentAnnouncementHasAnyMedia ? (
+                <section className="emergency-override-main__media">
+                  <AttachmentPreview
+                    filePath={currentAnnouncement.image}
+                    fileName={currentAnnouncement.fileName}
+                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                    className="media-preview--full media-preview--display media-preview--emergency"
+                    documentPreview
+                    title={currentAnnouncement.title}
+                    imageAlt={currentAnnouncement.title}
+                  />
+                </section>
+              ) : null}
+
+              <section className="emergency-override-main__content">
+                <p className="announcement-kicker emergency-override-main__kicker">
+                  Immediate Attention Required
+                </p>
+                <h2 className="emergency-override-main__title">{currentAnnouncement.title}</h2>
+                <p className="emergency-override-main__copy">{currentAnnouncement.content}</p>
+              </section>
+            </div>
+          </main>
         </div>
       </div>
     );

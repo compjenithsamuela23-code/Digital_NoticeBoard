@@ -38,6 +38,9 @@ create index if not exists announcements_created_at_idx
 create index if not exists announcements_public_sort_idx
   on announcements (priority desc, created_at desc);
 
+create index if not exists announcements_emergency_sort_idx
+  on announcements (priority asc, created_at desc);
+
 create index if not exists announcements_category_idx
   on announcements (category);
 
@@ -98,6 +101,22 @@ on conflict (id) do nothing;
 alter table announcements add column if not exists file_name text null;
 alter table announcements add column if not exists file_mime_type text null;
 alter table announcements add column if not exists file_size_bytes bigint null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'announcements_priority_non_negative_chk'
+      and conrelid = 'announcements'::regclass
+  ) then
+    alter table announcements
+      add constraint announcements_priority_non_negative_chk
+      check (priority >= 0)
+      not valid;
+  end if;
+end
+$$;
 
 alter table history add column if not exists file_name text null;
 alter table history add column if not exists file_mime_type text null;

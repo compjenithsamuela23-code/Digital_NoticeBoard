@@ -316,6 +316,39 @@ function toBoolean(value, fallback) {
   return value === true || value === 'true';
 }
 
+function normalizePriorityValue(value, fallback = 1) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    return Math.max(0, Number.parseInt(fallback, 10) || 0);
+  }
+  return Math.max(0, parsed);
+}
+
+function isEmergencyPriorityValue(value) {
+  return normalizePriorityValue(value, 1) === 0;
+}
+
+function comparePublicAnnouncements(left, right) {
+  const leftEmergency = isEmergencyPriorityValue(left && left.priority);
+  const rightEmergency = isEmergencyPriorityValue(right && right.priority);
+
+  if (leftEmergency !== rightEmergency) {
+    return leftEmergency ? -1 : 1;
+  }
+
+  const leftPriority = normalizePriorityValue(left && left.priority, 1);
+  const rightPriority = normalizePriorityValue(right && right.priority, 1);
+  if (leftPriority !== rightPriority && !leftEmergency && !rightEmergency) {
+    return rightPriority - leftPriority;
+  }
+
+  const leftCreatedAt = toDateOrNull(left && left.created_at);
+  const rightCreatedAt = toDateOrNull(right && right.created_at);
+  const leftCreatedMs = leftCreatedAt ? leftCreatedAt.getTime() : 0;
+  const rightCreatedMs = rightCreatedAt ? rightCreatedAt.getTime() : 0;
+  return rightCreatedMs - leftCreatedMs;
+}
+
 function sanitizeOriginalFileName(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -736,7 +769,7 @@ function isAnnouncementVisibleForDisplayCategory(row, requestedCategory) {
   const normalizedRequest = normalizeCategoryFilter(requestedCategory);
   if (normalizedRequest === 'all') return true;
   if (!row) return false;
-  if (Number(row.priority) === 0) return true;
+  if (isEmergencyPriorityValue(row.priority)) return true;
 
   // Announcements without category are global and visible to every display category.
   const rowCategory = getAnnouncementCategoryValue(row);
@@ -752,7 +785,8 @@ function toAnnouncementDto(row) {
     id: row.id,
     title: row.title,
     content: row.content,
-    priority: row.priority,
+    priority: normalizePriorityValue(row.priority, 1),
+    isEmergency: isEmergencyPriorityValue(row.priority),
     duration: row.duration,
     isActive: row.is_active,
     category: row.category,
@@ -1172,7 +1206,6 @@ function buildSystemHistoryRow(details = {}) {
   const eventDate = toDateOrNull(details.actionAt);
   const eventIso = eventDate ? eventDate.toISOString() : new Date().toISOString();
 
-  const priorityValue = Number.parseInt(details.priority, 10);
   const durationValue = Number.parseInt(details.duration, 10);
   const fileSizeValue = Number.parseInt(details.fileSizeBytes, 10);
 
@@ -1180,7 +1213,7 @@ function buildSystemHistoryRow(details = {}) {
     id: details.id || generateId(),
     title: String(details.title || 'System Event'),
     content: String(details.content || ''),
-    priority: Number.isNaN(priorityValue) ? 1 : priorityValue,
+    priority: normalizePriorityValue(details.priority, 1),
     duration: Number.isNaN(durationValue) ? 0 : durationValue,
     is_active: details.isActive === undefined ? true : Boolean(details.isActive),
     category: details.category || null,
@@ -1710,7 +1743,6 @@ app.get('/api/announcements/public', async (req, res) => {
       .from('announcements')
       .select('*')
       .neq('is_active', false)
-      .order('priority', { ascending: false })
       .order('created_at', { ascending: false });
 
     throwSupabaseError('Error fetching public announcements', error);
@@ -1719,7 +1751,8 @@ app.get('/api/announcements/public', async (req, res) => {
     const scopedRows = visibleRows.filter((row) =>
       isAnnouncementVisibleForDisplayCategory(row, requestedCategory)
     );
-    res.json(scopedRows.map(toAnnouncementDto));
+    const sortedRows = [...scopedRows].sort(comparePublicAnnouncements);
+    res.json(sortedRows.map(toAnnouncementDto));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1768,9 +1801,8 @@ app.post(
       return res.status(400).json({ error: 'Title and content are required' });
     }
 
-    const priorityValue = Number.parseInt(priority, 10);
     const durationValue = Number.parseInt(duration, 10);
-    const safePriority = Number.isNaN(priorityValue) ? 1 : priorityValue;
+    const safePriority = normalizePriorityValue(priority, 1);
     const safeDuration = Number.isNaN(durationValue) ? 7 : durationValue;
 
     const startDate = toDateOrNull(startAt) || new Date();
@@ -1897,11 +1929,8 @@ app.put(
 
     if (title) updateRow.title = title;
     if (content) updateRow.content = content;
-    if (priority) {
-      const parsedPriority = Number.parseInt(priority, 10);
-      if (!Number.isNaN(parsedPriority)) {
-        updateRow.priority = parsedPriority;
-      }
+    if (priority !== undefined && priority !== null && String(priority).trim() !== '') {
+      updateRow.priority = normalizePriorityValue(priority, existing.priority);
     }
     if (duration && safeDuration !== null) {
       updateRow.duration = safeDuration;
