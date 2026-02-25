@@ -188,6 +188,7 @@ const DisplayBoard = () => {
   }, [isPlaying, announcements.length, hasEmergency]);
 
   const currentAnnouncement = announcements[activeSlideIndex] || null;
+  const currentAnnouncementHasImage = isImageMedia(currentAnnouncement);
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
   const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
   const currentAnnouncementVideoUrl = currentAnnouncementHasVideo
@@ -196,6 +197,9 @@ const DisplayBoard = () => {
   const activeYouTubeId = getYouTubeID(liveLink);
   const isLiveOn = liveStatus === 'ON';
   const showLivePanel = isLiveOn;
+  const showAnnouncementMediaPanel =
+    !showLivePanel && (currentAnnouncementHasImage || currentAnnouncementHasVideo);
+  const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
 
   const categoryLabel = currentAnnouncement
     ? getCategoryName(currentAnnouncement.category)
@@ -381,7 +385,7 @@ const DisplayBoard = () => {
 
         {requestError ? <div className="auth-error">{requestError}</div> : null}
 
-        <main className={`display-main ${showLivePanel ? '' : 'display-main--single'}`.trim()}>
+        <main className={`display-main ${showSecondaryPanel ? '' : 'display-main--single'}`.trim()}>
           {showLivePanel ? (
             <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
             <div className="panel-head">
@@ -473,6 +477,31 @@ const DisplayBoard = () => {
             </section>
           ) : null}
 
+          {showAnnouncementMediaPanel ? (
+            <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
+              <div className="panel-head">
+                <h2>Announcement Media</h2>
+                <div className="inline-actions">
+                  <p className="topbar__subtitle">
+                    {currentAnnouncementHasVideo ? 'Posted video' : 'Posted image'}
+                  </p>
+                </div>
+              </div>
+              <div className="live-body">
+                <AttachmentPreview
+                  filePath={currentAnnouncement.image}
+                  fileName={currentAnnouncement.fileName}
+                  typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                  fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                  className="media-preview--full media-preview--display media-preview--display-panel"
+                  documentPreview={false}
+                  title={currentAnnouncement.title}
+                  imageAlt={currentAnnouncement.title}
+                />
+              </div>
+            </section>
+          ) : null}
+
           <section className={`announcement-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
             <div className="panel-head">
               <h2>Current Announcement</h2>
@@ -488,7 +517,9 @@ const DisplayBoard = () => {
               </p>
               <h3 className="announcement-title">{currentAnnouncement.title}</h3>
 
-              {currentAnnouncement.image && (!currentAnnouncementHasVideo || !showLivePanel) ? (
+              {currentAnnouncement.image &&
+              !showAnnouncementMediaPanel &&
+              (!currentAnnouncementHasVideo || !showLivePanel) ? (
                 <AttachmentPreview
                   filePath={currentAnnouncement.image}
                   fileName={currentAnnouncement.fileName}
