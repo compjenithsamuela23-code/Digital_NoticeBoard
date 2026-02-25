@@ -154,7 +154,7 @@ const DisplayLogin = () => {
 
           <div className="section-title__text section-title__text--center">
             <h2>DISPLAY LOGIN</h2>
-            <p>Acess display mode to show notices and announcements on the Notice Board.</p>
+            <p>Access display mode to show notices and announcements on the Notice Board.</p>
           </div>
 
           <form className="auth-form" onSubmit={handleLogin}>
