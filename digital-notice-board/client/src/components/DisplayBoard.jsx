@@ -8,7 +8,6 @@ import {
   clearDisplaySession,
   getDisplayCategoryId,
   getDisplayCategoryLabel,
-  getDisplayUsername,
   withDisplayAuthConfig
 } from '../config/displayAuth';
 import { useTheme } from '../hooks/useTheme';
@@ -36,7 +35,6 @@ const DisplayBoard = () => {
   const isAdmin = hasAdminSession();
   const displayCategoryId = getDisplayCategoryId();
   const displayCategoryLabel = getDisplayCategoryLabel();
-  const displayUsername = getDisplayUsername();
 
   const getYouTubeID = (url) => {
     const regex = /(?:youtube\.com.*v=|youtu\.be\/)([^&\n?#]+)/;
@@ -360,7 +358,6 @@ const DisplayBoard = () => {
                   ? `Viewing: ${displayCategoryLabel}`
                   : 'General Announcements'}
             </p>
-            <p className="topbar__subtitle">User: {displayUsername || 'Display User'}</p>
             {isEmergency ? <span className="emergency-banner">Emergency Active</span> : null}
           </div>
 
