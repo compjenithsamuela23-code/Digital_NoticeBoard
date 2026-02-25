@@ -70,22 +70,6 @@ const AdminLogin = () => {
   return (
     <div className="auth-page fade-up">
       <div className="auth-shell">
-        <aside className="auth-side">
-          <p className="topbar__eyebrow auth-brand-eyebrow">
-            Digital Notice Board
-          </p>
-          <h1>Control Center For Broadcast, Notices, And Campus Updates</h1>
-          <p>
-            This panel lets you run daily communication with confidence. Publish urgent alerts,
-            schedule notices, and control live media from one clean workspace.
-          </p>
-          <div className="auth-highlights">
-            <div className="auth-highlight">Real-time announcement publishing</div>
-            <div className="auth-highlight">Image and video notice support</div>
-            <div className="auth-highlight">Live stream controls and status tracking</div>
-          </div>
-        </aside>
-
         <section className="auth-card card fade-up-delay">
           <div className="auth-card__head">
             <TopbarStatus className="topbar-status--auth topbar-status--auth-card" />

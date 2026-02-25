@@ -144,20 +144,6 @@ const DisplayLogin = () => {
   return (
     <div className="auth-page fade-up">
       <div className="auth-shell">
-        <aside className="auth-side">
-          <p className="topbar__eyebrow auth-brand-eyebrow">Digital Notice Board</p>
-          <h1>Display Access Portal</h1>
-          <p>
-            Sign in with your assigned username and password, then select the category assigned to
-            that account.
-          </p>
-          <div className="auth-highlights">
-            <div className="auth-highlight">Secure display access by account</div>
-            <div className="auth-highlight">Category locked per credential</div>
-            <div className="auth-highlight">Scoped dashboard view by category</div>
-          </div>
-        </aside>
-
         <section className="auth-card card fade-up-delay">
           <div className="auth-card__head">
             <TopbarStatus className="topbar-status--auth topbar-status--auth-card" />

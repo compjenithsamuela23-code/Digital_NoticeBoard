@@ -89,19 +89,6 @@ const StaffLogin = () => {
   return (
     <div className="auth-page fade-up">
       <div className="auth-shell">
-        <aside className="auth-side">
-          <p className="topbar__eyebrow auth-brand-eyebrow">Digital Notice Board</p>
-          <h1>Staff Dashboard Access</h1>
-          <p>
-            Staff dashboard can publish announcements and control live broadcast with secure sign-in.
-          </p>
-          <div className="auth-highlights">
-            <div className="auth-highlight">Create and manage announcements</div>
-            <div className="auth-highlight">Control live stream start and stop</div>
-            <div className="auth-highlight">Access timeline and workspace activity</div>
-          </div>
-        </aside>
-
         <section className="auth-card card fade-up-delay">
           <div className="auth-card__head">
             <TopbarStatus className="topbar-status--auth topbar-status--auth-card" />
