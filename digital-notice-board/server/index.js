@@ -1884,10 +1884,8 @@ app.post(
       startAt,
       endAt
     } = req.body;
-
-    if (!title || !content) {
-      return res.status(400).json({ error: 'Title and content are required' });
-    }
+    const normalizedTitle = String(title || '').trim();
+    const normalizedContent = String(content || '').trim();
 
     const durationValue = Number.parseInt(duration, 10);
     const safePriority = normalizePriorityValue(priority, 1);
@@ -1908,19 +1906,25 @@ app.post(
     }
 
     const uploadedFile = mediaFile || documentFile;
+    if (!normalizedTitle && !normalizedContent && !uploadedFile) {
+      return res.status(400).json({
+        error: 'Add at least one: title, content, image/video, or document attachment.'
+      });
+    }
+
     const uploadResult = uploadedFile ? await uploadAttachmentToStorage(uploadedFile) : null;
     const attachmentPath = uploadResult ? uploadResult.url : null;
     const attachmentMetadata = getAttachmentMetadata(uploadedFile);
     const announcementRow = {
       id: generateId(),
-      title,
-      content,
+      title: normalizedTitle,
+      content: normalizedContent,
       priority: safePriority,
       duration: safeDuration,
       is_active: toBoolean(isActive !== undefined ? isActive : active, true),
       category: category || null,
       image: attachmentPath,
-      type: getAnnouncementType(attachmentPath, content, uploadedFile && uploadedFile.mimetype),
+      type: getAnnouncementType(attachmentPath, normalizedContent, uploadedFile && uploadedFile.mimetype),
       ...attachmentMetadata,
       created_at: new Date().toISOString(),
       start_at: startDate.toISOString(),
@@ -1937,7 +1941,7 @@ app.post(
       timestamp: new Date().toISOString()
     });
 
-    console.log(`✅ Created announcement: ${title}`);
+    console.log(`✅ Created announcement: ${normalizedTitle || uploadedFile?.originalname || data.id}`);
     res.status(201).json(toAnnouncementDto(data));
   } catch (error) {
     console.error('❌ Error creating announcement:', error);
@@ -1967,6 +1971,10 @@ app.put(
 
     const { title, content, priority, duration, isActive, active, category, startAt, endAt } =
       req.body;
+    const hasTitleField = Object.prototype.hasOwnProperty.call(req.body || {}, 'title');
+    const hasContentField = Object.prototype.hasOwnProperty.call(req.body || {}, 'content');
+    const normalizedTitle = hasTitleField ? String(title || '').trim() : null;
+    const normalizedContent = hasContentField ? String(content || '').trim() : null;
 
     const { mediaFile, documentFile } = getUploadedAttachment(req);
     if (mediaFile && documentFile) {
@@ -2004,7 +2012,15 @@ app.put(
       return res.status(400).json({ error: 'Invalid startAt or endAt date' });
     }
 
-    const effectiveContent = content || existing.content;
+    const nextTitle = hasTitleField ? normalizedTitle : String(existing.title || '').trim();
+    const nextContent = hasContentField ? normalizedContent : String(existing.content || '').trim();
+    if (!nextTitle && !nextContent && !attachmentPath) {
+      return res.status(400).json({
+        error: 'Add at least one: title, content, image/video, or document attachment.'
+      });
+    }
+
+    const effectiveContent = nextContent;
     const updateRow = {
       image: attachmentPath,
       type: getAnnouncementType(attachmentPath, effectiveContent, uploadedFile && uploadedFile.mimetype),
@@ -2015,8 +2031,8 @@ app.put(
       updated_at: new Date().toISOString()
     };
 
-    if (title) updateRow.title = title;
-    if (content) updateRow.content = content;
+    if (hasTitleField) updateRow.title = normalizedTitle;
+    if (hasContentField) updateRow.content = normalizedContent;
     if (priority !== undefined && priority !== null && String(priority).trim() !== '') {
       updateRow.priority = normalizePriorityValue(priority, existing.priority);
     }

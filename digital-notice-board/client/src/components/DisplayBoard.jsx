@@ -206,6 +206,11 @@ const DisplayBoard = () => {
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
   const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
   const currentAnnouncementHasAnyMedia = Boolean(currentAnnouncement && currentAnnouncement.image);
+  const currentAnnouncementTitle = String((currentAnnouncement && currentAnnouncement.title) || '').trim();
+  const currentAnnouncementContent = String((currentAnnouncement && currentAnnouncement.content) || '').trim();
+  const currentAnnouncementHasText = Boolean(currentAnnouncementTitle || currentAnnouncementContent);
+  const isAttachmentOnlyAnnouncement = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
+  const shouldShowEmergencyContent = currentAnnouncementHasText || !currentAnnouncementHasAnyMedia;
   const currentAnnouncementVideoUrl = currentAnnouncementHasVideo
     ? assetUrl(currentAnnouncement.image)
     : null;
@@ -218,9 +223,11 @@ const DisplayBoard = () => {
     normalizedDisplayCategory === normalizedLiveCategory;
   const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
   const showLivePanel = isLiveOn;
+  const showAttachmentOnlyPanel = !showLivePanel && isAttachmentOnlyAnnouncement;
   const showAnnouncementMediaPanel =
-    !showLivePanel && (currentAnnouncementHasImage || currentAnnouncementHasVideo);
+    !showLivePanel && !showAttachmentOnlyPanel && (currentAnnouncementHasImage || currentAnnouncementHasVideo);
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
+  const isSingleColumnLayout = showAttachmentOnlyPanel || !showSecondaryPanel;
 
   const categoryLabel = currentAnnouncement
     ? getCategoryName(currentAnnouncement.category)
@@ -405,7 +412,9 @@ const DisplayBoard = () => {
           <main className="emergency-override-main card emergency-frame">
             <div
               className={`emergency-override-main__grid ${
-                currentAnnouncementHasAnyMedia ? 'emergency-override-main__grid--with-media' : ''
+                currentAnnouncementHasAnyMedia && shouldShowEmergencyContent
+                  ? 'emergency-override-main__grid--with-media'
+                  : ''
               }`.trim()}
             >
               {currentAnnouncementHasAnyMedia ? (
@@ -417,19 +426,25 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="media-preview--full media-preview--display media-preview--emergency"
                     documentPreview
-                    title={currentAnnouncement.title}
-                    imageAlt={currentAnnouncement.title}
+                    title={currentAnnouncementTitle || 'Attachment'}
+                    imageAlt={currentAnnouncementTitle || 'Attachment'}
                   />
                 </section>
               ) : null}
 
-              <section className="emergency-override-main__content">
-                <p className="announcement-kicker emergency-override-main__kicker">
-                  Immediate Attention Required
-                </p>
-                <h2 className="emergency-override-main__title">{currentAnnouncement.title}</h2>
-                <p className="emergency-override-main__copy">{currentAnnouncement.content}</p>
-              </section>
+              {shouldShowEmergencyContent ? (
+                <section className="emergency-override-main__content">
+                  <p className="announcement-kicker emergency-override-main__kicker">
+                    Immediate Attention Required
+                  </p>
+                  {currentAnnouncementTitle ? (
+                    <h2 className="emergency-override-main__title">{currentAnnouncementTitle}</h2>
+                  ) : null}
+                  {currentAnnouncementContent ? (
+                    <p className="emergency-override-main__copy">{currentAnnouncementContent}</p>
+                  ) : null}
+                </section>
+              ) : null}
             </div>
           </main>
         </div>
@@ -481,7 +496,7 @@ const DisplayBoard = () => {
 
         {requestError ? <div className="auth-error">{requestError}</div> : null}
 
-        <main className={`display-main ${showSecondaryPanel ? '' : 'display-main--single'}`.trim()}>
+        <main className={`display-main ${isSingleColumnLayout ? 'display-main--single' : ''}`.trim()}>
           {showLivePanel ? (
             <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
             <div className="panel-head">
@@ -573,6 +588,23 @@ const DisplayBoard = () => {
             </section>
           ) : null}
 
+          {showAttachmentOnlyPanel ? (
+            <section className={`announcement-panel display-panel display-panel--media-only ${isEmergency ? 'emergency-frame' : ''}`}>
+              <div className="announcement-body announcement-body--media-only">
+                <AttachmentPreview
+                  filePath={currentAnnouncement.image}
+                  fileName={currentAnnouncement.fileName}
+                  typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                  fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                  className="media-preview--full media-preview--display media-preview--display-fullscreen"
+                  documentPreview
+                  title="Attachment"
+                  imageAlt="Attachment"
+                />
+              </div>
+            </section>
+          ) : null}
+
           {showAnnouncementMediaPanel ? (
             <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
               <div className="panel-head">
@@ -598,6 +630,7 @@ const DisplayBoard = () => {
             </section>
           ) : null}
 
+          {!showAttachmentOnlyPanel ? (
           <section className={`announcement-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
             <div className="panel-head">
               <h2>Current Announcement</h2>
@@ -611,7 +644,9 @@ const DisplayBoard = () => {
               <p className="announcement-kicker">
                 {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
               </p>
-              <h3 className="announcement-title">{currentAnnouncement.title}</h3>
+              {currentAnnouncementTitle ? (
+                <h3 className="announcement-title">{currentAnnouncementTitle}</h3>
+              ) : null}
 
               {currentAnnouncement.image &&
               !showAnnouncementMediaPanel &&
@@ -623,14 +658,17 @@ const DisplayBoard = () => {
                   fileSizeBytes={currentAnnouncement.fileSizeBytes}
                   className="media-preview--full media-preview--display"
                   documentPreview
-                  title={currentAnnouncement.title}
-                  imageAlt={currentAnnouncement.title}
+                  title={currentAnnouncementTitle || 'Attachment'}
+                  imageAlt={currentAnnouncementTitle || 'Attachment'}
                 />
               ) : null}
 
-              <p className="announcement-content">{currentAnnouncement.content}</p>
+              {currentAnnouncementContent ? (
+                <p className="announcement-content">{currentAnnouncementContent}</p>
+              ) : null}
             </div>
           </section>
+          ) : null}
         </main>
 
         <footer className="display-footer">

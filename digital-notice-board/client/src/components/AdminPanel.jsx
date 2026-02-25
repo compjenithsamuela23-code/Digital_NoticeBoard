@@ -303,11 +303,24 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setRequestError('');
 
     try {
+      const normalizedTitle = String(formData.title || '').trim();
+      const normalizedContent = String(formData.content || '').trim();
+      const editingAnnouncement = editingId
+        ? announcements.find((announcement) => announcement.id === editingId)
+        : null;
+      const hasExistingAttachment = Boolean(editingAnnouncement && editingAnnouncement.image);
+      const hasNewAttachment = Boolean(image || documentFile);
+
+      if (!normalizedTitle && !normalizedContent && !hasNewAttachment && !hasExistingAttachment) {
+        setRequestError('Add at least one: title, content, media, or document.');
+        return;
+      }
+
       const payload = new FormData();
       const startAtIso = toApiDateTime(formData.startAt);
       const endAtIso = toApiDateTime(formData.endAt);
-      payload.append('title', formData.title);
-      payload.append('content', formData.content);
+      payload.append('title', normalizedTitle);
+      payload.append('content', normalizedContent);
       payload.append('priority', String(formData.priority));
       payload.append('duration', String(formData.duration));
       payload.append('active', String(formData.isActive));
@@ -1095,26 +1108,27 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             </div>
 
             <div className="field">
-              <label htmlFor="announcement-title">Title</label>
+              <label htmlFor="announcement-title">Title (Optional)</label>
               <input
                 id="announcement-title"
                 type="text"
                 value={formData.title}
                 onChange={(event) => setFormData({ ...formData, title: event.target.value })}
                 placeholder="Exam timetable updated for semester 2"
-                required
               />
             </div>
 
             <div className="field">
-              <label htmlFor="announcement-content">Content</label>
+              <label htmlFor="announcement-content">Content (Optional)</label>
               <textarea
                 id="announcement-content"
                 value={formData.content}
                 onChange={(event) => setFormData({ ...formData, content: event.target.value })}
                 placeholder="Add detailed message for students and staff"
-                required
               />
+              <p className="file-help">
+                You can leave title and content empty when uploading only media/document.
+              </p>
             </div>
 
             <div className="field">
@@ -1254,7 +1268,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           <div className="empty-state">No announcements yet. Create your first one from the form above.</div>
         ) : (
           <div className="notice-grid">
-            {announcements.map((announcement) => (
+            {announcements.map((announcement) => {
+              const noticeTitle = String(announcement.title || '').trim();
+              const noticeContent = String(announcement.content || '').trim();
+              const cardTitle = noticeTitle || (announcement.image ? 'Attachment-only post' : 'Untitled notice');
+              const cardContent = noticeContent || (announcement.image ? 'No text content.' : 'No content.');
+
+              return (
               <article className="notice-card" key={announcement.id} onClick={() => handleEdit(announcement)}>
                 <div className="notice-card__top">
                   <span className={announcement.isActive !== false ? 'pill pill--success' : 'pill pill--danger'}>
@@ -1264,7 +1284,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                   <span className="pill">P{announcement.priority ?? 1}</span>
                 </div>
 
-                <h3 className="notice-card__title">{announcement.title}</h3>
+                <h3 className="notice-card__title">{cardTitle}</h3>
 
                 {announcement.image ? (
                   <AttachmentPreview
@@ -1274,12 +1294,12 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     fileSizeBytes={announcement.fileSizeBytes}
                     className="media-preview--full"
                     documentPreview={false}
-                    title={announcement.title}
-                    imageAlt={announcement.title}
+                    title={cardTitle}
+                    imageAlt={cardTitle}
                   />
                 ) : null}
 
-                <p className="notice-card__content">{announcement.content}</p>
+                <p className="notice-card__content">{cardContent}</p>
 
                 <div className="notice-card__meta">
                   <div>
@@ -1309,7 +1329,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                   </button>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>
