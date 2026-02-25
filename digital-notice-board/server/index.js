@@ -896,9 +896,56 @@ async function findCategoryByInput(categoryInput, errorContext = 'Error validati
   return byNameRows && byNameRows.length > 0 ? byNameRows[0] : null;
 }
 
+const LIVE_LINK_META_PREFIX = 'dnb_live:';
+
+function encodeLiveLinkMetadata(linkValue, categoryValue) {
+  const normalizedLink = String(linkValue || '').trim();
+  if (!normalizedLink) {
+    return null;
+  }
+
+  const normalizedCategory = String(categoryValue || '').trim() || null;
+  const payload = JSON.stringify({
+    link: normalizedLink,
+    category: normalizedCategory
+  });
+  const encodedPayload = Buffer.from(payload, 'utf8').toString('base64url');
+  return `${LIVE_LINK_META_PREFIX}${encodedPayload}`;
+}
+
+function decodeLiveLinkMetadata(storedLinkValue) {
+  const normalized = String(storedLinkValue || '').trim();
+  if (!normalized) {
+    return { link: null, category: null };
+  }
+
+  if (!normalized.startsWith(LIVE_LINK_META_PREFIX)) {
+    return { link: normalized, category: null };
+  }
+
+  const encodedPayload = normalized.slice(LIVE_LINK_META_PREFIX.length);
+  if (!encodedPayload) {
+    return { link: null, category: null };
+  }
+
+  try {
+    const decodedPayload = Buffer.from(encodedPayload, 'base64url').toString('utf8');
+    const parsedPayload = JSON.parse(decodedPayload);
+    return {
+      link: String(parsedPayload.link || '').trim() || null,
+      category: String(parsedPayload.category || '').trim() || null
+    };
+  } catch {
+    return { link: normalized, category: null };
+  }
+}
+
 function toLiveDto(row) {
+  const decodedLinkMeta = row ? decodeLiveLinkMetadata(row.link) : { link: null, category: null };
   const hasCategoryField = row && Object.prototype.hasOwnProperty.call(row, 'category');
-  const rawCategory = hasCategoryField ? row.category : liveStateFallback.category;
+  const rawCategory = hasCategoryField
+    ? row.category || decodedLinkMeta.category
+    : decodedLinkMeta.category || liveStateFallback.category;
   const normalizedCategory = String(rawCategory || '').trim();
 
   if (!row) {
@@ -906,7 +953,7 @@ function toLiveDto(row) {
   }
   return {
     status: row.status || 'OFF',
-    link: row.link || null,
+    link: decodedLinkMeta.link || null,
     category: normalizedCategory || 'all',
     startedAt: toIsoStringOrNull(row.started_at) || undefined,
     stoppedAt: toIsoStringOrNull(row.stopped_at) || undefined
@@ -2473,11 +2520,12 @@ app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
       liveCategoryLabel = matchedCategory.name || matchedCategory.id;
     }
 
+    const persistedLink = encodeLiveLinkMetadata(link, liveCategoryId);
     const now = new Date().toISOString();
     const liveRow = {
       id: LIVE_STATUS_ID,
       status: 'ON',
-      link,
+      link: persistedLink,
       category: liveCategoryId,
       started_at: now,
       stopped_at: null,
