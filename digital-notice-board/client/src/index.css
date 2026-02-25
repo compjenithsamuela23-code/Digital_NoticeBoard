@@ -1368,6 +1368,10 @@ textarea {
   align-items: stretch;
 }
 
+.display-main--single {
+  grid-template-columns: 1fr;
+}
+
 .live-panel,
 .announcement-panel {
   border-radius: 22px;

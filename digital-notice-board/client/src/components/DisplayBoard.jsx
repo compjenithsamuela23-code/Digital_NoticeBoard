@@ -196,12 +196,14 @@ const DisplayBoard = () => {
     ? assetUrl(currentAnnouncement.image)
     : null;
   const activeYouTubeId = getYouTubeID(liveLink);
+  const isLiveOn = liveStatus === 'ON';
+  const showLivePanel = isLiveOn;
 
   const categoryLabel = currentAnnouncement
     ? getCategoryName(currentAnnouncement.category)
     : null;
 
-  const liveBadgeClass = liveStatus === 'ON' ? 'pill pill--success' : 'pill pill--danger';
+  const liveBadgeClass = isLiveOn ? 'pill pill--success' : 'pill pill--danger';
   const isEmergency = hasEmergency;
 
   const actionHint = useMemo(() => {
@@ -382,8 +384,9 @@ const DisplayBoard = () => {
 
         {requestError ? <div className="auth-error">{requestError}</div> : null}
 
-        <main className="display-main">
-          <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
+        <main className={`display-main ${showLivePanel ? '' : 'display-main--single'}`.trim()}>
+          {showLivePanel ? (
+            <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
             <div className="panel-head">
               <h2>Live Broadcast</h2>
               <div className="inline-actions live-panel-actions">
@@ -392,11 +395,11 @@ const DisplayBoard = () => {
                     ? 'Playing uploaded video'
                     : currentAnnouncementHasDocument
                       ? 'Document attachment available'
-                      : liveStatus === 'ON'
+                      : activeYouTubeId
                         ? 'Streaming from live link'
-                        : 'No active stream'}
+                        : 'No active stream link'}
                 </p>
-                {currentAnnouncementHasVideo || (liveStatus === 'ON' && activeYouTubeId) ? (
+                {currentAnnouncementHasVideo || activeYouTubeId ? (
                   <button className="btn btn--ghost btn--tiny" type="button" onClick={handleAudioToggle}>
                     {isAudioMuted ? 'Unmute' : 'Mute'}
                   </button>
@@ -439,7 +442,7 @@ const DisplayBoard = () => {
                     </a>
                   </div>
                 )
-              ) : liveStatus === 'ON' && activeYouTubeId ? (
+              ) : activeYouTubeId ? (
                 <iframe
                   key={`${activeYouTubeId}-${isAudioMuted ? 'muted' : 'sound'}`}
                   title="Live Broadcast"
@@ -464,13 +467,14 @@ const DisplayBoard = () => {
                 </div>
               ) : (
                 <div className="live-placeholder">
-                  <h3>Live Broadcast Offline</h3>
-                  <p>Use admin controls to start a live stream or upload a video announcement.</p>
+                  <h3>Live Broadcast Unavailable</h3>
+                  <p>Live mode is ON, but no stream source is currently available.</p>
                 </div>
               )}
             </div>
             {audioStatusHint ? <p className="file-help">{audioStatusHint}</p> : null}
-          </section>
+            </section>
+          ) : null}
 
           <section className={`announcement-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
             <div className="panel-head">
@@ -487,7 +491,7 @@ const DisplayBoard = () => {
               </p>
               <h3 className="announcement-title">{currentAnnouncement.title}</h3>
 
-              {currentAnnouncement.image && !currentAnnouncementHasVideo ? (
+              {currentAnnouncement.image && (!currentAnnouncementHasVideo || !showLivePanel) ? (
                 <AttachmentPreview
                   filePath={currentAnnouncement.image}
                   fileName={currentAnnouncement.fileName}
