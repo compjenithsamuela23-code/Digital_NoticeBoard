@@ -78,10 +78,9 @@ const AdminLogin = () => {
             </div>
           </div>
 
-          <div className="section-title__text">
-            <p className="topbar__eyebrow">Access</p>
-            <h2>Sign In</h2>
-            <p>Enter admin workspace credentials. Staff and display accounts use their own login pages.</p>
+          <div className="section-title__text section-title__text--center">
+            <h2>ADMIN LOGIN</h2>
+            <p>Sign in administrate the Notice Board.</p>
           </div>
 
           <form className="auth-form" onSubmit={handleLogin}>
