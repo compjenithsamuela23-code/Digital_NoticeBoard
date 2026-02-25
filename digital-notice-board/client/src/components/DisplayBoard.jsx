@@ -202,14 +202,12 @@ const DisplayBoard = () => {
   }, [isPlaying, announcements.length, hasEmergency]);
 
   const currentAnnouncement = announcements[activeSlideIndex] || null;
-  const currentAnnouncementHasImage = isImageMedia(currentAnnouncement);
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
   const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
   const currentAnnouncementHasAnyMedia = Boolean(currentAnnouncement && currentAnnouncement.image);
   const currentAnnouncementTitle = String((currentAnnouncement && currentAnnouncement.title) || '').trim();
   const currentAnnouncementContent = String((currentAnnouncement && currentAnnouncement.content) || '').trim();
   const currentAnnouncementHasText = Boolean(currentAnnouncementTitle || currentAnnouncementContent);
-  const isAttachmentOnlyAnnouncement = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
   const shouldShowEmergencyContent = currentAnnouncementHasText || !currentAnnouncementHasAnyMedia;
   const currentAnnouncementMediaWidth = Number.parseInt(currentAnnouncement && currentAnnouncement.mediaWidth, 10);
   const currentAnnouncementMediaHeight = Number.parseInt(currentAnnouncement && currentAnnouncement.mediaHeight, 10);
@@ -233,11 +231,18 @@ const DisplayBoard = () => {
     normalizedDisplayCategory === normalizedLiveCategory;
   const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
   const showLivePanel = isLiveOn;
-  const showAttachmentOnlyPanel = !showLivePanel && isAttachmentOnlyAnnouncement;
-  const showAnnouncementMediaPanel =
-    !showLivePanel && !showAttachmentOnlyPanel && (currentAnnouncementHasImage || currentAnnouncementHasVideo);
+  const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementHasAnyMedia;
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
-  const isSingleColumnLayout = showAttachmentOnlyPanel || !showSecondaryPanel;
+  const isSingleColumnLayout = !showSecondaryPanel;
+  const announcementMediaStatusLabel = currentAnnouncementHasVideo
+    ? 'Posted video'
+    : currentAnnouncementHasDocument
+      ? 'Posted document'
+      : 'Posted image';
+  const showAnnouncementFallbackText = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
+  const announcementPanelTitle = currentAnnouncementTitle || 'Notice Attachment';
+  const announcementPanelContent =
+    currentAnnouncementContent || 'Media has been posted without additional text content.';
 
   const categoryLabel = currentAnnouncement
     ? getCategoryName(currentAnnouncement.category)
@@ -603,32 +608,13 @@ const DisplayBoard = () => {
             </section>
           ) : null}
 
-          {showAttachmentOnlyPanel ? (
-            <section className={`announcement-panel display-panel display-panel--media-only ${isEmergency ? 'emergency-frame' : ''}`}>
-              <div className="announcement-body announcement-body--media-only">
-                <div className="announcement-media-frame announcement-media-frame--fullscreen" style={mediaAspectStyle}>
-                  <AttachmentPreview
-                    filePath={currentAnnouncement.image}
-                    fileName={currentAnnouncement.fileName}
-                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
-                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                    className="media-preview--full media-preview--display media-preview--display-fullscreen"
-                    documentPreview
-                    title="Attachment"
-                    imageAlt="Attachment"
-                  />
-                </div>
-              </div>
-            </section>
-          ) : null}
-
           {showAnnouncementMediaPanel ? (
             <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
               <div className="panel-head">
                 <h2>Announcement Media</h2>
                 <div className="inline-actions">
                   <p className="topbar__subtitle">
-                    {currentAnnouncementHasVideo ? 'Posted video' : 'Posted image'}
+                    {announcementMediaStatusLabel}
                   </p>
                 </div>
               </div>
@@ -640,16 +626,15 @@ const DisplayBoard = () => {
                     typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="media-preview--full media-preview--display media-preview--display-panel"
-                    documentPreview={false}
-                    title={currentAnnouncementTitle || 'Attachment'}
-                    imageAlt={currentAnnouncementTitle || 'Attachment'}
+                    documentPreview
+                    title={announcementPanelTitle}
+                    imageAlt={announcementPanelTitle}
                   />
                 </div>
               </div>
             </section>
           ) : null}
 
-          {!showAttachmentOnlyPanel ? (
           <section className={`announcement-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
             <div className="panel-head">
               <h2>Current Announcement</h2>
@@ -663,11 +648,11 @@ const DisplayBoard = () => {
               <p className="announcement-kicker">
                 {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
               </p>
-              {currentAnnouncementTitle ? (
-                <h3 className="announcement-title">{currentAnnouncementTitle}</h3>
+              {currentAnnouncementTitle || showAnnouncementFallbackText ? (
+                <h3 className="announcement-title">{announcementPanelTitle}</h3>
               ) : null}
 
-              {currentAnnouncement.image &&
+              {currentAnnouncementHasAnyMedia &&
               !showAnnouncementMediaPanel &&
               (!currentAnnouncementHasVideo || !showLivePanel) ? (
                 <div className="announcement-media-frame announcement-media-frame--inline" style={mediaAspectStyle}>
@@ -678,18 +663,17 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="media-preview--full media-preview--display"
                     documentPreview
-                    title={currentAnnouncementTitle || 'Attachment'}
-                    imageAlt={currentAnnouncementTitle || 'Attachment'}
+                    title={announcementPanelTitle}
+                    imageAlt={announcementPanelTitle}
                   />
                 </div>
               ) : null}
 
-              {currentAnnouncementContent ? (
-                <p className="announcement-content">{currentAnnouncementContent}</p>
+              {currentAnnouncementContent || showAnnouncementFallbackText ? (
+                <p className="announcement-content">{announcementPanelContent}</p>
               ) : null}
             </div>
           </section>
-          ) : null}
         </main>
 
         <footer className="display-footer">
