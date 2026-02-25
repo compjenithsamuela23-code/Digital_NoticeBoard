@@ -71,6 +71,7 @@ const ID_HISTORY_ACTIONS = [
 const liveStateFallback = {
   status: 'OFF',
   link: null,
+  category: null,
   startedAt: null,
   stoppedAt: null
 };
@@ -896,12 +897,17 @@ async function findCategoryByInput(categoryInput, errorContext = 'Error validati
 }
 
 function toLiveDto(row) {
+  const hasCategoryField = row && Object.prototype.hasOwnProperty.call(row, 'category');
+  const rawCategory = hasCategoryField ? row.category : liveStateFallback.category;
+  const normalizedCategory = String(rawCategory || '').trim();
+
   if (!row) {
-    return { status: 'OFF', link: null };
+    return { status: 'OFF', link: null, category: 'all' };
   }
   return {
     status: row.status || 'OFF',
     link: row.link || null,
+    category: normalizedCategory || 'all',
     startedAt: toIsoStringOrNull(row.started_at) || undefined,
     stoppedAt: toIsoStringOrNull(row.stopped_at) || undefined
   };
@@ -1112,10 +1118,46 @@ async function runAnnouncementInsert(insertPayload, context) {
   }
 }
 
+async function runLiveStateUpsert(upsertPayload, context) {
+  const writablePayload = { ...upsertPayload };
+  const removedColumns = new Set();
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('live_state')
+      .upsert(writablePayload, { onConflict: 'id' })
+      .select('*')
+      .single();
+
+    if (!error) {
+      return data;
+    }
+
+    if (isMissingTableError(error, 'live_state')) {
+      return null;
+    }
+
+    const missingColumn = getMissingColumnForTable(error, 'live_state');
+    if (
+      missingColumn &&
+      Object.prototype.hasOwnProperty.call(writablePayload, missingColumn) &&
+      !removedColumns.has(missingColumn)
+    ) {
+      removedColumns.add(missingColumn);
+      delete writablePayload[missingColumn];
+      continue;
+    }
+
+    throwSupabaseError(context, error);
+  }
+}
+
 function getFallbackLiveDto() {
+  const normalizedCategory = String(liveStateFallback.category || '').trim();
   return {
     status: liveStateFallback.status || 'OFF',
     link: liveStateFallback.link || null,
+    category: normalizedCategory || 'all',
     startedAt: liveStateFallback.startedAt || undefined,
     stoppedAt: liveStateFallback.stoppedAt || undefined
   };
@@ -1376,19 +1418,18 @@ async function initializeSupabase() {
     console.log('✅ Upgraded existing admin password storage to bcrypt hash');
   }
 
-  const { error: liveError } = await supabase.from('live_state').upsert(
+  const liveState = await runLiveStateUpsert(
     {
       id: LIVE_STATUS_ID,
       status: 'OFF',
       link: null,
+      category: null,
       updated_at: new Date().toISOString()
     },
-    { onConflict: 'id' }
+    'Error initializing live status'
   );
-  if (isMissingTableError(liveError, 'live_state')) {
+  if (!liveState) {
     console.log('⚠️ live_state table not found. Run server/supabase/schema.sql to enable persisted live status.');
-  } else {
-    throwSupabaseError('Error initializing live status', liveError);
   }
 
   await runAnnouncementMaintenance();
@@ -2416,52 +2457,48 @@ app.delete('/api/staff-users/:id', simpleAuth, requireAdminRole, async (req, res
 
 app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
-    const { link } = req.body;
+    const link = String((req.body && req.body.link) || '').trim();
+    const categoryInput = String((req.body && req.body.category) || '').trim();
     if (!link) return res.status(400).json({ error: 'Link is required' });
+
+    const isGlobalLive = !categoryInput || categoryInput.toLowerCase() === 'all';
+    let liveCategoryId = null;
+    let liveCategoryLabel = 'All categories (global)';
+    if (!isGlobalLive) {
+      const matchedCategory = await findCategoryByInput(categoryInput, 'Error validating live category');
+      if (!matchedCategory) {
+        return res.status(400).json({ error: 'Selected live category does not exist.' });
+      }
+      liveCategoryId = matchedCategory.id;
+      liveCategoryLabel = matchedCategory.name || matchedCategory.id;
+    }
 
     const now = new Date().toISOString();
     const liveRow = {
       id: LIVE_STATUS_ID,
       status: 'ON',
       link,
+      category: liveCategoryId,
       started_at: now,
       stopped_at: null,
       updated_at: now
     };
 
-    const { data, error } = await supabase
-      .from('live_state')
-      .upsert(liveRow, { onConflict: 'id' })
-      .select('*')
-      .single();
-
-    if (isMissingTableError(error, 'live_state')) {
-      liveStateFallback.status = 'ON';
-      liveStateFallback.link = link;
-      liveStateFallback.startedAt = now;
-      liveStateFallback.stoppedAt = null;
-
-      await appendSystemHistory('live_started', (req.user && req.user.email) || null, {
-        title: 'Live Broadcast Started',
-        content: `Live stream started with link: ${link}`,
-        type: 'system_live',
-        actionAt: now
-      });
-
-      io.emit('liveUpdate', getFallbackLiveDto());
-      return res.json(getFallbackLiveDto());
-    }
-
-    throwSupabaseError('Error starting live', error);
+    const data = await runLiveStateUpsert(liveRow, 'Error starting live');
+    liveStateFallback.status = 'ON';
+    liveStateFallback.link = link;
+    liveStateFallback.category = liveCategoryId;
+    liveStateFallback.startedAt = now;
+    liveStateFallback.stoppedAt = null;
 
     await appendSystemHistory('live_started', (req.user && req.user.email) || null, {
       title: 'Live Broadcast Started',
-      content: `Live stream started with link: ${link}`,
+      content: `Live stream started for ${liveCategoryLabel} with link: ${link}`,
       type: 'system_live',
       actionAt: now
     });
 
-    const payload = toLiveDto(data);
+    const payload = data ? toLiveDto(data) : getFallbackLiveDto();
     io.emit('liveUpdate', payload);
     res.json(payload);
   } catch (error) {
@@ -2476,33 +2513,16 @@ app.post('/api/stop', simpleAuth, requireWorkspaceRole, async (req, res) => {
       id: LIVE_STATUS_ID,
       status: 'OFF',
       link: null,
+      category: null,
       stopped_at: now,
       updated_at: now
     };
 
-    const { data, error } = await supabase
-      .from('live_state')
-      .upsert(liveRow, { onConflict: 'id' })
-      .select('*')
-      .single();
-
-    if (isMissingTableError(error, 'live_state')) {
-      liveStateFallback.status = 'OFF';
-      liveStateFallback.link = null;
-      liveStateFallback.stoppedAt = now;
-
-      await appendSystemHistory('live_stopped', (req.user && req.user.email) || null, {
-        title: 'Live Broadcast Stopped',
-        content: 'Live stream was stopped.',
-        type: 'system_live',
-        actionAt: now
-      });
-
-      io.emit('liveUpdate', getFallbackLiveDto());
-      return res.json(getFallbackLiveDto());
-    }
-
-    throwSupabaseError('Error stopping live', error);
+    const data = await runLiveStateUpsert(liveRow, 'Error stopping live');
+    liveStateFallback.status = 'OFF';
+    liveStateFallback.link = null;
+    liveStateFallback.category = null;
+    liveStateFallback.stoppedAt = now;
 
     await appendSystemHistory('live_stopped', (req.user && req.user.email) || null, {
       title: 'Live Broadcast Stopped',
@@ -2511,7 +2531,7 @@ app.post('/api/stop', simpleAuth, requireWorkspaceRole, async (req, res) => {
       actionAt: now
     });
 
-    const payload = toLiveDto(data);
+    const payload = data ? toLiveDto(data) : getFallbackLiveDto();
     io.emit('liveUpdate', payload);
     res.json(payload);
   } catch (error) {

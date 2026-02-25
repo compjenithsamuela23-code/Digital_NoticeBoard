@@ -14,12 +14,21 @@ import { useTheme } from '../hooks/useTheme';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
 
+const normalizeLiveCategory = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized.toLowerCase() === 'all') {
+    return 'all';
+  }
+  return normalized;
+};
+
 const DisplayBoard = () => {
   const [announcements, setAnnouncements] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLink, setLiveLink] = useState(null);
+  const [liveCategory, setLiveCategory] = useState('all');
   const [categories, setCategories] = useState([]);
   const [mediaPreviewError, setMediaPreviewError] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(true);
@@ -103,6 +112,7 @@ const DisplayBoard = () => {
       const response = await apiClient.get(apiUrl('/api/status'));
       setLiveStatus(response.data.status || 'OFF');
       setLiveLink(response.data.link || null);
+      setLiveCategory(normalizeLiveCategory(response.data.category));
       setRequestError('');
     } catch (error) {
       console.error('Error fetching live status:', error);
@@ -156,6 +166,7 @@ const DisplayBoard = () => {
     socket.on('liveUpdate', (data) => {
       setLiveStatus(data.status || 'OFF');
       setLiveLink(data.link || null);
+      setLiveCategory(normalizeLiveCategory(data.category));
     });
 
     return () => {
@@ -199,7 +210,13 @@ const DisplayBoard = () => {
     ? assetUrl(currentAnnouncement.image)
     : null;
   const activeYouTubeId = getYouTubeID(liveLink);
-  const isLiveOn = liveStatus === 'ON';
+  const normalizedDisplayCategory = String(displayCategoryId || 'all').trim() || 'all';
+  const normalizedLiveCategory = normalizeLiveCategory(liveCategory);
+  const isLiveVisibleForDisplay =
+    normalizedLiveCategory === 'all' ||
+    normalizedDisplayCategory === 'all' ||
+    normalizedDisplayCategory === normalizedLiveCategory;
+  const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
   const showLivePanel = isLiveOn;
   const showAnnouncementMediaPanel =
     !showLivePanel && (currentAnnouncementHasImage || currentAnnouncementHasVideo);
@@ -428,7 +445,7 @@ const DisplayBoard = () => {
             <p className="topbar__eyebrow">Digital Notice Board</p>
             <div className={`${liveBadgeClass} live-status-pill`}>
               <span className="badge-dot" />
-              Live Status: {liveStatus}
+              Live Status: {isLiveOn ? 'ON' : 'OFF'}
             </div>
           </div>
 

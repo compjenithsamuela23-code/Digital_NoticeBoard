@@ -34,6 +34,14 @@ const toApiDateTime = (value) => {
   return parsed.toISOString();
 };
 
+const normalizeLiveCategory = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized.toLowerCase() === 'all') {
+    return 'all';
+  }
+  return normalized;
+};
+
 const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
 const MEDIA_ACCEPT =
   'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
@@ -61,6 +69,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [liveLinkInput, setLiveLinkInput] = useState('');
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLink, setLiveLink] = useState(null);
+  const [liveCategory, setLiveCategory] = useState('all');
   const [categories, setCategories] = useState([]);
   const [newCategory, setNewCategory] = useState('');
   const [categorySaving, setCategorySaving] = useState(false);
@@ -130,6 +139,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     return { total, active, emergency };
   }, [announcements]);
 
+  const liveCategoryLabel = useMemo(() => {
+    if (liveCategory === 'all') {
+      return 'All categories (global)';
+    }
+    const matchedCategory = categories.find((category) => category.id === liveCategory);
+    return matchedCategory ? matchedCategory.name : 'Selected category';
+  }, [categories, liveCategory]);
+
   const fetchAnnouncements = useCallback(async () => {
     try {
       const response = await apiClient.get(apiUrl('/api/announcements'), applyWorkspaceAuth());
@@ -146,6 +163,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       const response = await apiClient.get(apiUrl('/api/status'));
       setLiveStatus(response.data.status || 'OFF');
       setLiveLink(response.data.link || null);
+      setLiveCategory(normalizeLiveCategory(response.data.category));
     } catch (error) {
       console.error('Error fetching live status:', error);
     }
@@ -234,6 +252,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     socket.on('liveUpdate', (payload) => {
       setLiveStatus(payload.status || 'OFF');
       setLiveLink(payload.link || null);
+      setLiveCategory(normalizeLiveCategory(payload.category));
     });
 
     socket.on('announcementUpdate', fetchAnnouncements);
@@ -435,9 +454,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     try {
       setRequestError('');
-      await apiClient.post(apiUrl('/api/start'), { link: trimmed }, applyWorkspaceAuth());
-      setLiveStatus('ON');
-      setLiveLink(trimmed);
+      const response = await apiClient.post(
+        apiUrl('/api/start'),
+        { link: trimmed, category: liveCategory },
+        applyWorkspaceAuth()
+      );
+      setLiveStatus(response.data?.status || 'ON');
+      setLiveLink(response.data?.link || trimmed);
+      setLiveCategory(normalizeLiveCategory(response.data?.category || liveCategory));
       setLiveLinkInput('');
     } catch (error) {
       if (handleRequestError(error, 'Failed to start live feed.')) return;
@@ -448,9 +472,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const stopLive = async () => {
     try {
       setRequestError('');
-      await apiClient.post(apiUrl('/api/stop'), {}, applyWorkspaceAuth());
-      setLiveStatus('OFF');
-      setLiveLink(null);
+      const response = await apiClient.post(apiUrl('/api/stop'), {}, applyWorkspaceAuth());
+      setLiveStatus(response.data?.status || 'OFF');
+      setLiveLink(response.data?.link || null);
+      setLiveCategory(normalizeLiveCategory(response.data?.category || 'all'));
     } catch (error) {
       if (handleRequestError(error, 'Failed to stop live feed.')) return;
       console.error('Error stopping live:', error);
@@ -997,6 +1022,22 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             />
           </div>
 
+          <div className="field">
+            <label htmlFor="live-category">Live Category</label>
+            <select
+              id="live-category"
+              value={liveCategory}
+              onChange={(event) => setLiveCategory(event.target.value)}
+            >
+              <option value="all">All categories (global)</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="inline-actions">
             <button className="btn btn--success" type="button" onClick={startLive}>
               Start Live
@@ -1008,6 +1049,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
           {liveLink ? (
             <p className="file-help">
+              Category: {liveCategoryLabel}
+              <br />
               Current live link:{' '}
               <a href={liveLink} target="_blank" rel="noreferrer">
                 {liveLink}

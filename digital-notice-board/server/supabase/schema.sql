@@ -89,13 +89,19 @@ create table if not exists live_state (
   id integer primary key,
   status text not null default 'OFF',
   link text null,
+  category uuid null,
   started_at timestamptz null,
   stopped_at timestamptz null,
   updated_at timestamptz not null default timezone('utc', now())
 );
 
-insert into live_state (id, status, link)
-values (1, 'OFF', null)
+alter table live_state add column if not exists category uuid null;
+
+create index if not exists live_state_category_idx
+  on live_state (category);
+
+insert into live_state (id, status, link, category)
+values (1, 'OFF', null, null)
 on conflict (id) do nothing;
 
 alter table announcements add column if not exists file_name text null;
