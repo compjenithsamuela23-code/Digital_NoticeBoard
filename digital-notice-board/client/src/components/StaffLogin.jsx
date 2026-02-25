@@ -97,10 +97,9 @@ const StaffLogin = () => {
             </div>
           </div>
 
-          <div className="section-title__text">
-            <p className="topbar__eyebrow">Staff Access</p>
-            <h2>Sign In</h2>
-            <p>Use your staff credential to open staff dashboard.</p>
+          <div className="section-title__text section-title__text--center">
+            <h2>STAFF LOGIN</h2>
+            <p>Sign in to create,edit,and publish department Specific Notices.</p>
           </div>
 
           <form className="auth-form" onSubmit={handleLogin}>
