@@ -152,10 +152,9 @@ const DisplayLogin = () => {
             </div>
           </div>
 
-          <div className="section-title__text">
-            <p className="topbar__eyebrow">Display Access</p>
-            <h2>Sign In</h2>
-            <p>Enter username, password, and select your assigned category to continue.</p>
+          <div className="section-title__text section-title__text--center">
+            <h2>DISPLAY LOGIN</h2>
+            <p>Acess display mode to show notices and announcements on the Notice Board.</p>
           </div>
 
           <form className="auth-form" onSubmit={handleLogin}>

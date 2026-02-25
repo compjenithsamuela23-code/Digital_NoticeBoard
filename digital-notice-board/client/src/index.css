@@ -794,6 +794,16 @@ textarea {
   max-width: 72ch;
 }
 
+.section-title__text--center {
+  text-align: center;
+  justify-items: center;
+  margin-inline: auto;
+}
+
+.section-title__text--center p {
+  max-width: 48ch;
+}
+
 .section-title h2 {
   font-size: clamp(1.12rem, 2vw, 1.45rem);
 }
