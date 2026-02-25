@@ -367,14 +367,6 @@ function normalizeUploadedMimeType(value) {
   return raw.split(';')[0].trim().slice(0, 120) || null;
 }
 
-function parsePositiveInteger(value) {
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
-}
-
 function getAttachmentMetadata(uploadedFile) {
   if (!uploadedFile) {
     return {
@@ -790,8 +782,6 @@ function isAnnouncementVisibleForDisplayCategory(row, requestedCategory) {
 function toAnnouncementDto(row) {
   if (!row) return null;
   const parsedFileSize = Number.parseInt(row.file_size_bytes, 10);
-  const mediaWidth = Number.parseInt(row.media_width, 10);
-  const mediaHeight = Number.parseInt(row.media_height, 10);
   return {
     id: row.id,
     title: row.title,
@@ -806,8 +796,6 @@ function toAnnouncementDto(row) {
     fileName: row.file_name || null,
     fileMimeType: row.file_mime_type || null,
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
-    mediaWidth: Number.isNaN(mediaWidth) ? null : mediaWidth,
-    mediaHeight: Number.isNaN(mediaHeight) ? null : mediaHeight,
     createdAt: toIsoStringOrNull(row.created_at),
     startAt: toIsoStringOrNull(row.start_at),
     endAt: toIsoStringOrNull(row.end_at),
@@ -822,8 +810,6 @@ function toHistoryDto(row) {
   const snapshot = row.data && typeof row.data === 'object' ? row.data : {};
   const announcementId = row.announcement_id || row.id || snapshot.id;
   const parsedFileSize = Number.parseInt(row.file_size_bytes ?? snapshot.file_size_bytes, 10);
-  const parsedMediaWidth = Number.parseInt(row.media_width ?? snapshot.media_width, 10);
-  const parsedMediaHeight = Number.parseInt(row.media_height ?? snapshot.media_height, 10);
 
   return {
     id: announcementId,
@@ -838,8 +824,6 @@ function toHistoryDto(row) {
     fileName: row.file_name || snapshot.file_name || null,
     fileMimeType: row.file_mime_type || snapshot.file_mime_type || null,
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
-    mediaWidth: Number.isNaN(parsedMediaWidth) ? null : parsedMediaWidth,
-    mediaHeight: Number.isNaN(parsedMediaHeight) ? null : parsedMediaHeight,
     createdAt: toIsoStringOrNull(row.created_at || snapshot.created_at),
     startAt: toIsoStringOrNull(row.start_at || snapshot.start_at),
     endAt: toIsoStringOrNull(row.end_at || snapshot.end_at),
@@ -1274,8 +1258,6 @@ async function appendHistory(announcementRow, action, userEmail, options = {}) {
         file_name: announcementRow.file_name || null,
         file_mime_type: announcementRow.file_mime_type || null,
         file_size_bytes: announcementRow.file_size_bytes ?? null,
-        media_width: announcementRow.media_width ?? null,
-        media_height: announcementRow.media_height ?? null,
         created_at: announcementRow.created_at,
         start_at: announcementRow.start_at,
         end_at: announcementRow.end_at,
@@ -1299,8 +1281,6 @@ async function appendHistory(announcementRow, action, userEmail, options = {}) {
     file_name: announcementRow.file_name || null,
     file_mime_type: announcementRow.file_mime_type || null,
     file_size_bytes: announcementRow.file_size_bytes ?? null,
-    media_width: announcementRow.media_width ?? null,
-    media_height: announcementRow.media_height ?? null,
     created_at: announcementRow.created_at,
     start_at: announcementRow.start_at,
     end_at: announcementRow.end_at,
@@ -1331,8 +1311,6 @@ function buildSystemHistoryRow(details = {}) {
     file_name: sanitizeOriginalFileName(details.fileName) || null,
     file_mime_type: normalizeUploadedMimeType(details.fileMimeType) || null,
     file_size_bytes: Number.isNaN(fileSizeValue) ? null : Math.max(0, fileSizeValue),
-    media_width: parsePositiveInteger(details.mediaWidth),
-    media_height: parsePositiveInteger(details.mediaHeight),
     created_at: eventIso,
     start_at: eventIso,
     end_at: eventIso,
@@ -1904,14 +1882,10 @@ app.post(
       active,
       category = '',
       startAt,
-      endAt,
-      mediaWidth,
-      mediaHeight
+      endAt
     } = req.body;
     const normalizedTitle = String(title || '').trim();
     const normalizedContent = String(content || '').trim();
-    const normalizedMediaWidth = parsePositiveInteger(mediaWidth);
-    const normalizedMediaHeight = parsePositiveInteger(mediaHeight);
 
     const durationValue = Number.parseInt(duration, 10);
     const safePriority = normalizePriorityValue(priority, 1);
@@ -1952,8 +1926,6 @@ app.post(
       image: attachmentPath,
       type: getAnnouncementType(attachmentPath, normalizedContent, uploadedFile && uploadedFile.mimetype),
       ...attachmentMetadata,
-      media_width: normalizedMediaWidth,
-      media_height: normalizedMediaHeight,
       created_at: new Date().toISOString(),
       start_at: startDate.toISOString(),
       end_at: endDate.toISOString(),
@@ -1997,27 +1969,12 @@ app.put(
       });
     }
 
-    const {
-      title,
-      content,
-      priority,
-      duration,
-      isActive,
-      active,
-      category,
-      startAt,
-      endAt,
-      mediaWidth,
-      mediaHeight
-    } = req.body;
+    const { title, content, priority, duration, isActive, active, category, startAt, endAt } =
+      req.body;
     const hasTitleField = Object.prototype.hasOwnProperty.call(req.body || {}, 'title');
     const hasContentField = Object.prototype.hasOwnProperty.call(req.body || {}, 'content');
-    const hasMediaWidthField = Object.prototype.hasOwnProperty.call(req.body || {}, 'mediaWidth');
-    const hasMediaHeightField = Object.prototype.hasOwnProperty.call(req.body || {}, 'mediaHeight');
     const normalizedTitle = hasTitleField ? String(title || '').trim() : null;
     const normalizedContent = hasContentField ? String(content || '').trim() : null;
-    const normalizedMediaWidth = hasMediaWidthField ? parsePositiveInteger(mediaWidth) : null;
-    const normalizedMediaHeight = hasMediaHeightField ? parsePositiveInteger(mediaHeight) : null;
 
     const { mediaFile, documentFile } = getUploadedAttachment(req);
     if (mediaFile && documentFile) {
@@ -2028,8 +1985,6 @@ app.put(
     const uploadResult = uploadedFile ? await uploadAttachmentToStorage(uploadedFile) : null;
     const attachmentPath = uploadResult ? uploadResult.url : existing.image;
     const existingFileSize = Number.parseInt(existing.file_size_bytes, 10);
-    const existingMediaWidth = parsePositiveInteger(existing.media_width);
-    const existingMediaHeight = parsePositiveInteger(existing.media_height);
     const attachmentMetadata = uploadedFile
       ? getAttachmentMetadata(uploadedFile)
       : {
@@ -2070,8 +2025,6 @@ app.put(
       image: attachmentPath,
       type: getAnnouncementType(attachmentPath, effectiveContent, uploadedFile && uploadedFile.mimetype),
       ...attachmentMetadata,
-      media_width: uploadedFile ? normalizedMediaWidth : existingMediaWidth,
-      media_height: uploadedFile ? normalizedMediaHeight : existingMediaHeight,
       start_at: newStart.toISOString(),
       end_at: newEnd.toISOString(),
       expires_at: newEnd.toISOString(),
@@ -2080,8 +2033,6 @@ app.put(
 
     if (hasTitleField) updateRow.title = normalizedTitle;
     if (hasContentField) updateRow.content = normalizedContent;
-    if (hasMediaWidthField) updateRow.media_width = normalizedMediaWidth;
-    if (hasMediaHeightField) updateRow.media_height = normalizedMediaHeight;
     if (priority !== undefined && priority !== null && String(priority).trim() !== '') {
       updateRow.priority = normalizePriorityValue(priority, existing.priority);
     }

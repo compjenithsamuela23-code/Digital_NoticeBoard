@@ -42,49 +42,6 @@ const normalizeLiveCategory = (value) => {
   return normalized;
 };
 
-const getFileIdentity = (file) =>
-  file ? `${file.name || ''}:${file.size || 0}:${file.lastModified || 0}:${file.type || ''}` : '';
-
-const detectMediaDimensions = (file) =>
-  new Promise((resolve) => {
-    if (!file) {
-      resolve({ width: null, height: null });
-      return;
-    }
-
-    const mime = String(file.type || '').toLowerCase();
-    if (!mime.startsWith('image/') && !mime.startsWith('video/')) {
-      resolve({ width: null, height: null });
-      return;
-    }
-
-    const objectUrl = URL.createObjectURL(file);
-    const cleanup = () => URL.revokeObjectURL(objectUrl);
-    const finish = (width, height) => {
-      cleanup();
-      resolve({
-        width: Number.isFinite(width) && width > 0 ? Math.round(width) : null,
-        height: Number.isFinite(height) && height > 0 ? Math.round(height) : null
-      });
-    };
-
-    if (mime.startsWith('image/')) {
-      const image = new Image();
-      image.onload = () => finish(image.naturalWidth || image.width, image.naturalHeight || image.height);
-      image.onerror = () => finish(null, null);
-      image.src = objectUrl;
-      return;
-    }
-
-    const video = document.createElement('video');
-    video.preload = 'metadata';
-    video.muted = true;
-    video.playsInline = true;
-    video.onloadedmetadata = () => finish(video.videoWidth, video.videoHeight);
-    video.onerror = () => finish(null, null);
-    video.src = objectUrl;
-  });
-
 const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
 const MEDIA_ACCEPT =
   'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
@@ -96,7 +53,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [editingId, setEditingId] = useState(null);
   const [image, setImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
-  const [mediaDimensions, setMediaDimensions] = useState({ width: null, height: null });
   const [documentFile, setDocumentFile] = useState(null);
   const [documentPreviewUrl, setDocumentPreviewUrl] = useState(null);
   const [formData, setFormData] = useState({
@@ -137,7 +93,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [requestError, setRequestError] = useState('');
   const mediaInputRef = useRef(null);
   const documentInputRef = useRef(null);
-  const mediaDetectionRef = useRef('');
 
   const navigate = useNavigate();
   const { socket } = useSocket();
@@ -333,8 +288,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     });
     setImage(null);
     setImagePreview(null);
-    setMediaDimensions({ width: null, height: null });
-    mediaDetectionRef.current = '';
     setDocumentFile(null);
     if (documentPreviewUrl) {
       URL.revokeObjectURL(documentPreviewUrl);
@@ -372,10 +325,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       payload.append('duration', String(formData.duration));
       payload.append('active', String(formData.isActive));
       payload.append('category', formData.category || '');
-      if (mediaDimensions.width && mediaDimensions.height) {
-        payload.append('mediaWidth', String(mediaDimensions.width));
-        payload.append('mediaHeight', String(mediaDimensions.height));
-      }
       if (startAtIso) {
         payload.append('startAt', startAtIso);
       }
@@ -434,8 +383,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   const handleEdit = (announcement) => {
     setEditingId(announcement.id);
-    const parsedMediaWidth = Number.parseInt(announcement.mediaWidth, 10);
-    const parsedMediaHeight = Number.parseInt(announcement.mediaHeight, 10);
     setFormData({
       title: announcement.title || '',
       content: announcement.content || '',
@@ -448,11 +395,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     });
     setImage(null);
     setImagePreview(null);
-    setMediaDimensions({
-      width: Number.isNaN(parsedMediaWidth) || parsedMediaWidth <= 0 ? null : parsedMediaWidth,
-      height: Number.isNaN(parsedMediaHeight) || parsedMediaHeight <= 0 ? null : parsedMediaHeight
-    });
-    mediaDetectionRef.current = '';
     setDocumentFile(null);
     if (documentPreviewUrl) {
       URL.revokeObjectURL(documentPreviewUrl);
@@ -473,8 +415,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     if (!file) {
       setImage(null);
       setImagePreview(null);
-      setMediaDimensions({ width: null, height: null });
-      mediaDetectionRef.current = '';
       return;
     }
 
@@ -486,17 +426,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     if (documentInputRef.current) documentInputRef.current.value = '';
     setImage(file);
     setImagePreview(URL.createObjectURL(file));
-    setMediaDimensions({ width: null, height: null });
-
-    const fileIdentity = getFileIdentity(file);
-    mediaDetectionRef.current = fileIdentity;
-    detectMediaDimensions(file).then((dimensions) => {
-      if (mediaDetectionRef.current !== fileIdentity) return;
-      setMediaDimensions({
-        width: dimensions.width,
-        height: dimensions.height
-      });
-    });
   };
 
   const handleDocumentChange = (event) => {
@@ -508,8 +437,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     if (!file) {
       setDocumentFile(null);
-      setMediaDimensions({ width: null, height: null });
-      mediaDetectionRef.current = '';
       return;
     }
 
@@ -528,8 +455,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setDocumentPreviewUrl(URL.createObjectURL(file));
     setImage(null);
     setImagePreview(null);
-    setMediaDimensions({ width: null, height: null });
-    mediaDetectionRef.current = '';
     if (mediaInputRef.current) mediaInputRef.current.value = '';
   };
 

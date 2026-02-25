@@ -25,8 +25,6 @@ create table if not exists announcements (
   file_name text null,
   file_mime_type text null,
   file_size_bytes bigint null,
-  media_width integer null,
-  media_height integer null,
   created_at timestamptz not null default timezone('utc', now()),
   start_at timestamptz not null,
   end_at timestamptz not null,
@@ -69,8 +67,6 @@ create table if not exists history (
   file_name text null,
   file_mime_type text null,
   file_size_bytes bigint null,
-  media_width integer null,
-  media_height integer null,
   created_at timestamptz not null,
   start_at timestamptz not null,
   end_at timestamptz not null,
@@ -111,8 +107,6 @@ on conflict (id) do nothing;
 alter table announcements add column if not exists file_name text null;
 alter table announcements add column if not exists file_mime_type text null;
 alter table announcements add column if not exists file_size_bytes bigint null;
-alter table announcements add column if not exists media_width integer null;
-alter table announcements add column if not exists media_height integer null;
 
 do $$
 begin
@@ -133,5 +127,3 @@ $$;
 alter table history add column if not exists file_name text null;
 alter table history add column if not exists file_mime_type text null;
 alter table history add column if not exists file_size_bytes bigint null;
-alter table history add column if not exists media_width integer null;
-alter table history add column if not exists media_height integer null;

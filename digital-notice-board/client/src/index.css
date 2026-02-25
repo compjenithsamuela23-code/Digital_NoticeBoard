@@ -1043,9 +1043,8 @@ textarea {
 
 .media-preview.media-preview--display img,
 .media-preview.media-preview--display video {
-  width: auto;
+  width: 100%;
   height: auto;
-  max-width: 100%;
   max-height: min(70vh, 720px);
   object-fit: contain;
   object-position: center;
@@ -1064,11 +1063,7 @@ textarea {
 
 .media-preview.media-preview--display.media-preview--display-panel img,
 .media-preview.media-preview--display.media-preview--display-panel video {
-  width: auto;
-  height: auto;
-  max-width: 100%;
   max-height: 100%;
-  object-fit: contain;
 }
 
 .media-preview.media-preview--display.media-preview--emergency {
@@ -1083,10 +1078,9 @@ textarea {
 
 .media-preview.media-preview--display.media-preview--emergency img,
 .media-preview.media-preview--display.media-preview--emergency video {
-  width: auto;
-  height: auto;
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  max-height: none;
   object-fit: contain;
   object-position: center;
 }
@@ -1665,25 +1659,11 @@ textarea {
   overflow: hidden;
 }
 
-.live-body__iframe,
-.live-body__video {
-  border: 0;
-  max-width: 100%;
-  max-height: 100%;
-}
-
-.live-body__video {
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  object-position: center;
-}
-
-.live-body__iframe {
+.live-body iframe,
+.live-body video {
   width: 100%;
-  height: auto;
-  max-height: 100%;
-  aspect-ratio: 16 / 9;
+  height: 100%;
+  border: 0;
 }
 
 .live-document-wrap {
@@ -1724,22 +1704,6 @@ textarea {
   gap: 14px;
 }
 
-.announcement-media-frame {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  max-width: 100%;
-  max-height: 100%;
-  overflow: hidden;
-}
-
-.announcement-media-frame--panel,
-.announcement-media-frame--inline,
-.announcement-media-frame--emergency {
-  min-height: 0;
-  max-height: 100%;
-}
-
 .display-panel--media-only {
   grid-template-rows: 1fr;
 }
@@ -1750,17 +1714,10 @@ textarea {
   height: 100%;
 }
 
-.announcement-media-frame--fullscreen {
-  width: 100%;
-  height: auto;
-  max-height: 100%;
-  min-height: clamp(360px, 62vh, 760px);
-}
-
 .media-preview.media-preview--display.media-preview--display-fullscreen {
   width: 100%;
   height: 100%;
-  min-height: 0;
+  min-height: clamp(360px, 62vh, 760px);
   max-height: none;
   border: 0;
   border-radius: 0;
@@ -1769,10 +1726,9 @@ textarea {
 
 .media-preview.media-preview--display.media-preview--display-fullscreen img,
 .media-preview.media-preview--display.media-preview--display-fullscreen video {
-  width: auto;
-  height: auto;
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  max-height: none;
   object-fit: contain;
   object-position: center;
 }
