@@ -211,6 +211,16 @@ const DisplayBoard = () => {
   const currentAnnouncementHasText = Boolean(currentAnnouncementTitle || currentAnnouncementContent);
   const isAttachmentOnlyAnnouncement = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
   const shouldShowEmergencyContent = currentAnnouncementHasText || !currentAnnouncementHasAnyMedia;
+  const currentAnnouncementMediaWidth = Number.parseInt(currentAnnouncement && currentAnnouncement.mediaWidth, 10);
+  const currentAnnouncementMediaHeight = Number.parseInt(currentAnnouncement && currentAnnouncement.mediaHeight, 10);
+  const hasMediaDimensions =
+    Number.isFinite(currentAnnouncementMediaWidth) &&
+    currentAnnouncementMediaWidth > 0 &&
+    Number.isFinite(currentAnnouncementMediaHeight) &&
+    currentAnnouncementMediaHeight > 0;
+  const mediaAspectStyle = hasMediaDimensions
+    ? { aspectRatio: `${currentAnnouncementMediaWidth} / ${currentAnnouncementMediaHeight}` }
+    : undefined;
   const currentAnnouncementVideoUrl = currentAnnouncementHasVideo
     ? assetUrl(currentAnnouncement.image)
     : null;
@@ -419,16 +429,18 @@ const DisplayBoard = () => {
             >
               {currentAnnouncementHasAnyMedia ? (
                 <section className="emergency-override-main__media">
-                  <AttachmentPreview
-                    filePath={currentAnnouncement.image}
-                    fileName={currentAnnouncement.fileName}
-                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
-                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                    className="media-preview--full media-preview--display media-preview--emergency"
-                    documentPreview
-                    title={currentAnnouncementTitle || 'Attachment'}
-                    imageAlt={currentAnnouncementTitle || 'Attachment'}
-                  />
+                  <div className="announcement-media-frame announcement-media-frame--emergency" style={mediaAspectStyle}>
+                    <AttachmentPreview
+                      filePath={currentAnnouncement.image}
+                      fileName={currentAnnouncement.fileName}
+                      typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                      fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                      className="media-preview--full media-preview--display media-preview--emergency"
+                      documentPreview
+                      title={currentAnnouncementTitle || 'Attachment'}
+                      imageAlt={currentAnnouncementTitle || 'Attachment'}
+                    />
+                  </div>
                 </section>
               ) : null}
 
@@ -536,6 +548,7 @@ const DisplayBoard = () => {
                 !mediaPreviewError ? (
                   <video
                     ref={liveVideoRef}
+                    className="live-body__video"
                     key={currentAnnouncementVideoUrl}
                     src={currentAnnouncementVideoUrl}
                     autoPlay
@@ -543,6 +556,7 @@ const DisplayBoard = () => {
                     loop
                     muted={isAudioMuted}
                     playsInline
+                    style={mediaAspectStyle}
                     onError={() => setMediaPreviewError(true)}
                   />
                 ) : (
@@ -556,6 +570,7 @@ const DisplayBoard = () => {
                 )
               ) : activeYouTubeId ? (
                 <iframe
+                  className="live-body__iframe"
                   key={`${activeYouTubeId}-${isAudioMuted ? 'muted' : 'sound'}`}
                   title="Live Broadcast"
                   src={`https://www.youtube.com/embed/${activeYouTubeId}?autoplay=1&mute=${
@@ -591,16 +606,18 @@ const DisplayBoard = () => {
           {showAttachmentOnlyPanel ? (
             <section className={`announcement-panel display-panel display-panel--media-only ${isEmergency ? 'emergency-frame' : ''}`}>
               <div className="announcement-body announcement-body--media-only">
-                <AttachmentPreview
-                  filePath={currentAnnouncement.image}
-                  fileName={currentAnnouncement.fileName}
-                  typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
-                  fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                  className="media-preview--full media-preview--display media-preview--display-fullscreen"
-                  documentPreview
-                  title="Attachment"
-                  imageAlt="Attachment"
-                />
+                <div className="announcement-media-frame announcement-media-frame--fullscreen" style={mediaAspectStyle}>
+                  <AttachmentPreview
+                    filePath={currentAnnouncement.image}
+                    fileName={currentAnnouncement.fileName}
+                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                    className="media-preview--full media-preview--display media-preview--display-fullscreen"
+                    documentPreview
+                    title="Attachment"
+                    imageAlt="Attachment"
+                  />
+                </div>
               </div>
             </section>
           ) : null}
@@ -616,16 +633,18 @@ const DisplayBoard = () => {
                 </div>
               </div>
               <div className="live-body">
-                <AttachmentPreview
-                  filePath={currentAnnouncement.image}
-                  fileName={currentAnnouncement.fileName}
-                  typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
-                  fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                  className="media-preview--full media-preview--display media-preview--display-panel"
-                  documentPreview={false}
-                  title={currentAnnouncement.title}
-                  imageAlt={currentAnnouncement.title}
-                />
+                <div className="announcement-media-frame announcement-media-frame--panel" style={mediaAspectStyle}>
+                  <AttachmentPreview
+                    filePath={currentAnnouncement.image}
+                    fileName={currentAnnouncement.fileName}
+                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                    className="media-preview--full media-preview--display media-preview--display-panel"
+                    documentPreview={false}
+                    title={currentAnnouncementTitle || 'Attachment'}
+                    imageAlt={currentAnnouncementTitle || 'Attachment'}
+                  />
+                </div>
               </div>
             </section>
           ) : null}
@@ -651,16 +670,18 @@ const DisplayBoard = () => {
               {currentAnnouncement.image &&
               !showAnnouncementMediaPanel &&
               (!currentAnnouncementHasVideo || !showLivePanel) ? (
-                <AttachmentPreview
-                  filePath={currentAnnouncement.image}
-                  fileName={currentAnnouncement.fileName}
-                  typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
-                  fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                  className="media-preview--full media-preview--display"
-                  documentPreview
-                  title={currentAnnouncementTitle || 'Attachment'}
-                  imageAlt={currentAnnouncementTitle || 'Attachment'}
-                />
+                <div className="announcement-media-frame announcement-media-frame--inline" style={mediaAspectStyle}>
+                  <AttachmentPreview
+                    filePath={currentAnnouncement.image}
+                    fileName={currentAnnouncement.fileName}
+                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                    className="media-preview--full media-preview--display"
+                    documentPreview
+                    title={currentAnnouncementTitle || 'Attachment'}
+                    imageAlt={currentAnnouncementTitle || 'Attachment'}
+                  />
+                </div>
               ) : null}
 
               {currentAnnouncementContent ? (
