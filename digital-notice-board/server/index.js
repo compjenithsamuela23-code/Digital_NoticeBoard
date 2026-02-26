@@ -472,9 +472,9 @@ function normalizeDisplayBatchId(value, { strict = false } = {}) {
 function parseDisplayBatchSlot(value, { strict = false } = {}) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed)) return null;
-  if (parsed < 1 || parsed > 3) {
+  if (parsed < 1 || parsed > 4) {
     if (strict) {
-      throw createBadRequestError('displayBatchSlot must be between 1 and 3.');
+      throw createBadRequestError('displayBatchSlot must be between 1 and 4.');
     }
     return null;
   }
@@ -1198,7 +1198,7 @@ function normalizeLiveLinks(rawLinks) {
     normalized.push(cleaned);
   });
 
-  return normalized.slice(0, 3);
+  return normalized.slice(0, 4);
 }
 
 function parseLiveLinksInput(linkValue, linksValue) {

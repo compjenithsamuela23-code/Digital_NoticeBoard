@@ -89,20 +89,13 @@ const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
 const MEDIA_ACCEPT =
   'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
-const MAX_BATCH_ATTACHMENTS = 3;
+const MAX_BATCH_ATTACHMENTS = 4;
 
 const parseLiveLinkList = (rawValue) =>
   [...new Set(String(rawValue || '').split(/[\n,]+/).map((item) => item.trim()).filter(Boolean))].slice(
     0,
     MAX_BATCH_ATTACHMENTS
   );
-
-const getMediaKind = (file) => {
-  const mime = String(file?.type || '').toLowerCase();
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  return 'media';
-};
 
 const getDimensionLookupKey = (file) => getFileIdentity(file);
 
@@ -453,31 +446,20 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       const hasExistingAttachment = Boolean(editingAnnouncement && editingAnnouncement.image);
       const selectedMediaFiles = [...mediaFiles];
       const selectedDocumentFiles = [...documentFiles];
-      const selectedAttachments =
-        selectedMediaFiles.length > 0 ? selectedMediaFiles : selectedDocumentFiles;
-      const hasNewAttachment = selectedAttachments.length > 0;
+      const selectedAttachmentEntries = [
+        ...selectedMediaFiles.map((file) => ({ file, kind: 'media' })),
+        ...selectedDocumentFiles.map((file) => ({ file, kind: 'document' }))
+      ];
+      const hasNewAttachment = selectedAttachmentEntries.length > 0;
 
-      if (selectedMediaFiles.length > 0 && selectedDocumentFiles.length > 0) {
-        setRequestError('Use either Media Upload or Document Upload, not both together.');
-        return;
-      }
-
-      if (selectedAttachments.length > MAX_BATCH_ATTACHMENTS) {
+      if (selectedAttachmentEntries.length > MAX_BATCH_ATTACHMENTS) {
         setRequestError(`You can upload up to ${MAX_BATCH_ATTACHMENTS} files at a time.`);
         return;
       }
 
-      if (editingId && selectedAttachments.length > 1) {
+      if (editingId && selectedAttachmentEntries.length > 1) {
         setRequestError('Editing mode supports only one replacement attachment.');
         return;
-      }
-
-      if (selectedMediaFiles.length > 1) {
-        const mediaKinds = new Set(selectedMediaFiles.map((file) => getMediaKind(file)));
-        if (mediaKinds.size > 1) {
-          setRequestError('Batch upload must be all images, all videos, or all documents.');
-          return;
-        }
       }
 
       if (!normalizedTitle && !normalizedContent && !hasNewAttachment && !hasExistingAttachment) {
@@ -547,8 +529,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
       if (editingId) {
         const payload = new FormData();
-        const selectedAttachment = selectedAttachments[0] || null;
-        const selectedKind = selectedDocumentFiles.length > 0 ? 'document' : 'media';
+        const selectedEntry = selectedAttachmentEntries[0] || null;
+        const selectedAttachment = selectedEntry ? selectedEntry.file : null;
+        const selectedKind = selectedEntry ? selectedEntry.kind : 'media';
         const selectedDimensions =
           selectedAttachment && selectedKind === 'media'
             ? mediaDimensionsByKey[getDimensionLookupKey(selectedAttachment)] || {}
@@ -566,12 +549,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             headers: { 'Content-Type': 'multipart/form-data' }
           })
         });
-      } else if (selectedAttachments.length > 1) {
+      } else if (selectedAttachmentEntries.length > 1) {
         const displayBatchId = createDisplayBatchId();
-        const selectedKind = selectedDocumentFiles.length > 0 ? 'document' : 'media';
 
-        for (let index = 0; index < selectedAttachments.length; index += 1) {
-          const file = selectedAttachments[index];
+        for (let index = 0; index < selectedAttachmentEntries.length; index += 1) {
+          const entry = selectedAttachmentEntries[index];
+          const file = entry.file;
+          const selectedKind = entry.kind;
           const payload = new FormData();
           const selectedDimensions =
             selectedKind === 'media' ? mediaDimensionsByKey[getDimensionLookupKey(file)] || {} : {};
@@ -591,8 +575,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         }
       } else {
         const payload = new FormData();
-        const selectedAttachment = selectedAttachments[0] || null;
-        const selectedKind = selectedDocumentFiles.length > 0 ? 'document' : 'media';
+        const selectedEntry = selectedAttachmentEntries[0] || null;
+        const selectedAttachment = selectedEntry ? selectedEntry.file : null;
+        const selectedKind = selectedEntry ? selectedEntry.kind : 'media';
         const selectedDimensions =
           selectedAttachment && selectedKind === 'media'
             ? mediaDimensionsByKey[getDimensionLookupKey(selectedAttachment)] || {}
@@ -671,31 +656,32 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const rawFiles = Array.from(event.target.files || []);
     const maxAllowed = editingId ? 1 : MAX_BATCH_ATTACHMENTS;
     const files = rawFiles.slice(0, maxAllowed);
+    const maxMediaByCombinedLimit = Math.max(0, MAX_BATCH_ATTACHMENTS - documentFiles.length);
+    const boundedFiles = files.slice(0, editingId ? 1 : maxMediaByCombinedLimit);
     if (rawFiles.length > maxAllowed) {
       setRequestError(`Only ${maxAllowed} media file${maxAllowed > 1 ? 's' : ''} can be selected here.`);
+    } else if (!editingId && files.length + documentFiles.length > MAX_BATCH_ATTACHMENTS) {
+      setRequestError(
+        `Total attachments cannot exceed ${MAX_BATCH_ATTACHMENTS}. Reduce media or document files.`
+      );
     } else {
       setRequestError('');
     }
 
     revokeObjectUrls(mediaPreviewUrls);
-    if (files.length === 0) {
+    if (boundedFiles.length === 0) {
       setMediaFiles([]);
       setMediaPreviewUrls([]);
       setMediaDimensionsByKey({});
       return;
     }
 
-    revokeObjectUrls(documentPreviewUrls);
-    setDocumentFiles([]);
-    setDocumentPreviewUrls([]);
-    if (documentInputRef.current) documentInputRef.current.value = '';
-
-    const nextPreviewUrls = files.map((file) => URL.createObjectURL(file));
-    setMediaFiles(files);
+    const nextPreviewUrls = boundedFiles.map((file) => URL.createObjectURL(file));
+    setMediaFiles(boundedFiles);
     setMediaPreviewUrls(nextPreviewUrls);
     setMediaDimensionsByKey({});
 
-    files.forEach((file) => {
+    boundedFiles.forEach((file) => {
       const lookupKey = getDimensionLookupKey(file);
       detectMediaDimensions(file).then((dimensions) => {
         setMediaDimensionsByKey((previous) => {
@@ -720,20 +706,26 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const rawFiles = Array.from(event.target.files || []);
     const maxAllowed = editingId ? 1 : MAX_BATCH_ATTACHMENTS;
     const files = rawFiles.slice(0, maxAllowed);
+    const maxDocumentsByCombinedLimit = Math.max(0, MAX_BATCH_ATTACHMENTS - mediaFiles.length);
+    const boundedFiles = files.slice(0, editingId ? 1 : maxDocumentsByCombinedLimit);
     if (rawFiles.length > maxAllowed) {
       setRequestError(`Only ${maxAllowed} document file${maxAllowed > 1 ? 's' : ''} can be selected here.`);
+    } else if (!editingId && files.length + mediaFiles.length > MAX_BATCH_ATTACHMENTS) {
+      setRequestError(
+        `Total attachments cannot exceed ${MAX_BATCH_ATTACHMENTS}. Reduce media or document files.`
+      );
     } else {
       setRequestError('');
     }
 
     revokeObjectUrls(documentPreviewUrls);
-    if (files.length === 0) {
+    if (boundedFiles.length === 0) {
       setDocumentFiles([]);
       setDocumentPreviewUrls([]);
       return;
     }
 
-    const invalidMediaFile = files.find((file) => {
+    const invalidMediaFile = boundedFiles.find((file) => {
       const mime = String(file.type || '').toLowerCase();
       return mime.startsWith('image/') || mime.startsWith('video/');
     });
@@ -745,14 +737,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    revokeObjectUrls(mediaPreviewUrls);
-    setMediaFiles([]);
-    setMediaPreviewUrls([]);
-    setMediaDimensionsByKey({});
-    if (mediaInputRef.current) mediaInputRef.current.value = '';
-
-    const nextPreviewUrls = files.map((file) => URL.createObjectURL(file));
-    setDocumentFiles(files);
+    const nextPreviewUrls = boundedFiles.map((file) => URL.createObjectURL(file));
+    setDocumentFiles(boundedFiles);
     setDocumentPreviewUrls(nextPreviewUrls);
   };
 
@@ -1323,9 +1309,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               id="live-link"
               value={liveLinkInput}
               onChange={(event) => setLiveLinkInput(event.target.value)}
-              placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\n(Use newline or comma to add up to 3 links)"
+              placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\n(Use newline or comma to add up to 4 links)"
             />
-            <p className="file-help">You can start 1 to 3 streams at the same time.</p>
+            <p className="file-help">You can start 1 to 4 streams at the same time.</p>
           </div>
 
           <div className="field">
@@ -1452,7 +1438,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 ref={mediaInputRef}
               />
               <p className="file-help">
-                Supported video: mp4, webm, ogg, mov, m4v, avi, mkv. Select up to 3 files of the same type.
+                Supported video: mp4, webm, ogg, mov, m4v, avi, mkv. Select up to 4 media files.
               </p>
             </div>
 
@@ -1467,7 +1453,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 ref={documentInputRef}
               />
               <p className="file-help">
-                All document formats are accepted. Select up to 3 document files at once for split display mode.
+                All document formats are accepted. Select up to 4 files total (media + document).
               </p>
             </div>
 

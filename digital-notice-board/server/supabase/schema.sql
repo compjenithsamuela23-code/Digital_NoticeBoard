@@ -154,7 +154,7 @@ begin
   ) then
     alter table announcements
       add constraint announcements_display_batch_slot_chk
-      check (display_batch_slot is null or display_batch_slot between 1 and 3)
+      check (display_batch_slot is null or display_batch_slot between 1 and 4)
       not valid;
   end if;
 end
@@ -170,7 +170,7 @@ begin
   ) then
     alter table history
       add constraint history_display_batch_slot_chk
-      check (display_batch_slot is null or display_batch_slot between 1 and 3)
+      check (display_batch_slot is null or display_batch_slot between 1 and 4)
       not valid;
   end if;
 end

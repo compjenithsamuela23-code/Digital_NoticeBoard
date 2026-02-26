@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
-import { apiUrl, assetUrl } from '../config/api';
+import { apiUrl } from '../config/api';
 import { clearAdminSession, hasAdminSession, withAuthConfig } from '../config/auth';
 import { apiClient, extractApiError } from '../config/http';
 import {
@@ -37,14 +37,10 @@ const DisplayBoard = () => {
   const [liveLinks, setLiveLinks] = useState([]);
   const [liveCategory, setLiveCategory] = useState('all');
   const [categories, setCategories] = useState([]);
-  const [mediaPreviewError, setMediaPreviewError] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(true);
-  const [videoVolume, setVideoVolume] = useState(1);
-  const [audioStatusHint, setAudioStatusHint] = useState('');
   const [requestError, setRequestError] = useState('');
   const [documentSlideCount, setDocumentSlideCount] = useState(1);
   const [documentSlideIndex, setDocumentSlideIndex] = useState(1);
-  const liveVideoRef = useRef(null);
   const previousDocumentSlideIndexRef = useRef(1);
   const documentCycleCountRef = useRef(0);
 
@@ -80,14 +76,6 @@ const DisplayBoard = () => {
     if (isImageMedia(announcement)) return false;
     return true;
   }, [isImageMedia, isVideoMedia]);
-
-  const getAnnouncementMediaKind = useCallback((announcement) => {
-    if (!announcement || !announcement.image) return null;
-    if (isVideoMedia(announcement)) return 'video';
-    if (isImageMedia(announcement)) return 'image';
-    if (isDocumentMedia(announcement)) return 'document';
-    return null;
-  }, [isDocumentMedia, isImageMedia, isVideoMedia]);
 
   const handleDocumentSlideCountChange = useCallback((count) => {
     const parsed = Number.parseInt(count, 10);
@@ -298,51 +286,28 @@ const DisplayBoard = () => {
     currentAnnouncementMediaWidth,
     hasMediaDimensions
   ]);
-  const currentAnnouncementVideoUrl = currentAnnouncementHasVideo
-    ? assetUrl(currentAnnouncement.image)
-    : null;
   const activeYouTubeIds = useMemo(() => {
     const sourceLinks =
       Array.isArray(liveLinks) && liveLinks.length > 0 ? liveLinks : liveLink ? [liveLink] : [];
-    return [...new Set(sourceLinks.map((item) => getYouTubeID(item)).filter(Boolean))].slice(0, 3);
+    return [...new Set(sourceLinks.map((item) => getYouTubeID(item)).filter(Boolean))].slice(0, 4);
   }, [liveLink, liveLinks]);
-  const activeYouTubeId = activeYouTubeIds[0] || null;
-  const currentAnnouncementMediaKind = getAnnouncementMediaKind(currentAnnouncement);
   const currentAnnouncementMediaGroup = useMemo(() => {
-    if (!currentAnnouncement || !currentAnnouncementMediaKind) {
+    if (!currentAnnouncement || !currentAnnouncement.image) {
       return [];
     }
 
     const currentBatchId = String(currentAnnouncement.displayBatchId || '').trim();
-    const currentCreatedAtMs = currentAnnouncement.createdAt
-      ? new Date(currentAnnouncement.createdAt).getTime()
-      : 0;
-    const currentSortMs = Number.isFinite(currentCreatedAtMs) ? currentCreatedAtMs : 0;
+    if (!currentBatchId) {
+      return [currentAnnouncement];
+    }
 
-    const fallbackCandidates = announcements.filter((item) => {
-      if (!item || !item.image || item.id === currentAnnouncement.id) return false;
-      if (getAnnouncementMediaKind(item) !== currentAnnouncementMediaKind) return false;
-      if (String(item.category || '') !== String(currentAnnouncement.category || '')) return false;
-      if (Number(item.priority || 1) !== Number(currentAnnouncement.priority || 1)) return false;
-      if (String(item.startAt || '') !== String(currentAnnouncement.startAt || '')) return false;
-      if (String(item.endAt || '') !== String(currentAnnouncement.endAt || '')) return false;
-      const createdAtMs = item.createdAt ? new Date(item.createdAt).getTime() : 0;
-      if (!Number.isFinite(createdAtMs) || !Number.isFinite(currentSortMs)) return false;
-      return Math.abs(createdAtMs - currentSortMs) <= 20 * 1000;
+    const groupedItems = announcements.filter((item) => {
+      if (!item || !item.image) return false;
+      return String(item.displayBatchId || '').trim() === currentBatchId;
     });
 
-    const groupedItems =
-      currentBatchId.length > 0
-        ? announcements.filter((item) => {
-            if (!item || !item.image) return false;
-            if (String(item.displayBatchId || '').trim() !== currentBatchId) return false;
-            return getAnnouncementMediaKind(item) === currentAnnouncementMediaKind;
-          })
-        : [currentAnnouncement, ...fallbackCandidates];
-
-    const uniqueById = Array.from(
-      new Map(groupedItems.map((item) => [String(item.id || ''), item])).values()
-    ).filter((item) => item && item.image);
+    const uniqueById = Array.from(new Map(groupedItems.map((item) => [String(item.id || ''), item])).values())
+      .filter((item) => item && item.image);
 
     const sorted = uniqueById.sort((left, right) => {
       const leftSlot = Number.parseInt(left.displayBatchSlot, 10);
@@ -362,9 +327,9 @@ const DisplayBoard = () => {
       return String(left.id || '').localeCompare(String(right.id || ''));
     });
 
-    return sorted.length === 3 ? sorted : [];
-  }, [announcements, currentAnnouncement, currentAnnouncementMediaKind, getAnnouncementMediaKind]);
-  const hasTripleAnnouncementMediaGroup = currentAnnouncementMediaGroup.length === 3;
+    return sorted.slice(0, 4);
+  }, [announcements, currentAnnouncement]);
+  const currentAnnouncementMediaGroupCount = currentAnnouncementMediaGroup.length;
   const normalizedDisplayCategory = String(displayCategoryId || 'all').trim() || 'all';
   const normalizedLiveCategory = normalizeLiveCategory(liveCategory);
   const isLiveVisibleForDisplay =
@@ -373,22 +338,50 @@ const DisplayBoard = () => {
     normalizedDisplayCategory === normalizedLiveCategory;
   const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
   const showLivePanel = isLiveOn;
-  const hasTripleLiveStreams = showLivePanel && activeYouTubeIds.length === 3 && !currentAnnouncementHasVideo;
+  const combinedLiveTiles = useMemo(() => {
+    if (!showLivePanel) return [];
+    const tiles = [];
+
+    activeYouTubeIds.forEach((youTubeId, index) => {
+      tiles.push({
+        id: `stream-${youTubeId}-${index}`,
+        kind: 'stream',
+        youTubeId
+      });
+    });
+
+    currentAnnouncementMediaGroup.forEach((announcement, index) => {
+      if (!announcement || !announcement.image) return;
+      tiles.push({
+        id: `announcement-${announcement.id || index}`,
+        kind: 'announcement',
+        announcement
+      });
+    });
+
+    return tiles.slice(0, 4);
+  }, [activeYouTubeIds, currentAnnouncementMediaGroup, showLivePanel]);
   const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementHasAnyMedia;
-  const isDocumentShownInLivePanel =
-    showLivePanel &&
-    currentAnnouncementHasDocument &&
-    !currentAnnouncementHasVideo &&
-    activeYouTubeIds.length === 0;
+  const isAnnouncementMediaShownInLivePanel = showLivePanel && combinedLiveTiles.some(
+    (tile) => tile.kind === 'announcement'
+  );
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
   const isSingleColumnLayout = !showSecondaryPanel;
-  const announcementMediaStatusLabel = hasTripleAnnouncementMediaGroup
-    ? `Posted ${currentAnnouncementMediaGroup.length} ${currentAnnouncementMediaKind || 'media'} files`
+  const announcementMediaStatusLabel = currentAnnouncementMediaGroupCount > 1
+    ? `Posted ${currentAnnouncementMediaGroupCount} attachments`
     : currentAnnouncementHasVideo
       ? 'Posted video'
       : currentAnnouncementHasDocument
         ? 'Posted document'
         : 'Posted image';
+  const liveTileCount = combinedLiveTiles.length;
+  const liveSplitColumns = liveTileCount >= 4 ? 2 : liveTileCount === 3 ? 3 : Math.max(1, liveTileCount);
+  const mediaSplitColumns =
+    currentAnnouncementMediaGroupCount >= 4
+      ? 2
+      : currentAnnouncementMediaGroupCount === 3
+        ? 3
+        : Math.max(1, currentAnnouncementMediaGroupCount);
   const showAnnouncementFallbackText = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
   const announcementPanelTitle = currentAnnouncementTitle || 'Notice Attachment';
   const announcementPanelContent =
@@ -444,8 +437,8 @@ const DisplayBoard = () => {
   const actionHint = useMemo(() => {
     if (!announcements.length) return 'No scheduled announcements';
     const announcementLabel = `Slide ${activeSlideIndex + 1} of ${announcements.length}`;
-    if (hasTripleAnnouncementMediaGroup) {
-      return `${announcementLabel} • Split view (3 attachments)`;
+    if (currentAnnouncementMediaGroupCount > 1) {
+      return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments)`;
     }
     if (currentAnnouncementHasDocument && documentSlideCount > 1) {
       return `${announcementLabel} • Page ${documentSlideIndex} of ${documentSlideCount}`;
@@ -454,7 +447,7 @@ const DisplayBoard = () => {
   }, [
     activeSlideIndex,
     announcements.length,
-    hasTripleAnnouncementMediaGroup,
+    currentAnnouncementMediaGroupCount,
     currentAnnouncementHasDocument,
     documentSlideCount,
     documentSlideIndex
@@ -493,48 +486,8 @@ const DisplayBoard = () => {
   };
 
   const handleAudioToggle = () => {
-    setAudioStatusHint('');
     setIsAudioMuted((value) => !value);
   };
-
-  const handleVolumeChange = (event) => {
-    const raw = Number.parseFloat(event.target.value);
-    const next = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 1;
-    setVideoVolume(next);
-    if (next === 0) {
-      setIsAudioMuted(true);
-    } else {
-      setIsAudioMuted(false);
-    }
-  };
-
-  useEffect(() => {
-    setMediaPreviewError(false);
-    setAudioStatusHint('');
-  }, [currentAnnouncementVideoUrl]);
-
-  useEffect(() => {
-    if (!currentAnnouncementHasVideo) return;
-    const videoElement = liveVideoRef.current;
-    if (!videoElement) return;
-
-    videoElement.volume = videoVolume;
-    videoElement.muted = isAudioMuted;
-
-    const tryPlay = async () => {
-      try {
-        await videoElement.play();
-      } catch {
-        if (!isAudioMuted) {
-          videoElement.muted = true;
-          setIsAudioMuted(true);
-          setAudioStatusHint('Autoplay with sound was blocked. Click Unmute to enable audio.');
-        }
-      }
-    };
-
-    tryPlay();
-  }, [currentAnnouncementHasVideo, currentAnnouncementVideoUrl, isAudioMuted, videoVolume]);
 
   if (!currentAnnouncement) {
     return (
@@ -730,111 +683,71 @@ const DisplayBoard = () => {
               <h2>Live Broadcast</h2>
               <div className="inline-actions live-panel-actions">
                 <p className="topbar__subtitle">
-                  {currentAnnouncementHasVideo
-                    ? 'Playing uploaded video'
-                    : hasTripleLiveStreams
-                      ? 'Streaming from 3 live links'
-                    : currentAnnouncementHasDocument
-                      ? 'Document attachment available'
-                      : activeYouTubeId
-                        ? 'Streaming from live link'
-                        : 'No active stream link'}
+                  {liveTileCount > 1
+                    ? `${liveTileCount} items in split view`
+                    : liveTileCount === 1
+                      ? '1 live item active'
+                      : 'No active stream or attachment'}
                 </p>
-                {currentAnnouncementHasVideo || activeYouTubeIds.length > 0 ? (
+                {activeYouTubeIds.length > 0 ? (
                   <button className="btn btn--ghost btn--tiny" type="button" onClick={handleAudioToggle}>
                     {isAudioMuted ? 'Unmute' : 'Mute'}
                   </button>
                 ) : null}
-                {currentAnnouncementHasVideo ? (
-                  <label className="volume-control">
-                    <span>Vol</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={videoVolume}
-                      onChange={handleVolumeChange}
-                    />
-                  </label>
-                ) : null}
               </div>
             </div>
             <div className="live-body">
-              {currentAnnouncementHasVideo ? (
-                !mediaPreviewError ? (
-                  <video
-                    ref={liveVideoRef}
-                    className="live-body__video"
-                    key={currentAnnouncementVideoUrl}
-                    src={currentAnnouncementVideoUrl}
-                    autoPlay
-                    controls
-                    loop
-                    muted={isAudioMuted}
-                    playsInline
-                    style={mediaAspectStyle}
-                    onError={() => setMediaPreviewError(true)}
-                  />
-                ) : (
-                  <div className="live-placeholder">
-                    <h3>Video Format Not Previewable</h3>
-                    <p>Open or download this file to view it with an external player.</p>
-                    <a className="btn btn--primary btn--tiny" href={currentAnnouncementVideoUrl} target="_blank" rel="noreferrer">
-                      Open Video File
-                    </a>
-                  </div>
-                )
-              ) : hasTripleLiveStreams ? (
-                <div className="live-stream-grid">
-                  {activeYouTubeIds.map((youTubeId, index) => (
-                    <iframe
-                      className="live-stream-grid__frame"
-                      key={`${youTubeId}-${index}-${isAudioMuted ? 'muted' : 'sound'}`}
-                      title={`Live Broadcast ${index + 1}`}
-                      src={`https://www.youtube.com/embed/${youTubeId}?autoplay=1&mute=${
-                        isAudioMuted ? 1 : 0
-                      }&controls=1&playsinline=1&rel=0&modestbranding=1`}
-                      allow="autoplay; encrypted-media; fullscreen"
-                      allowFullScreen
-                    />
-                  ))}
-                </div>
-              ) : activeYouTubeId ? (
-                <iframe
-                  className="live-body__iframe"
-                  key={`${activeYouTubeId}-${isAudioMuted ? 'muted' : 'sound'}`}
-                  title="Live Broadcast"
-                  src={`https://www.youtube.com/embed/${activeYouTubeId}?autoplay=1&mute=${
-                    isAudioMuted ? 1 : 0
-                  }&controls=1&playsinline=1&rel=0&modestbranding=1`}
-                  allow="autoplay; encrypted-media; fullscreen"
-                  allowFullScreen
-                />
-              ) : currentAnnouncementHasDocument ? (
-                <div className="live-document-wrap">
-                  <AttachmentPreview
-                    filePath={currentAnnouncement.image}
-                    fileName={currentAnnouncement.fileName}
-                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
-                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                    className="document-preview--full live-document-preview"
-                    documentPreview
-                    documentHideHeader
-                    documentShowActions={false}
-                    documentSlideshow
-                    documentSlideshowAutoplay={isPlaying}
-                    documentSlideshowIntervalMs={6000}
-                    onDocumentSlideCountChange={
-                      isDocumentShownInLivePanel ? handleDocumentSlideCountChange : undefined
+              {liveTileCount > 0 ? (
+                <div
+                  className="live-stream-grid"
+                  style={{ gridTemplateColumns: `repeat(${liveSplitColumns}, minmax(0, 1fr))` }}
+                >
+                  {combinedLiveTiles.map((tile, index) => {
+                    if (tile.kind === 'stream') {
+                      return (
+                        <iframe
+                          className="live-stream-grid__frame"
+                          key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
+                          title={`Live Broadcast ${index + 1}`}
+                          src={`https://www.youtube.com/embed/${tile.youTubeId}?autoplay=1&mute=${
+                            isAudioMuted ? 1 : 0
+                          }&controls=1&playsinline=1&rel=0&modestbranding=1`}
+                          allow="autoplay; encrypted-media; fullscreen"
+                          allowFullScreen
+                        />
+                      );
                     }
-                    onDocumentSlideIndexChange={
-                      isDocumentShownInLivePanel ? handleDocumentSlideIndexChange : undefined
-                    }
-                    title={currentAnnouncement.title}
-                    imageAlt={currentAnnouncement.title}
-                    showActions={false}
-                  />
+
+                    const tileAnnouncement = tile.announcement;
+                    const tileHasDocument = isDocumentMedia(tileAnnouncement);
+                    const trackDocumentSlide = liveTileCount === 1 && tileHasDocument;
+                    return (
+                      <div className="announcement-media-split-grid__item" key={tile.id}>
+                        <AttachmentPreview
+                          filePath={tileAnnouncement.image}
+                          fileName={tileAnnouncement.fileName}
+                          typeHint={tileAnnouncement.fileMimeType || tileAnnouncement.type}
+                          fileSizeBytes={tileAnnouncement.fileSizeBytes}
+                          className="media-preview--full media-preview--display media-preview--display-panel media-preview--split-item"
+                          documentPreview
+                          documentHideHeader
+                          documentShowActions={false}
+                          documentSlideshow
+                          documentSlideshowAutoplay={isPlaying}
+                          documentSlideshowIntervalMs={6000}
+                          onDocumentSlideCountChange={
+                            trackDocumentSlide ? handleDocumentSlideCountChange : undefined
+                          }
+                          onDocumentSlideIndexChange={
+                            trackDocumentSlide ? handleDocumentSlideIndexChange : undefined
+                          }
+                          title={tileAnnouncement.title || `Attachment ${index + 1}`}
+                          imageAlt={tileAnnouncement.title || `Attachment ${index + 1}`}
+                          showActions={false}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="live-placeholder">
@@ -843,7 +756,6 @@ const DisplayBoard = () => {
                 </div>
               )}
             </div>
-            {audioStatusHint ? <p className="file-help">{audioStatusHint}</p> : null}
             </section>
           ) : null}
 
@@ -860,12 +772,19 @@ const DisplayBoard = () => {
               <div className="live-body">
                 <div
                   className={`announcement-media-frame announcement-media-frame--panel ${
-                    hasTripleAnnouncementMediaGroup ? 'announcement-media-frame--split' : ''
+                    currentAnnouncementMediaGroupCount > 1 ? 'announcement-media-frame--split' : ''
                   }`.trim()}
-                  style={hasTripleAnnouncementMediaGroup ? undefined : mediaAspectStyle}
+                  style={
+                    currentAnnouncementMediaGroupCount > 1
+                      ? { aspectRatio: 'auto' }
+                      : mediaAspectStyle
+                  }
                 >
-                  {hasTripleAnnouncementMediaGroup ? (
-                    <div className="announcement-media-split-grid">
+                  {currentAnnouncementMediaGroupCount > 1 ? (
+                    <div
+                      className="announcement-media-split-grid"
+                      style={{ gridTemplateColumns: `repeat(${mediaSplitColumns}, minmax(0, 1fr))` }}
+                    >
                       {currentAnnouncementMediaGroup.map((item, index) => (
                         <div className="announcement-media-split-grid__item" key={item.id || `split-${index}`}>
                           <AttachmentPreview
@@ -889,10 +808,15 @@ const DisplayBoard = () => {
                     </div>
                   ) : (
                     <AttachmentPreview
-                      filePath={currentAnnouncement.image}
-                      fileName={currentAnnouncement.fileName}
-                      typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
-                      fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                      filePath={currentAnnouncementMediaGroup[0]?.image || currentAnnouncement.image}
+                      fileName={currentAnnouncementMediaGroup[0]?.fileName || currentAnnouncement.fileName}
+                      typeHint={
+                        currentAnnouncementMediaGroup[0]?.fileMimeType ||
+                        currentAnnouncementMediaGroup[0]?.type ||
+                        currentAnnouncement.fileMimeType ||
+                        currentAnnouncement.type
+                      }
+                      fileSizeBytes={currentAnnouncementMediaGroup[0]?.fileSizeBytes || currentAnnouncement.fileSizeBytes}
                       className="media-preview--full media-preview--display media-preview--display-panel"
                       documentPreview
                       documentHideHeader
@@ -901,10 +825,14 @@ const DisplayBoard = () => {
                       documentSlideshowAutoplay={isPlaying}
                       documentSlideshowIntervalMs={6000}
                       onDocumentSlideCountChange={
-                        currentAnnouncementHasDocument ? handleDocumentSlideCountChange : undefined
+                        currentAnnouncementHasDocument && currentAnnouncementMediaGroupCount <= 1
+                          ? handleDocumentSlideCountChange
+                          : undefined
                       }
                       onDocumentSlideIndexChange={
-                        currentAnnouncementHasDocument ? handleDocumentSlideIndexChange : undefined
+                        currentAnnouncementHasDocument && currentAnnouncementMediaGroupCount <= 1
+                          ? handleDocumentSlideIndexChange
+                          : undefined
                       }
                       title={announcementPanelTitle}
                       imageAlt={announcementPanelTitle}
@@ -935,7 +863,7 @@ const DisplayBoard = () => {
 
               {currentAnnouncementHasAnyMedia &&
               !showAnnouncementMediaPanel &&
-              !isDocumentShownInLivePanel &&
+              !isAnnouncementMediaShownInLivePanel &&
               (!currentAnnouncementHasVideo || !showLivePanel) ? (
                 <div className="announcement-media-frame announcement-media-frame--inline" style={mediaAspectStyle}>
                   <AttachmentPreview
