@@ -563,7 +563,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             mediaWidth: selectedDimensions.width,
             mediaHeight: selectedDimensions.height,
             displayBatchId,
-            displayBatchSlot: index + 1
+            displayBatchSlot: index + 1 <= 3 ? index + 1 : undefined
           });
           await appendAttachmentPayload(payload, file, selectedKind);
 
