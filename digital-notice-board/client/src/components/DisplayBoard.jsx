@@ -258,18 +258,11 @@ const DisplayBoard = () => {
     }
 
     const interval = setInterval(() => {
-      setCurrentIndex((previous) => stepAcrossCurrentMediaGroup(previous, 1));
+      setCurrentIndex((previous) => (previous + 1) % announcements.length);
     }, 8000);
 
     return () => clearInterval(interval);
-  }, [
-    activeSlideIndex,
-    announcements,
-    documentSlideCount,
-    hasEmergency,
-    isPlaying,
-    stepAcrossCurrentMediaGroup
-  ]);
+  }, [activeSlideIndex, announcements, documentSlideCount, hasEmergency, isPlaying]);
 
   const currentAnnouncement = announcements[activeSlideIndex] || null;
   const currentAnnouncementId = currentAnnouncement ? String(currentAnnouncement.id || '') : '';
@@ -372,31 +365,6 @@ const DisplayBoard = () => {
     return sorted.length === 3 ? sorted : [];
   }, [announcements, currentAnnouncement, currentAnnouncementMediaKind, getAnnouncementMediaKind]);
   const hasTripleAnnouncementMediaGroup = currentAnnouncementMediaGroup.length === 3;
-  const currentMediaGroupIndexes = useMemo(() => {
-    if (!hasTripleAnnouncementMediaGroup) return [];
-    return currentAnnouncementMediaGroup
-      .map((item) => announcements.findIndex((announcement) => announcement?.id === item?.id))
-      .filter((index) => index >= 0)
-      .sort((a, b) => a - b);
-  }, [announcements, currentAnnouncementMediaGroup, hasTripleAnnouncementMediaGroup]);
-  const stepAcrossCurrentMediaGroup = useCallback(
-    (fromIndex, direction = 1) => {
-      const total = announcements.length;
-      if (total === 0) return 0;
-
-      const normalizedDirection = direction >= 0 ? 1 : -1;
-      if (currentMediaGroupIndexes.length !== 3 || !currentMediaGroupIndexes.includes(fromIndex)) {
-        return (fromIndex + normalizedDirection + total) % total;
-      }
-
-      const targetBase =
-        normalizedDirection > 0
-          ? currentMediaGroupIndexes[currentMediaGroupIndexes.length - 1] + 1
-          : currentMediaGroupIndexes[0] - 1;
-      return (targetBase + total) % total;
-    },
-    [announcements.length, currentMediaGroupIndexes]
-  );
   const normalizedDisplayCategory = String(displayCategoryId || 'all').trim() || 'all';
   const normalizedLiveCategory = normalizeLiveCategory(liveCategory);
   const isLiveVisibleForDisplay =
@@ -458,7 +426,7 @@ const DisplayBoard = () => {
 
       // Let each document complete at least one full loop and restart from page 1.
       if (documentCycleCountRef.current >= 2) {
-        setCurrentIndex((previous) => stepAcrossCurrentMediaGroup(previous, 1));
+        setCurrentIndex((previous) => (previous + 1) % announcements.length);
         documentCycleCountRef.current = 0;
       }
     }
@@ -470,8 +438,7 @@ const DisplayBoard = () => {
     documentSlideCount,
     documentSlideIndex,
     hasEmergency,
-    isPlaying,
-    stepAcrossCurrentMediaGroup
+    isPlaying
   ]);
 
   const actionHint = useMemo(() => {
@@ -495,12 +462,12 @@ const DisplayBoard = () => {
 
   const handleNext = () => {
     if (!announcements.length || hasEmergency) return;
-    setCurrentIndex((previous) => stepAcrossCurrentMediaGroup(previous, 1));
+    setCurrentIndex((previous) => (previous + 1) % announcements.length);
   };
 
   const handlePrev = () => {
     if (!announcements.length || hasEmergency) return;
-    setCurrentIndex((previous) => stepAcrossCurrentMediaGroup(previous, -1));
+    setCurrentIndex((previous) => (previous - 1 + announcements.length) % announcements.length);
   };
 
   const handleLogout = async () => {
