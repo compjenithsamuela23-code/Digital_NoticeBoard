@@ -47,6 +47,16 @@ const PRESENTATION_PREVIEW_EXTENSIONS = new Set(['pptx', 'ppsx']);
 const ODF_PREVIEW_EXTENSIONS = new Set(['odt', 'ods', 'odp']);
 const ZIP_PREVIEW_EXTENSIONS = new Set(['zip']);
 const LEGACY_OFFICE_PREVIEW_EXTENSIONS = new Set(['doc', 'ppt', 'pps']);
+const OFFICE_ONLINE_PREVIEW_EXTENSIONS = new Set([
+  'doc',
+  'docx',
+  'ppt',
+  'pptx',
+  'pps',
+  'ppsx',
+  'xls',
+  'xlsx'
+]);
 const ARCHIVE_BINARY_EXTENSIONS = new Set(['rar', '7z']);
 const PDF_MIME_TYPES = new Set(['application/pdf']);
 const WORD_MIME_TYPES = new Set([
@@ -322,6 +332,9 @@ const DocumentAttachment = ({
   const previewMode = useMemo(() => {
     if (!preview) return 'none';
     if (extension === 'pdf' || PDF_MIME_TYPES.has(normalizedMimeType)) return 'pdf';
+    if (OFFICE_ONLINE_PREVIEW_EXTENSIONS.has(extension) && isPublicHttpUrl(sourceUrl)) {
+      return 'office-online';
+    }
     if (TEXT_PREVIEW_EXTENSIONS.has(extension) || isLikelyTextMime(normalizedMimeType)) return 'text';
     if (WORD_PREVIEW_EXTENSIONS.has(extension) || WORD_MIME_TYPES.has(normalizedMimeType)) return 'word';
     if (SHEET_PREVIEW_EXTENSIONS.has(extension) || SHEET_MIME_TYPES.has(normalizedMimeType)) return 'sheet';
@@ -340,6 +353,13 @@ const DocumentAttachment = ({
   const officeViewerUrl = useMemo(() => {
     if (previewMode !== 'office-online') return '';
     return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(sourceUrl)}`;
+  }, [previewMode, sourceUrl]);
+
+  const pdfPreviewUrl = useMemo(() => {
+    if (previewMode !== 'pdf') return '';
+    if (!sourceUrl) return '';
+    if (sourceUrl.includes('#')) return sourceUrl;
+    return `${sourceUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
   }, [previewMode, sourceUrl]);
 
   useEffect(() => {
@@ -589,7 +609,7 @@ const DocumentAttachment = ({
       </div>
 
       {previewMode === 'pdf' ? (
-        <iframe className="document-preview__frame" src={sourceUrl} title={title} />
+        <iframe className="document-preview__frame" src={pdfPreviewUrl} title={title} />
       ) : null}
 
       {previewMode === 'office-online' ? (

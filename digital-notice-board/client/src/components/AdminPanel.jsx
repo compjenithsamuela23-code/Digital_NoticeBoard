@@ -88,6 +88,7 @@ const detectMediaDimensions = (file) =>
 const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
 const MEDIA_ACCEPT =
   'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
+const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 
 const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const isStaffWorkspace = workspaceRole === 'staff';
@@ -175,6 +176,63 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return false;
     },
     [handleAuthFailure]
+  );
+
+  const uploadAttachmentToStorage = useCallback(
+    async (file) => {
+      if (!file) return null;
+
+      const fileName = String(file.name || '').trim() || 'attachment';
+      const mimeType = String(file.type || '').trim() || 'application/octet-stream';
+      const fileSizeBytes = Number.parseInt(file.size, 10);
+      if (Number.isNaN(fileSizeBytes) || fileSizeBytes <= 0) {
+        throw new Error('Selected file is invalid.');
+      }
+
+      const presignResponse = await apiClient.post(
+        apiUrl('/api/uploads/presign'),
+        {
+          fileName,
+          mimeType,
+          fileSizeBytes
+        },
+        applyWorkspaceAuth()
+      );
+
+      const presignPayload = presignResponse?.data || {};
+      const signedUrl = String(presignPayload.signedUrl || '').trim();
+      const publicUrl = String(presignPayload.publicUrl || '').trim();
+      if (!signedUrl || !publicUrl) {
+        throw new Error('Upload URL could not be generated for this file.');
+      }
+
+      const uploadResponse = await fetch(signedUrl, {
+        method: 'PUT',
+        headers: {
+          'content-type': mimeType,
+          'x-upsert': 'false'
+        },
+        body: file
+      });
+
+      if (!uploadResponse.ok) {
+        const failureBody = await uploadResponse.text().catch(() => '');
+        const failureDetail = String(failureBody || '').trim().slice(0, 180);
+        throw new Error(
+          `Direct upload failed (${uploadResponse.status}).${
+            failureDetail ? ` ${failureDetail}` : ''
+          }`
+        );
+      }
+
+      return {
+        attachmentUrl: publicUrl,
+        attachmentFileName: fileName,
+        attachmentMimeType: mimeType,
+        attachmentFileSizeBytes: fileSizeBytes
+      };
+    },
+    [applyWorkspaceAuth]
   );
 
   const summary = useMemo(() => {
@@ -383,12 +441,38 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         payload.append('endAt', endAtIso);
       }
 
-      if (image) {
-        payload.append('image', image);
+      const selectedAttachment = image || documentFile;
+      let directUploadPayload = null;
+      let shouldUseMultipartUpload = Boolean(selectedAttachment);
+      if (selectedAttachment) {
+        try {
+          directUploadPayload = await uploadAttachmentToStorage(selectedAttachment);
+          shouldUseMultipartUpload = false;
+        } catch (uploadError) {
+          const canFallbackToMultipart = selectedAttachment.size <= MULTIPART_FALLBACK_MAX_BYTES;
+          if (!canFallbackToMultipart) {
+            throw uploadError;
+          }
+          console.warn('Direct upload unavailable. Falling back to multipart upload.', uploadError);
+        }
       }
 
-      if (documentFile) {
-        payload.append('document', documentFile);
+      if (directUploadPayload) {
+        payload.append('attachmentUrl', directUploadPayload.attachmentUrl);
+        payload.append('attachmentFileName', directUploadPayload.attachmentFileName);
+        payload.append('attachmentMimeType', directUploadPayload.attachmentMimeType);
+        payload.append(
+          'attachmentFileSizeBytes',
+          String(directUploadPayload.attachmentFileSizeBytes || '')
+        );
+      } else if (shouldUseMultipartUpload) {
+        if (image) {
+          payload.append('image', image);
+        }
+
+        if (documentFile) {
+          payload.append('document', documentFile);
+        }
       }
 
       if (editingId) {
@@ -408,6 +492,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       await fetchAnnouncements();
       resetForm();
     } catch (error) {
+      if (!error.response && error.message) {
+        setRequestError(error.message);
+        return;
+      }
       if (handleRequestError(error, 'Failed to save announcement.')) return;
       console.error('Error saving announcement:', error);
     } finally {

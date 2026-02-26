@@ -93,6 +93,8 @@ const MAX_UPLOAD_SIZE_BYTES = IS_SERVERLESS_RUNTIME
   ? SERVERLESS_MAX_UPLOAD_SIZE_BYTES
   : LOCAL_MAX_UPLOAD_SIZE_BYTES;
 const MAX_UPLOAD_SIZE_MB = Math.floor(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024));
+const DIRECT_UPLOAD_MAX_SIZE_BYTES = 50 * 1024 * 1024;
+const DIRECT_UPLOAD_MAX_SIZE_MB = Math.floor(DIRECT_UPLOAD_MAX_SIZE_BYTES / (1024 * 1024));
 
 const corsOrigin = configuredOrigins.length > 0 ? configuredOrigins : '*';
 const UPLOAD_DOWNLOAD_ONLY_EXTENSIONS = new Set([
@@ -367,12 +369,98 @@ function normalizeUploadedMimeType(value) {
   return raw.split(';')[0].trim().slice(0, 120) || null;
 }
 
+function parseNonNegativeInteger(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
 function parsePositiveInteger(value) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed <= 0) {
     return null;
   }
   return parsed;
+}
+
+function inferFileNameFromReference(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  let pathname = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      pathname = new URL(raw).pathname || raw;
+    } catch {
+      pathname = raw;
+    }
+  }
+
+  const segment = pathname
+    .split('/')
+    .filter(Boolean)
+    .pop();
+
+  if (!segment) return null;
+  try {
+    return sanitizeOriginalFileName(decodeURIComponent(segment));
+  } catch {
+    return sanitizeOriginalFileName(segment);
+  }
+}
+
+function normalizeAttachmentReference(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (raw.length > 2048) {
+    throw createBadRequestError('Attachment reference is too long.');
+  }
+  return raw.replace(/\\/g, '/');
+}
+
+function isManagedAttachmentReference(value) {
+  const normalizedReference = normalizeAttachmentReference(value);
+  if (!normalizedReference) return false;
+  if (normalizedReference.startsWith('/uploads/')) return true;
+  return Boolean(getStorageObjectPathFromReference(normalizedReference));
+}
+
+function parseAttachmentInput(body = {}) {
+  const attachmentPath = normalizeAttachmentReference(body.attachmentUrl || body.attachmentPath || '');
+  if (!attachmentPath) {
+    return {
+      hasAttachmentInput: false,
+      attachmentPath: null,
+      attachmentMetadata: {
+        file_name: null,
+        file_mime_type: null,
+        file_size_bytes: null
+      }
+    };
+  }
+
+  if (!isManagedAttachmentReference(attachmentPath)) {
+    throw createBadRequestError('Attachment URL must point to Notice Board managed storage.');
+  }
+
+  const providedFileName = sanitizeOriginalFileName(body.attachmentFileName || body.fileName || '');
+  const inferredFileName = inferFileNameFromReference(attachmentPath);
+  const providedMimeType = normalizeUploadedMimeType(body.attachmentMimeType || body.fileMimeType || '');
+  const providedFileSize = parseNonNegativeInteger(
+    body.attachmentFileSizeBytes !== undefined ? body.attachmentFileSizeBytes : body.fileSizeBytes
+  );
+
+  return {
+    hasAttachmentInput: true,
+    attachmentPath,
+    attachmentMetadata: {
+      file_name: providedFileName || inferredFileName,
+      file_mime_type: providedMimeType,
+      file_size_bytes: providedFileSize
+    }
+  };
 }
 
 function getAttachmentMetadata(uploadedFile) {
@@ -455,7 +543,11 @@ async function ensureStorageBucketReady() {
 }
 
 function buildStorageObjectPath(uploadedFile) {
-  const extension = path.extname(String(uploadedFile.originalname || '')).toLowerCase();
+  return buildStorageObjectPathFromOriginalName(uploadedFile && uploadedFile.originalname);
+}
+
+function buildStorageObjectPathFromOriginalName(originalName) {
+  const extension = path.extname(String(originalName || '')).toLowerCase();
   const safeExtension = extension && extension.length <= 16 ? extension : '';
   const dateSegment = new Date().toISOString().slice(0, 10);
   return `${dateSegment}/${randomUUID()}${safeExtension}`;
@@ -1845,6 +1937,55 @@ app.post('/api/display-auth/logout', simpleAuth, async (req, res) => {
   }
 });
 
+app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const fileName = sanitizeOriginalFileName(req.body && req.body.fileName);
+    const mimeType =
+      normalizeUploadedMimeType(req.body && req.body.mimeType) || 'application/octet-stream';
+    const fileSizeBytes = parsePositiveInteger(req.body && req.body.fileSizeBytes);
+
+    if (!fileName) {
+      return res.status(400).json({ error: 'fileName is required.' });
+    }
+
+    if (!fileSizeBytes) {
+      return res.status(400).json({ error: 'fileSizeBytes is required.' });
+    }
+
+    if (fileSizeBytes > DIRECT_UPLOAD_MAX_SIZE_BYTES) {
+      return res.status(413).json({
+        error: `File exceeds ${DIRECT_UPLOAD_MAX_SIZE_MB}MB upload limit for direct storage upload.`
+      });
+    }
+
+    await ensureStorageBucketReady();
+    const objectPath = buildStorageObjectPathFromOriginalName(fileName);
+    const storageClient = supabase.storage.from(SUPABASE_STORAGE_BUCKET);
+    const { data: signedUploadData, error: signedUploadError } =
+      await storageClient.createSignedUploadUrl(objectPath, { upsert: false });
+    throwSupabaseError('Error creating signed upload URL', signedUploadError);
+
+    const { data: publicUrlData } = storageClient.getPublicUrl(objectPath);
+    if (!publicUrlData || !publicUrlData.publicUrl) {
+      throw new Error('Error resolving public URL for signed upload.');
+    }
+
+    res.status(201).json({
+      signedUrl: signedUploadData && signedUploadData.signedUrl ? signedUploadData.signedUrl : null,
+      token: signedUploadData && signedUploadData.token ? signedUploadData.token : null,
+      objectPath,
+      publicUrl: publicUrlData.publicUrl,
+      fileName,
+      mimeType,
+      fileSizeBytes,
+      maxFileSizeBytes: DIRECT_UPLOAD_MAX_SIZE_BYTES,
+      maxFileSizeMb: DIRECT_UPLOAD_MAX_SIZE_MB
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/announcements/public', async (req, res) => {
   try {
     await runAnnouncementMaintenance();
@@ -1931,16 +2072,27 @@ app.post(
       return res.status(400).json({ error: 'Upload either media or document, not both at once.' });
     }
 
+    const attachmentInput = parseAttachmentInput(req.body);
     const uploadedFile = mediaFile || documentFile;
-    if (!normalizedTitle && !normalizedContent && !uploadedFile) {
+    if (uploadedFile && attachmentInput.hasAttachmentInput) {
+      return res.status(400).json({
+        error: 'Provide either file upload or attachmentUrl metadata, not both.'
+      });
+    }
+
+    const hasAttachment = Boolean(uploadedFile || attachmentInput.attachmentPath);
+    if (!normalizedTitle && !normalizedContent && !hasAttachment) {
       return res.status(400).json({
         error: 'Add at least one: title, content, image/video, or document attachment.'
       });
     }
 
     const uploadResult = uploadedFile ? await uploadAttachmentToStorage(uploadedFile) : null;
-    const attachmentPath = uploadResult ? uploadResult.url : null;
-    const attachmentMetadata = getAttachmentMetadata(uploadedFile);
+    const attachmentPath = uploadResult ? uploadResult.url : attachmentInput.attachmentPath;
+    const attachmentMetadata = uploadedFile
+      ? getAttachmentMetadata(uploadedFile)
+      : attachmentInput.attachmentMetadata;
+    const attachmentMimeType = uploadedFile ? uploadedFile.mimetype : attachmentMetadata.file_mime_type;
     const announcementRow = {
       id: generateId(),
       title: normalizedTitle,
@@ -1950,7 +2102,7 @@ app.post(
       is_active: toBoolean(isActive !== undefined ? isActive : active, true),
       category: category || null,
       image: attachmentPath,
-      type: getAnnouncementType(attachmentPath, normalizedContent, uploadedFile && uploadedFile.mimetype),
+      type: getAnnouncementType(attachmentPath, normalizedContent, attachmentMimeType),
       ...attachmentMetadata,
       media_width: normalizedMediaWidth,
       media_height: normalizedMediaHeight,
@@ -2024,20 +2176,34 @@ app.put(
       return res.status(400).json({ error: 'Upload either media or document, not both at once.' });
     }
 
+    const attachmentInput = parseAttachmentInput(req.body);
     const uploadedFile = mediaFile || documentFile;
+    if (uploadedFile && attachmentInput.hasAttachmentInput) {
+      return res.status(400).json({
+        error: 'Provide either file upload or attachmentUrl metadata, not both.'
+      });
+    }
+
     const uploadResult = uploadedFile ? await uploadAttachmentToStorage(uploadedFile) : null;
-    const attachmentPath = uploadResult ? uploadResult.url : existing.image;
+    const attachmentPath = uploadResult
+      ? uploadResult.url
+      : attachmentInput.hasAttachmentInput
+        ? attachmentInput.attachmentPath
+        : existing.image;
+    const hasIncomingAttachment = Boolean(uploadResult || attachmentInput.hasAttachmentInput);
     const existingFileSize = Number.parseInt(existing.file_size_bytes, 10);
     const existingMediaWidth = parsePositiveInteger(existing.media_width);
     const existingMediaHeight = parsePositiveInteger(existing.media_height);
     const attachmentMetadata = uploadedFile
       ? getAttachmentMetadata(uploadedFile)
+      : attachmentInput.hasAttachmentInput
+        ? attachmentInput.attachmentMetadata
       : {
           file_name: existing.file_name || null,
           file_mime_type: existing.file_mime_type || null,
           file_size_bytes: Number.isNaN(existingFileSize) ? null : existingFileSize
         };
-    if (uploadResult && existing.image && existing.image !== attachmentPath) {
+    if (hasIncomingAttachment && existing.image && existing.image !== attachmentPath) {
       await removeAttachmentReference(existing.image);
     }
 
@@ -2066,12 +2232,13 @@ app.put(
     }
 
     const effectiveContent = nextContent;
+    const attachmentMimeType = uploadedFile ? uploadedFile.mimetype : attachmentMetadata.file_mime_type;
     const updateRow = {
       image: attachmentPath,
-      type: getAnnouncementType(attachmentPath, effectiveContent, uploadedFile && uploadedFile.mimetype),
+      type: getAnnouncementType(attachmentPath, effectiveContent, attachmentMimeType),
       ...attachmentMetadata,
-      media_width: uploadedFile ? normalizedMediaWidth : existingMediaWidth,
-      media_height: uploadedFile ? normalizedMediaHeight : existingMediaHeight,
+      media_width: hasIncomingAttachment ? normalizedMediaWidth : existingMediaWidth,
+      media_height: hasIncomingAttachment ? normalizedMediaHeight : existingMediaHeight,
       start_at: newStart.toISOString(),
       end_at: newEnd.toISOString(),
       expires_at: newEnd.toISOString(),
@@ -2657,7 +2824,12 @@ app.get('/api/test', (req, res) => {
     status: 'Server is running perfectly!',
     database: 'Using Supabase PostgreSQL',
     port: 5001,
-    features: ['Image/video/document upload', 'Real-time updates', 'Supabase storage']
+    features: [
+      'Image/video/document upload',
+      'Direct signed uploads for large files',
+      'Real-time updates',
+      'Supabase storage'
+    ]
   });
 });
 
@@ -2721,6 +2893,7 @@ app.get('/', (req, res) => {
     version: '3.0',
     features: [
       'Image/video/document upload support',
+      'Direct signed upload support',
       'Real-time Socket.io updates',
       'Priority-based sorting',
       'Supabase database'
@@ -2742,6 +2915,9 @@ app.get('/', (req, res) => {
         create: 'POST /api/announcements (with image/document)',
         update: 'PUT /api/announcements/:id',
         delete: 'DELETE /api/announcements/:id'
+      },
+      uploads: {
+        presign: 'POST /api/uploads/presign'
       },
       displayUsers: {
         list: 'GET /api/display-users',

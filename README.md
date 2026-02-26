@@ -151,8 +151,9 @@ Deploy as two Vercel projects from the same repo:
 4. Redeploy frontend after setting env vars.
 5. If backend `CLIENT_ORIGIN` changes, redeploy backend.
 
-Note for Vercel backend uploads:
-- API upload requests are capped for serverless runtime; this backend enforces a 4MB request file limit on Vercel.
+Note for Vercel uploads:
+- Admin now uses signed direct upload to Supabase Storage for attachments (large files bypass Vercel request-body limits).
+- Direct upload max size is 50MB per file (bucket limit), while legacy multipart fallback remains only for small files.
 
 If you see `404: NOT_FOUND` right after Vercel deploy, confirm you either:
 - deploy repo root (uses root `vercel.json`), or
