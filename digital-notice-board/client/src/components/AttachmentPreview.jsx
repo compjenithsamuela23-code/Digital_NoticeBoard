@@ -131,6 +131,7 @@ const AttachmentPreview = ({
   className = '',
   preview = true,
   documentPreview = true,
+  documentHideHeader = false,
   documentSlideshow = false,
   documentSlideshowAutoplay = true,
   documentSlideshowIntervalMs,
@@ -177,6 +178,7 @@ const AttachmentPreview = ({
         fileSizeBytes={fileSizeBytes}
         className={className}
         preview={documentPreview && preview}
+        hideHeader={documentHideHeader}
         slideshow={documentSlideshow}
         slideshowAutoplay={documentSlideshowAutoplay}
         slideshowIntervalMs={documentSlideshowIntervalMs}

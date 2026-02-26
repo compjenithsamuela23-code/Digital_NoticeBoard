@@ -378,6 +378,7 @@ const DocumentAttachment = ({
   title = 'Document Attachment',
   className = '',
   preview = true,
+  hideHeader = false,
   slideshow = false,
   slideshowAutoplay = true,
   slideshowIntervalMs = DEFAULT_SLIDESHOW_INTERVAL_MS,
@@ -958,13 +959,15 @@ const DocumentAttachment = ({
 
   return (
     <div className={`document-preview ${className}`.trim()}>
-      <div className="document-preview__header">
-        <p className="document-preview__name">{resolvedName}</p>
-        <p className="document-preview__meta">{metaLabel}</p>
-        {isSlideshowEnabled ? (
-          <p className="document-preview__meta document-preview__meta--slideshow">{slideshowStatusLabel}</p>
-        ) : null}
-      </div>
+      {!hideHeader ? (
+        <div className="document-preview__header">
+          <p className="document-preview__name">{resolvedName}</p>
+          <p className="document-preview__meta">{metaLabel}</p>
+          {isSlideshowEnabled ? (
+            <p className="document-preview__meta document-preview__meta--slideshow">{slideshowStatusLabel}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       {isSlideshowEnabled ? (
         <div className="document-preview__slideshow">

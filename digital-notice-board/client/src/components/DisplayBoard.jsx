@@ -541,6 +541,7 @@ const DisplayBoard = () => {
                       fileSizeBytes={currentAnnouncement.fileSizeBytes}
                       className="media-preview--full media-preview--display media-preview--emergency"
                       documentPreview
+                      documentHideHeader
                       documentSlideshow
                       documentSlideshowAutoplay={isPlaying}
                       documentSlideshowIntervalMs={6000}
@@ -695,6 +696,7 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="document-preview--full live-document-preview"
                     documentPreview
+                    documentHideHeader
                     documentSlideshow
                     documentSlideshowAutoplay={isPlaying}
                     documentSlideshowIntervalMs={6000}
@@ -738,6 +740,7 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="media-preview--full media-preview--display media-preview--display-panel"
                     documentPreview
+                    documentHideHeader
                     documentSlideshow
                     documentSlideshowAutoplay={isPlaying}
                     documentSlideshowIntervalMs={6000}
@@ -784,6 +787,7 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="media-preview--full media-preview--display"
                     documentPreview
+                    documentHideHeader
                     documentSlideshow
                     documentSlideshowAutoplay={isPlaying}
                     documentSlideshowIntervalMs={6000}
