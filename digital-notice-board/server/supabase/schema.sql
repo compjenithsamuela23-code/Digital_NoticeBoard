@@ -144,34 +144,14 @@ alter table history add column if not exists media_height integer null;
 alter table history add column if not exists display_batch_id text null;
 alter table history add column if not exists display_batch_slot integer null;
 
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'announcements_display_batch_slot_chk'
-      and conrelid = 'announcements'::regclass
-  ) then
-    alter table announcements
-      add constraint announcements_display_batch_slot_chk
-      check (display_batch_slot is null or display_batch_slot between 1 and 4)
-      not valid;
-  end if;
-end
-$$;
+alter table announcements drop constraint if exists announcements_display_batch_slot_chk;
+alter table announcements
+  add constraint announcements_display_batch_slot_chk
+  check (display_batch_slot is null or display_batch_slot between 1 and 4)
+  not valid;
 
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'history_display_batch_slot_chk'
-      and conrelid = 'history'::regclass
-  ) then
-    alter table history
-      add constraint history_display_batch_slot_chk
-      check (display_batch_slot is null or display_batch_slot between 1 and 4)
-      not valid;
-  end if;
-end
-$$;
+alter table history drop constraint if exists history_display_batch_slot_chk;
+alter table history
+  add constraint history_display_batch_slot_chk
+  check (display_batch_slot is null or display_batch_slot between 1 and 4)
+  not valid;

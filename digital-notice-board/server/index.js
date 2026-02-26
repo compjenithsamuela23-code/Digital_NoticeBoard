@@ -1392,6 +1392,23 @@ function getMissingHistoryColumn(error) {
   return getMissingColumnForTable(error, 'history');
 }
 
+function isDisplayBatchSlotConstraintError(error, tableName) {
+  if (!error) return false;
+
+  const message = String(error.message || '').toLowerCase();
+  const details = String(error.details || '').toLowerCase();
+  const hint = String(error.hint || '').toLowerCase();
+  const constraintName = `${String(tableName || '').toLowerCase()}_display_batch_slot_chk`;
+  const mentionsConstraint =
+    message.includes(constraintName) || details.includes(constraintName) || hint.includes(constraintName);
+  const mentionsColumn =
+    message.includes('display_batch_slot') ||
+    details.includes('display_batch_slot') ||
+    hint.includes('display_batch_slot');
+
+  return mentionsConstraint || (String(error.code || '') === '23514' && mentionsColumn);
+}
+
 async function detectHistoryTableMode() {
   if (historyTableMode !== 'unknown') {
     return historyTableMode;
@@ -1438,6 +1455,17 @@ async function insertHistoryRow(payload) {
       continue;
     }
 
+    if (
+      isDisplayBatchSlotConstraintError(error, 'history') &&
+      Object.prototype.hasOwnProperty.call(writablePayload, 'display_batch_slot') &&
+      writablePayload.display_batch_slot !== null &&
+      !removedColumns.has('display_batch_slot_constraint')
+    ) {
+      removedColumns.add('display_batch_slot_constraint');
+      writablePayload.display_batch_slot = null;
+      continue;
+    }
+
     throwSupabaseError('Error writing history', error);
   }
 }
@@ -1461,6 +1489,17 @@ async function runAnnouncementUpdate(updatePayload, applyFilters, context) {
     ) {
       removedColumns.add(missingColumn);
       delete writablePayload[missingColumn];
+      continue;
+    }
+
+    if (
+      isDisplayBatchSlotConstraintError(error, 'announcements') &&
+      Object.prototype.hasOwnProperty.call(writablePayload, 'display_batch_slot') &&
+      writablePayload.display_batch_slot !== null &&
+      !removedColumns.has('display_batch_slot_constraint')
+    ) {
+      removedColumns.add('display_batch_slot_constraint');
+      writablePayload.display_batch_slot = null;
       continue;
     }
 
@@ -1491,6 +1530,17 @@ async function runAnnouncementInsert(insertPayload, context) {
     ) {
       removedColumns.add(missingColumn);
       delete writablePayload[missingColumn];
+      continue;
+    }
+
+    if (
+      isDisplayBatchSlotConstraintError(error, 'announcements') &&
+      Object.prototype.hasOwnProperty.call(writablePayload, 'display_batch_slot') &&
+      writablePayload.display_batch_slot !== null &&
+      !removedColumns.has('display_batch_slot_constraint')
+    ) {
+      removedColumns.add('display_batch_slot_constraint');
+      writablePayload.display_batch_slot = null;
       continue;
     }
 

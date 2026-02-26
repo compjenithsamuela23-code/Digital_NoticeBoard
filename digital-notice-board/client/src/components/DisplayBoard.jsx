@@ -297,13 +297,52 @@ const DisplayBoard = () => {
     }
 
     const currentBatchId = String(currentAnnouncement.displayBatchId || '').trim();
-    if (!currentBatchId) {
-      return [currentAnnouncement];
-    }
+    const normalizeForGroup = (value) => String(value || '').trim().toLowerCase();
 
     const groupedItems = announcements.filter((item) => {
       if (!item || !item.image) return false;
-      return String(item.displayBatchId || '').trim() === currentBatchId;
+      if (String(item.id || '') === String(currentAnnouncement.id || '')) return true;
+
+      const itemBatchId = String(item.displayBatchId || '').trim();
+      if (currentBatchId) {
+        return itemBatchId === currentBatchId;
+      }
+
+      if (itemBatchId) {
+        return false;
+      }
+
+      const sameCategory =
+        normalizeForGroup(item.category || 'all') ===
+        normalizeForGroup(currentAnnouncement.category || 'all');
+      const itemPriority = Number.parseInt(item.priority, 10);
+      const currentPriority = Number.parseInt(currentAnnouncement.priority, 10);
+      const samePriority =
+        (Number.isNaN(itemPriority) ? 1 : itemPriority) ===
+        (Number.isNaN(currentPriority) ? 1 : currentPriority);
+      const sameStartAt = normalizeForGroup(item.startAt) === normalizeForGroup(currentAnnouncement.startAt);
+      const sameEndAt = normalizeForGroup(item.endAt) === normalizeForGroup(currentAnnouncement.endAt);
+      const sameTitle = normalizeForGroup(item.title) === normalizeForGroup(currentAnnouncement.title);
+      const sameContent = normalizeForGroup(item.content) === normalizeForGroup(currentAnnouncement.content);
+
+      const itemCreatedAt = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+      const currentCreatedAt = currentAnnouncement.createdAt
+        ? new Date(currentAnnouncement.createdAt).getTime()
+        : 0;
+      const isNearCreatedTime =
+        itemCreatedAt > 0 &&
+        currentCreatedAt > 0 &&
+        Math.abs(itemCreatedAt - currentCreatedAt) <= 60 * 1000;
+
+      return (
+        sameCategory &&
+        samePriority &&
+        sameStartAt &&
+        sameEndAt &&
+        sameTitle &&
+        sameContent &&
+        isNearCreatedTime
+      );
     });
 
     const uniqueById = Array.from(new Map(groupedItems.map((item) => [String(item.id || ''), item])).values())
