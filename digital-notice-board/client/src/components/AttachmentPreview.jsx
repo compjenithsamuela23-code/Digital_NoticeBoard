@@ -140,6 +140,7 @@ const AttachmentPreview = ({
   imageAlt = 'Attachment'
 }) => {
   const [failedSourceKey, setFailedSourceKey] = useState('');
+  const [loadedSourceKey, setLoadedSourceKey] = useState('');
 
   const sourceUrl = useMemo(() => {
     if (fileUrl) return fileUrl;
@@ -161,6 +162,8 @@ const AttachmentPreview = ({
   const kind = useMemo(() => inferKind(typeHint, extension), [typeHint, extension]);
   const sourceKey = `${sourceUrl}|${kind}`;
   const previewFailed = failedSourceKey === sourceKey;
+  const isMediaLoading =
+    (kind === 'image' || kind === 'video') && preview && !previewFailed && loadedSourceKey !== sourceKey;
 
   if (!sourceUrl) return null;
 
@@ -187,7 +190,18 @@ const AttachmentPreview = ({
   if (!previewFailed && preview && kind === 'image') {
     return (
       <div className={`media-preview ${className}`.trim()}>
-        <img src={sourceUrl} alt={imageAlt} onError={() => setFailedSourceKey(sourceKey)} />
+        <img
+          src={sourceUrl}
+          alt={imageAlt}
+          loading="eager"
+          decoding="async"
+          onLoad={() => setLoadedSourceKey(sourceKey)}
+          onError={() => {
+            setLoadedSourceKey(sourceKey);
+            setFailedSourceKey(sourceKey);
+          }}
+        />
+        {isMediaLoading ? <p className="media-preview__loading">Loading media...</p> : null}
       </div>
     );
   }
@@ -199,8 +213,14 @@ const AttachmentPreview = ({
           src={sourceUrl}
           controls
           preload="metadata"
-          onError={() => setFailedSourceKey(sourceKey)}
+          playsInline
+          onLoadedData={() => setLoadedSourceKey(sourceKey)}
+          onError={() => {
+            setLoadedSourceKey(sourceKey);
+            setFailedSourceKey(sourceKey);
+          }}
         />
+        {isMediaLoading ? <p className="media-preview__loading">Loading media...</p> : null}
       </div>
     );
   }

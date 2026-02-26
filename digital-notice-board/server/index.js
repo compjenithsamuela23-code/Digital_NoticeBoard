@@ -264,6 +264,43 @@ const DOCUMENT_EXTENSIONS = new Set([
   '.rar',
   '.7z'
 ]);
+const GENERIC_MIME_TYPES = new Set(['application/octet-stream', 'binary/octet-stream']);
+const MIME_TYPE_BY_EXTENSION = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.heif': 'image/heif',
+  '.heic': 'image/heic',
+  '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/x-m4v',
+  '.mov': 'video/quicktime',
+  '.avi': 'video/x-msvideo',
+  '.mkv': 'video/x-matroska',
+  '.webm': 'video/webm',
+  '.ogg': 'video/ogg',
+  '.ogv': 'video/ogg',
+  '.wmv': 'video/x-ms-wmv',
+  '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.zip': 'application/zip',
+  '.rar': 'application/vnd.rar',
+  '.7z': 'application/x-7z-compressed'
+};
 
 const upload = multer({
   storage,
@@ -369,6 +406,34 @@ function normalizeUploadedMimeType(value) {
   return raw.split(';')[0].trim().slice(0, 120) || null;
 }
 
+function isGenericMimeType(value) {
+  const normalized = normalizeUploadedMimeType(value);
+  if (!normalized) return true;
+  return GENERIC_MIME_TYPES.has(normalized);
+}
+
+function inferMimeTypeFromReference(reference) {
+  const extension = getMediaPathExtension(reference);
+  if (!extension) return null;
+  return MIME_TYPE_BY_EXTENSION[extension] || null;
+}
+
+function resolveAttachmentMimeType(candidateMimeType, references = []) {
+  const normalizedCandidate = normalizeUploadedMimeType(candidateMimeType);
+  if (normalizedCandidate && !isGenericMimeType(normalizedCandidate)) {
+    return normalizedCandidate;
+  }
+
+  for (const reference of references) {
+    const inferred = inferMimeTypeFromReference(reference);
+    if (inferred) {
+      return inferred;
+    }
+  }
+
+  return normalizedCandidate || null;
+}
+
 function parseNonNegativeInteger(value) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed < 0) {
@@ -448,6 +513,11 @@ function parseAttachmentInput(body = {}) {
   const providedFileName = sanitizeOriginalFileName(body.attachmentFileName || body.fileName || '');
   const inferredFileName = inferFileNameFromReference(attachmentPath);
   const providedMimeType = normalizeUploadedMimeType(body.attachmentMimeType || body.fileMimeType || '');
+  const resolvedMimeType = resolveAttachmentMimeType(providedMimeType, [
+    providedFileName,
+    inferredFileName,
+    attachmentPath
+  ]);
   const providedFileSize = parseNonNegativeInteger(
     body.attachmentFileSizeBytes !== undefined ? body.attachmentFileSizeBytes : body.fileSizeBytes
   );
@@ -457,7 +527,7 @@ function parseAttachmentInput(body = {}) {
     attachmentPath,
     attachmentMetadata: {
       file_name: providedFileName || inferredFileName,
-      file_mime_type: providedMimeType,
+      file_mime_type: resolvedMimeType,
       file_size_bytes: providedFileSize
     }
   };
@@ -473,9 +543,14 @@ function getAttachmentMetadata(uploadedFile) {
   }
 
   const size = Number.parseInt(uploadedFile.size, 10);
+  const sanitizedFileName = sanitizeOriginalFileName(uploadedFile.originalname);
+  const resolvedMimeType = resolveAttachmentMimeType(uploadedFile.mimetype, [
+    sanitizedFileName,
+    uploadedFile.originalname
+  ]);
   return {
-    file_name: sanitizeOriginalFileName(uploadedFile.originalname),
-    file_mime_type: normalizeUploadedMimeType(uploadedFile.mimetype),
+    file_name: sanitizedFileName,
+    file_mime_type: resolvedMimeType,
     file_size_bytes: Number.isNaN(size) ? null : Math.max(0, size)
   };
 }
@@ -571,7 +646,9 @@ async function uploadAttachmentToStorage(uploadedFile) {
 
   await ensureStorageBucketReady();
   const objectPath = buildStorageObjectPath(uploadedFile);
-  const contentType = normalizeUploadedMimeType(uploadedFile.mimetype) || 'application/octet-stream';
+  const contentType =
+    resolveAttachmentMimeType(uploadedFile.mimetype, [uploadedFile.originalname, objectPath]) ||
+    'application/octet-stream';
 
   let payload = uploadedFile.buffer;
   if (!payload) {
@@ -879,11 +956,62 @@ function isAnnouncementVisibleForDisplayCategory(row, requestedCategory) {
   return rowCategory === normalizedRequest;
 }
 
+function resolveMediaAspectDimensions({ mediaPath, mimeType, type, widthValue, heightValue }) {
+  const parsedWidth = Number.parseInt(widthValue, 10);
+  const parsedHeight = Number.parseInt(heightValue, 10);
+  const hasStoredDimensions =
+    Number.isFinite(parsedWidth) && parsedWidth > 0 && Number.isFinite(parsedHeight) && parsedHeight > 0;
+
+  if (hasStoredDimensions) {
+    return {
+      mediaWidth: parsedWidth,
+      mediaHeight: parsedHeight
+    };
+  }
+
+  if (!mediaPath) {
+    return {
+      mediaWidth: Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : null,
+      mediaHeight: Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : null
+    };
+  }
+
+  const normalizedMimeType = normalizeUploadedMimeType(mimeType) || '';
+  const normalizedType = String(type || '').toLowerCase();
+  const isVideoLike =
+    normalizedType.includes('video') ||
+    normalizedMimeType.startsWith('video/') ||
+    isVideoMediaPath(mediaPath);
+  const isImageLike =
+    normalizedType.includes('image') ||
+    normalizedMimeType.startsWith('image/') ||
+    isImageMediaPath(mediaPath);
+
+  if (isVideoLike || isImageLike) {
+    return {
+      mediaWidth: 16,
+      mediaHeight: 9
+    };
+  }
+
+  return {
+    mediaWidth: Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : null,
+    mediaHeight: Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : null
+  };
+}
+
 function toAnnouncementDto(row) {
   if (!row) return null;
   const parsedFileSize = Number.parseInt(row.file_size_bytes, 10);
-  const mediaWidth = Number.parseInt(row.media_width, 10);
-  const mediaHeight = Number.parseInt(row.media_height, 10);
+  const resolvedMimeType = resolveAttachmentMimeType(row.file_mime_type, [row.file_name, row.image]);
+  const resolvedType = getAnnouncementType(row.image, row.content, resolvedMimeType);
+  const resolvedDimensions = resolveMediaAspectDimensions({
+    mediaPath: row.image,
+    mimeType: resolvedMimeType,
+    type: resolvedType,
+    widthValue: row.media_width,
+    heightValue: row.media_height
+  });
   return {
     id: row.id,
     title: row.title,
@@ -894,12 +1022,12 @@ function toAnnouncementDto(row) {
     isActive: row.is_active,
     category: row.category,
     image: row.image,
-    type: row.type,
+    type: resolvedType,
     fileName: row.file_name || null,
-    fileMimeType: row.file_mime_type || null,
+    fileMimeType: resolvedMimeType || null,
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
-    mediaWidth: Number.isNaN(mediaWidth) ? null : mediaWidth,
-    mediaHeight: Number.isNaN(mediaHeight) ? null : mediaHeight,
+    mediaWidth: resolvedDimensions.mediaWidth,
+    mediaHeight: resolvedDimensions.mediaHeight,
     createdAt: toIsoStringOrNull(row.created_at),
     startAt: toIsoStringOrNull(row.start_at),
     endAt: toIsoStringOrNull(row.end_at),
@@ -914,8 +1042,23 @@ function toHistoryDto(row) {
   const snapshot = row.data && typeof row.data === 'object' ? row.data : {};
   const announcementId = row.announcement_id || row.id || snapshot.id;
   const parsedFileSize = Number.parseInt(row.file_size_bytes ?? snapshot.file_size_bytes, 10);
-  const parsedMediaWidth = Number.parseInt(row.media_width ?? snapshot.media_width, 10);
-  const parsedMediaHeight = Number.parseInt(row.media_height ?? snapshot.media_height, 10);
+  const imageReference = row.image || snapshot.image || null;
+  const resolvedMimeType = resolveAttachmentMimeType(row.file_mime_type || snapshot.file_mime_type, [
+    row.file_name || snapshot.file_name,
+    imageReference
+  ]);
+  const resolvedType = getAnnouncementType(
+    imageReference,
+    row.content || snapshot.content || '',
+    resolvedMimeType
+  );
+  const resolvedDimensions = resolveMediaAspectDimensions({
+    mediaPath: imageReference,
+    mimeType: resolvedMimeType,
+    type: resolvedType,
+    widthValue: row.media_width ?? snapshot.media_width,
+    heightValue: row.media_height ?? snapshot.media_height
+  });
 
   return {
     id: announcementId,
@@ -925,13 +1068,13 @@ function toHistoryDto(row) {
     duration: row.duration ?? snapshot.duration ?? null,
     isActive: row.is_active ?? snapshot.is_active ?? null,
     category: row.category || snapshot.category || null,
-    image: row.image || snapshot.image || null,
-    type: row.type || snapshot.type || null,
+    image: imageReference,
+    type: resolvedType || null,
     fileName: row.file_name || snapshot.file_name || null,
-    fileMimeType: row.file_mime_type || snapshot.file_mime_type || null,
+    fileMimeType: resolvedMimeType || null,
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
-    mediaWidth: Number.isNaN(parsedMediaWidth) ? null : parsedMediaWidth,
-    mediaHeight: Number.isNaN(parsedMediaHeight) ? null : parsedMediaHeight,
+    mediaWidth: resolvedDimensions.mediaWidth,
+    mediaHeight: resolvedDimensions.mediaHeight,
     createdAt: toIsoStringOrNull(row.created_at || snapshot.created_at),
     startAt: toIsoStringOrNull(row.start_at || snapshot.start_at),
     endAt: toIsoStringOrNull(row.end_at || snapshot.end_at),
@@ -1940,8 +2083,8 @@ app.post('/api/display-auth/logout', simpleAuth, async (req, res) => {
 app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
     const fileName = sanitizeOriginalFileName(req.body && req.body.fileName);
-    const mimeType =
-      normalizeUploadedMimeType(req.body && req.body.mimeType) || 'application/octet-stream';
+    const requestedMimeType = normalizeUploadedMimeType(req.body && req.body.mimeType);
+    const mimeType = resolveAttachmentMimeType(requestedMimeType, [fileName]) || 'application/octet-stream';
     const fileSizeBytes = parsePositiveInteger(req.body && req.body.fileSizeBytes);
 
     if (!fileName) {
@@ -2092,7 +2235,13 @@ app.post(
     const attachmentMetadata = uploadedFile
       ? getAttachmentMetadata(uploadedFile)
       : attachmentInput.attachmentMetadata;
-    const attachmentMimeType = uploadedFile ? uploadedFile.mimetype : attachmentMetadata.file_mime_type;
+    const attachmentMimeType = resolveAttachmentMimeType(
+      uploadedFile ? uploadedFile.mimetype : attachmentMetadata.file_mime_type,
+      [attachmentMetadata.file_name, attachmentPath]
+    );
+    if (attachmentMimeType) {
+      attachmentMetadata.file_mime_type = attachmentMimeType;
+    }
     const announcementRow = {
       id: generateId(),
       title: normalizedTitle,
@@ -2232,7 +2381,13 @@ app.put(
     }
 
     const effectiveContent = nextContent;
-    const attachmentMimeType = uploadedFile ? uploadedFile.mimetype : attachmentMetadata.file_mime_type;
+    const attachmentMimeType = resolveAttachmentMimeType(
+      uploadedFile ? uploadedFile.mimetype : attachmentMetadata.file_mime_type,
+      [attachmentMetadata.file_name, attachmentPath]
+    );
+    if (attachmentMimeType) {
+      attachmentMetadata.file_mime_type = attachmentMimeType;
+    }
     const updateRow = {
       image: attachmentPath,
       type: getAnnouncementType(attachmentPath, effectiveContent, attachmentMimeType),

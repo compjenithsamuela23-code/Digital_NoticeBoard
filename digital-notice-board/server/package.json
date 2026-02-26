@@ -10,6 +10,7 @@
     "dev": "nodemon index.js",
     "setup:supabase": "node scripts/setup-supabase.js",
     "migrate:supabase": "node scripts/migrate-file-db-to-supabase.js",
+    "backfill:media": "node scripts/backfill-media-metadata.js",
     "check:supabase": "node scripts/check-supabase-connection.js",
     "check:smoke": "node scripts/smoke-e2e.js"
   },

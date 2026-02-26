@@ -255,9 +255,24 @@ const DisplayBoard = () => {
     currentAnnouncementMediaWidth > 0 &&
     Number.isFinite(currentAnnouncementMediaHeight) &&
     currentAnnouncementMediaHeight > 0;
-  const mediaAspectStyle = hasMediaDimensions
-    ? { aspectRatio: `${currentAnnouncementMediaWidth} / ${currentAnnouncementMediaHeight}` }
-    : undefined;
+  const mediaAspectStyle = useMemo(() => {
+    if (hasMediaDimensions) {
+      return { aspectRatio: `${currentAnnouncementMediaWidth} / ${currentAnnouncementMediaHeight}` };
+    }
+    if (!currentAnnouncementHasAnyMedia) {
+      return undefined;
+    }
+    if (currentAnnouncementHasDocument) {
+      return { aspectRatio: '16 / 10' };
+    }
+    return { aspectRatio: '16 / 9' };
+  }, [
+    currentAnnouncementHasAnyMedia,
+    currentAnnouncementHasDocument,
+    currentAnnouncementMediaHeight,
+    currentAnnouncementMediaWidth,
+    hasMediaDimensions
+  ]);
   const currentAnnouncementVideoUrl = currentAnnouncementHasVideo
     ? assetUrl(currentAnnouncement.image)
     : null;
