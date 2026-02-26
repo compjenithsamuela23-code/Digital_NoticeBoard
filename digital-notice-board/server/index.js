@@ -609,6 +609,53 @@ function getStorageObjectPathFromReference(value) {
   return null;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForStorageAttachmentAvailability(
+  attachmentReference,
+  { attempts = 4, delayMs = 250 } = {}
+) {
+  const objectPath = getStorageObjectPathFromReference(attachmentReference);
+  if (!objectPath) {
+    return true;
+  }
+
+  const normalizedObjectPath = objectPath.replace(/^\/+/, '');
+  const parentDirectory = path.posix.dirname(normalizedObjectPath);
+  const fileName = path.posix.basename(normalizedObjectPath);
+  if (!fileName || fileName === '.' || fileName === '/') {
+    return false;
+  }
+
+  const listPath = parentDirectory === '.' ? '' : parentDirectory;
+  const safeAttempts = Math.max(1, Number.parseInt(attempts, 10) || 1);
+  const safeDelay = Math.max(50, Number.parseInt(delayMs, 10) || 250);
+
+  for (let attempt = 0; attempt < safeAttempts; attempt += 1) {
+    const { data, error } = await supabase.storage.from(SUPABASE_STORAGE_BUCKET).list(listPath, {
+      limit: 200,
+      search: fileName
+    });
+
+    if (!error) {
+      const found = (data || []).some((entry) => entry && String(entry.name || '') === fileName);
+      if (found) {
+        return true;
+      }
+    }
+
+    if (attempt < safeAttempts - 1) {
+      await sleep(safeDelay);
+    }
+  }
+
+  return false;
+}
+
 async function ensureStorageBucketReady() {
   if (storageBucketReadyPromise) {
     return storageBucketReadyPromise;
@@ -2364,6 +2411,14 @@ app.post(
         error: 'Provide either file upload or attachmentUrl metadata, not both.'
       });
     }
+    if (attachmentInput.hasAttachmentInput && attachmentInput.attachmentPath) {
+      const isReady = await waitForStorageAttachmentAvailability(attachmentInput.attachmentPath);
+      if (!isReady) {
+        return res.status(409).json({
+          error: 'Uploaded attachment is not ready yet. Please retry in a moment.'
+        });
+      }
+    }
 
     const hasAttachment = Boolean(uploadedFile || attachmentInput.attachmentPath);
     if (!normalizedTitle && !normalizedContent && !hasAttachment) {
@@ -2485,6 +2540,14 @@ app.put(
       return res.status(400).json({
         error: 'Provide either file upload or attachmentUrl metadata, not both.'
       });
+    }
+    if (attachmentInput.hasAttachmentInput && attachmentInput.attachmentPath) {
+      const isReady = await waitForStorageAttachmentAvailability(attachmentInput.attachmentPath);
+      if (!isReady) {
+        return res.status(409).json({
+          error: 'Uploaded attachment is not ready yet. Please retry in a moment.'
+        });
+      }
     }
 
     const uploadResult = uploadedFile ? await uploadAttachmentToStorage(uploadedFile) : null;

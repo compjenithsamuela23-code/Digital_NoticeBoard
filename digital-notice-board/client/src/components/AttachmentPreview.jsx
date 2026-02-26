@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { assetUrl } from '../config/api';
 import DocumentAttachment from './DocumentAttachment';
 
@@ -92,6 +92,8 @@ const DOCUMENT_EXTENSIONS = new Set([
   'rar',
   '7z'
 ]);
+const MEDIA_LOAD_TIMEOUT_MS = 12000;
+const MEDIA_RETRY_LIMIT = 2;
 
 function getFileName(value) {
   const raw = String(value || '').split('/').pop() || '';
@@ -122,6 +124,18 @@ function inferKind(typeHint, extension) {
   return 'document';
 }
 
+function buildRetriedSourceUrl(sourceUrl, attempt) {
+  if (!sourceUrl || attempt <= 0) return sourceUrl;
+  if (!/^https?:\/\//i.test(sourceUrl) && !sourceUrl.startsWith('/')) {
+    return sourceUrl;
+  }
+
+  const [baseUrl, hashFragment = ''] = String(sourceUrl).split('#');
+  const joiner = baseUrl.includes('?') ? '&' : '?';
+  const nextUrl = `${baseUrl}${joiner}_dnbr_retry=${attempt}`;
+  return hashFragment ? `${nextUrl}#${hashFragment}` : nextUrl;
+}
+
 const AttachmentPreview = ({
   filePath,
   fileUrl,
@@ -144,6 +158,9 @@ const AttachmentPreview = ({
 }) => {
   const [failedSourceKey, setFailedSourceKey] = useState('');
   const [loadedSourceKey, setLoadedSourceKey] = useState('');
+  const [mediaRetryAttempt, setMediaRetryAttempt] = useState(0);
+  const [mediaFinalFailure, setMediaFinalFailure] = useState(false);
+  const [mediaRetryReason, setMediaRetryReason] = useState('');
 
   const sourceUrl = useMemo(() => {
     if (fileUrl) return fileUrl;
@@ -163,10 +180,54 @@ const AttachmentPreview = ({
     [fileName, filePath, fileUrl]
   );
   const kind = useMemo(() => inferKind(typeHint, extension), [typeHint, extension]);
-  const sourceKey = `${sourceUrl}|${kind}`;
-  const previewFailed = failedSourceKey === sourceKey;
+  const isMediaKind = kind === 'image' || kind === 'video';
+  const resolvedSourceUrl = useMemo(
+    () => (isMediaKind && preview ? buildRetriedSourceUrl(sourceUrl, mediaRetryAttempt) : sourceUrl),
+    [isMediaKind, mediaRetryAttempt, preview, sourceUrl]
+  );
+  const sourceKey = `${resolvedSourceUrl}|${kind}`;
+  const previewFailed = mediaFinalFailure || failedSourceKey === sourceKey;
   const isMediaLoading =
-    (kind === 'image' || kind === 'video') && preview && !previewFailed && loadedSourceKey !== sourceKey;
+    isMediaKind && preview && !previewFailed && loadedSourceKey !== sourceKey;
+
+  useEffect(() => {
+    const resetTimer = window.setTimeout(() => {
+      setFailedSourceKey('');
+      setLoadedSourceKey('');
+      setMediaRetryAttempt(0);
+      setMediaFinalFailure(false);
+      setMediaRetryReason('');
+    }, 0);
+
+    return () => window.clearTimeout(resetTimer);
+  }, [kind, sourceUrl]);
+
+  useEffect(() => {
+    if (!isMediaLoading) return undefined;
+
+    const timeout = window.setTimeout(() => {
+      if (mediaRetryAttempt < MEDIA_RETRY_LIMIT) {
+        setMediaRetryReason('timeout');
+        setMediaRetryAttempt((previous) => previous + 1);
+        return;
+      }
+      setMediaFinalFailure(true);
+      setFailedSourceKey(sourceKey);
+    }, MEDIA_LOAD_TIMEOUT_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [isMediaLoading, mediaRetryAttempt, sourceKey]);
+
+  const handleMediaError = () => {
+    setLoadedSourceKey(sourceKey);
+    if (mediaRetryAttempt < MEDIA_RETRY_LIMIT) {
+      setMediaRetryReason('error');
+      setMediaRetryAttempt((previous) => previous + 1);
+      return;
+    }
+    setMediaFinalFailure(true);
+    setFailedSourceKey(sourceKey);
+  };
 
   if (!sourceUrl) return null;
 
@@ -196,17 +257,20 @@ const AttachmentPreview = ({
     return (
       <div className={`media-preview ${className}`.trim()}>
         <img
-          src={sourceUrl}
+          src={resolvedSourceUrl}
           alt={imageAlt}
           loading="eager"
           decoding="async"
           onLoad={() => setLoadedSourceKey(sourceKey)}
-          onError={() => {
-            setLoadedSourceKey(sourceKey);
-            setFailedSourceKey(sourceKey);
-          }}
+          onError={handleMediaError}
         />
-        {isMediaLoading ? <p className="media-preview__loading">Loading media...</p> : null}
+        {isMediaLoading ? (
+          <p className="media-preview__loading">
+            {mediaRetryAttempt > 0
+              ? `Retrying media (${mediaRetryAttempt}/${MEDIA_RETRY_LIMIT})`
+              : 'Loading media...'}
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -215,26 +279,29 @@ const AttachmentPreview = ({
     return (
       <div className={`media-preview ${className}`.trim()}>
         <video
-          src={sourceUrl}
+          src={resolvedSourceUrl}
           controls
           preload="metadata"
           playsInline
           onLoadedData={() => setLoadedSourceKey(sourceKey)}
-          onError={() => {
-            setLoadedSourceKey(sourceKey);
-            setFailedSourceKey(sourceKey);
-          }}
+          onError={handleMediaError}
         />
-        {isMediaLoading ? <p className="media-preview__loading">Loading media...</p> : null}
+        {isMediaLoading ? (
+          <p className="media-preview__loading">
+            {mediaRetryAttempt > 0
+              ? `Retrying media (${mediaRetryAttempt}/${MEDIA_RETRY_LIMIT})`
+              : 'Loading media...'}
+          </p>
+        ) : null}
       </div>
     );
   }
 
   const hint =
     kind === 'image'
-      ? 'This image format cannot be previewed in browser. Use Open or Download.'
+      ? `This image could not be loaded${mediaRetryReason ? ` (${mediaRetryReason})` : ''}. Use Open or Download.`
       : kind === 'video'
-        ? 'This video format cannot be previewed in browser. Use Open or Download.'
+        ? `This video could not be loaded${mediaRetryReason ? ` (${mediaRetryReason})` : ''}. Use Open or Download.`
         : 'Preview is not available for this file format.';
 
   return (
