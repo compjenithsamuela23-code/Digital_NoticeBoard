@@ -131,6 +131,11 @@ const AttachmentPreview = ({
   className = '',
   preview = true,
   documentPreview = true,
+  documentSlideshow = false,
+  documentSlideshowAutoplay = true,
+  documentSlideshowIntervalMs,
+  onDocumentSlideCountChange,
+  onDocumentSlideIndexChange,
   title = 'Attachment',
   imageAlt = 'Attachment'
 }) => {
@@ -169,6 +174,11 @@ const AttachmentPreview = ({
         fileSizeBytes={fileSizeBytes}
         className={className}
         preview={documentPreview && preview}
+        slideshow={documentSlideshow}
+        slideshowAutoplay={documentSlideshowAutoplay}
+        slideshowIntervalMs={documentSlideshowIntervalMs}
+        onSlideCountChange={onDocumentSlideCountChange}
+        onSlideIndexChange={onDocumentSlideIndexChange}
         title={title}
       />
     );

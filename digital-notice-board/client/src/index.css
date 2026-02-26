@@ -1116,6 +1116,11 @@ textarea {
   font-size: 0.84rem;
 }
 
+.document-preview__meta--slideshow {
+  color: var(--brand-strong);
+  font-weight: 700;
+}
+
 .document-preview__header {
   display: grid;
   gap: 4px;
@@ -1127,6 +1132,12 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #ffffff;
+}
+
+.document-preview__slideshow {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
 }
 
 .document-preview__sheet-list {
@@ -1152,9 +1163,48 @@ textarea {
   background: var(--control-bg);
 }
 
+.document-preview__text--slide {
+  min-height: min(40vh, 360px);
+  max-height: min(58vh, 560px);
+}
+
 .document-preview__hint {
   color: var(--text-soft);
   font-size: 0.86rem;
+}
+
+.document-preview__slideshow-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.document-preview__dots {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.document-preview__dot {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--dot-bg);
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.16s ease, background-color 0.16s ease;
+}
+
+.document-preview__dot:hover {
+  transform: scale(1.08);
+}
+
+.document-preview__dot.is-active {
+  width: 18px;
+  background: var(--brand);
 }
 
 .document-preview.media-preview--display {
@@ -1186,6 +1236,16 @@ textarea {
 
 .document-preview.media-preview--display .document-preview__text {
   min-height: min(52vh, 500px);
+  max-height: min(58vh, 560px);
+}
+
+.document-preview.media-preview--display .document-preview__slideshow {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.document-preview.media-preview--display .document-preview__text--slide {
+  min-height: min(58vh, 560px);
   max-height: min(58vh, 560px);
 }
 

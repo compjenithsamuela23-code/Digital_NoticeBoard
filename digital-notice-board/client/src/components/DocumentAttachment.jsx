@@ -3,6 +3,12 @@ import { assetUrl } from '../config/api';
 import * as mammoth from 'mammoth/mammoth.browser';
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+if (GlobalWorkerOptions.workerSrc !== pdfWorker) {
+  GlobalWorkerOptions.workerSrc = pdfWorker;
+}
 
 const TEXT_PREVIEW_EXTENSIONS = new Set([
   'txt',
@@ -85,6 +91,10 @@ const TEXT_MIME_HINTS = ['text/', 'application/json', 'application/xml', 'applic
 const MAX_PREVIEW_CHARS = 30000;
 const MAX_BINARY_PREVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_INLINE_PARSE_BYTES = 20 * 1024 * 1024;
+const MAX_SLIDESHOW_PARSE_BYTES = 50 * 1024 * 1024;
+const TEXT_SLIDE_MAX_CHARS = 2600;
+const TEXT_SLIDE_MAX_LINES = 26;
+const DEFAULT_SLIDESHOW_INTERVAL_MS = 6000;
 
 function getExtension(value) {
   const file = String(value || '').split('/').pop() || '';
@@ -288,6 +298,77 @@ function buildSheetPreviewsFromWorkbook(workbook) {
   });
 }
 
+function extractPlainTextFromHtml(rawHtml) {
+  const html = String(rawHtml || '').trim();
+  if (!html) return '';
+  try {
+    const document = new DOMParser().parseFromString(html, 'text/html');
+    return String(document.body?.textContent || document.documentElement?.textContent || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  } catch {
+    return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+}
+
+function splitTextIntoSlides(
+  value,
+  { maxChars = TEXT_SLIDE_MAX_CHARS, maxLines = TEXT_SLIDE_MAX_LINES } = {}
+) {
+  const normalized = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+
+  const lines = normalized.split('\n');
+  const chunks = [];
+  let buffer = [];
+  let charsInBuffer = 0;
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    const chunk = buffer.join('\n').trim();
+    if (chunk) {
+      chunks.push(chunk);
+    }
+    buffer = [];
+    charsInBuffer = 0;
+  };
+
+  lines.forEach((line) => {
+    const safeLine = String(line || '');
+    const nextChars = charsInBuffer + safeLine.length + 1;
+    if (buffer.length > 0 && (buffer.length >= maxLines || nextChars > maxChars)) {
+      flush();
+    }
+    buffer.push(safeLine);
+    charsInBuffer += safeLine.length + 1;
+  });
+
+  flush();
+  return chunks.slice(0, 300);
+}
+
+function buildTextSlideEntries(value, labelPrefix = 'Page') {
+  return splitTextIntoSlides(value).map((chunk, index) => ({
+    id: `${labelPrefix.toLowerCase()}-${index + 1}`,
+    type: 'text',
+    label: `${labelPrefix} ${index + 1}`,
+    content: chunk
+  }));
+}
+
+function buildPdfPageUrl(sourceUrl, pageNumber = 1) {
+  const page = Math.max(1, Number.parseInt(pageNumber, 10) || 1);
+  const cleanBase = String(sourceUrl || '').split('#')[0];
+  return `${cleanBase}#page=${page}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
+}
+
+function normalizeSlideshowInterval(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) return DEFAULT_SLIDESHOW_INTERVAL_MS;
+  return Math.max(1500, Math.min(parsed, 30000));
+}
+
 const DocumentAttachment = ({
   filePath,
   fileUrl,
@@ -296,13 +377,21 @@ const DocumentAttachment = ({
   fileSizeBytes,
   title = 'Document Attachment',
   className = '',
-  preview = true
+  preview = true,
+  slideshow = false,
+  slideshowAutoplay = true,
+  slideshowIntervalMs = DEFAULT_SLIDESHOW_INTERVAL_MS,
+  onSlideCountChange,
+  onSlideIndexChange
 }) => {
   const [textContent, setTextContent] = useState('');
   const [textLoading, setTextLoading] = useState(false);
   const [textError, setTextError] = useState('');
   const [htmlPreview, setHtmlPreview] = useState('');
   const [sheetPreviews, setSheetPreviews] = useState([]);
+  const [slides, setSlides] = useState([]);
+  const [activeSlideIndex, setActiveSlideIndex] = useState(0);
+  const [isAutoplayActive, setIsAutoplayActive] = useState(Boolean(slideshowAutoplay));
 
   const sourceUrl = useMemo(() => {
     if (fileUrl) return fileUrl;
@@ -329,6 +418,11 @@ const DocumentAttachment = ({
     const details = [normalizedMimeType || '', formattedSize || ''].filter(Boolean);
     return details.length > 0 ? `${primaryLabel} • ${details.join(' • ')}` : primaryLabel;
   }, [extension, formattedSize, normalizedMimeType]);
+  const isSlideshowEnabled = Boolean(slideshow && preview);
+  const normalizedSlideIntervalMs = useMemo(
+    () => normalizeSlideshowInterval(slideshowIntervalMs),
+    [slideshowIntervalMs]
+  );
   const previewMode = useMemo(() => {
     if (!preview) return 'none';
     if (extension === 'pdf' || PDF_MIME_TYPES.has(normalizedMimeType)) return 'pdf';
@@ -358,18 +452,100 @@ const DocumentAttachment = ({
   const pdfPreviewUrl = useMemo(() => {
     if (previewMode !== 'pdf') return '';
     if (!sourceUrl) return '';
-    if (sourceUrl.includes('#')) return sourceUrl;
-    return `${sourceUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
+    return buildPdfPageUrl(sourceUrl, 1);
   }, [previewMode, sourceUrl]);
 
   useEffect(() => {
+    setActiveSlideIndex(0);
+  }, [sourceUrl, previewMode, isSlideshowEnabled]);
+
+  useEffect(() => {
+    setIsAutoplayActive(Boolean(slideshowAutoplay));
+  }, [previewMode, slideshowAutoplay, sourceUrl]);
+
+  useEffect(() => {
+    if (slides.length === 0 && activeSlideIndex !== 0) {
+      setActiveSlideIndex(0);
+      return;
+    }
+    if (slides.length > 0 && activeSlideIndex > slides.length - 1) {
+      setActiveSlideIndex(0);
+    }
+  }, [activeSlideIndex, slides.length]);
+
+  useEffect(() => {
+    if (!isSlideshowEnabled || !isAutoplayActive || slides.length <= 1 || textLoading) return;
+    const timer = setInterval(() => {
+      setActiveSlideIndex((previous) => (previous + 1) % slides.length);
+    }, normalizedSlideIntervalMs);
+    return () => clearInterval(timer);
+  }, [isAutoplayActive, isSlideshowEnabled, normalizedSlideIntervalMs, slides.length, textLoading]);
+
+  useEffect(() => {
+    if (typeof onSlideCountChange !== 'function') return;
+    const count = isSlideshowEnabled ? Math.max(1, slides.length) : 1;
+    onSlideCountChange(count);
+  }, [isSlideshowEnabled, onSlideCountChange, slides.length]);
+
+  useEffect(() => {
+    if (typeof onSlideIndexChange !== 'function') return;
+    if (!isSlideshowEnabled) {
+      onSlideIndexChange(1);
+      return;
+    }
+    const index = slides.length > 0 ? Math.min(activeSlideIndex + 1, slides.length) : 1;
+    onSlideIndexChange(index);
+  }, [activeSlideIndex, isSlideshowEnabled, onSlideIndexChange, slides.length]);
+
+  useEffect(() => {
     let active = true;
-    if (!sourceUrl || previewMode === 'none' || previewMode === 'pdf' || previewMode === 'office-online') {
+
+    const clearInlinePreview = () => {
       setTextContent('');
       setTextError('');
       setTextLoading(false);
       setHtmlPreview('');
       setSheetPreviews([]);
+      setSlides([]);
+    };
+
+    if (!sourceUrl || previewMode === 'none') {
+      clearInlinePreview();
+      return () => {
+        active = false;
+      };
+    }
+
+    if (previewMode === 'office-online') {
+      setTextContent('');
+      setTextError('');
+      setTextLoading(false);
+      setHtmlPreview('');
+      setSheetPreviews([]);
+      if (isSlideshowEnabled && officeViewerUrl) {
+        setSlides([
+          {
+            id: 'office-1',
+            type: 'office-frame',
+            src: officeViewerUrl,
+            label: 'Page 1'
+          }
+        ]);
+      } else {
+        setSlides([]);
+      }
+      return () => {
+        active = false;
+      };
+    }
+
+    if (previewMode === 'pdf' && !isSlideshowEnabled) {
+      setTextContent('');
+      setTextError('');
+      setTextLoading(false);
+      setHtmlPreview('');
+      setSheetPreviews([]);
+      setSlides([]);
       return () => {
         active = false;
       };
@@ -381,16 +557,23 @@ const DocumentAttachment = ({
       setTextContent('');
       setHtmlPreview('');
       setSheetPreviews([]);
+      setSlides([]);
 
-      if (
-        parsedFileSizeBytes &&
-        parsedFileSizeBytes > MAX_INLINE_PARSE_BYTES &&
-        previewMode !== 'pdf' &&
-        previewMode !== 'office-online'
-      ) {
+      const isPdfSlideshow = previewMode === 'pdf' && isSlideshowEnabled;
+      if (parsedFileSizeBytes && parsedFileSizeBytes > MAX_INLINE_PARSE_BYTES && !isPdfSlideshow) {
         setTextLoading(false);
         setTextError(
           `File is too large for inline parsing (${formatFileSize(
+            parsedFileSizeBytes
+          )}). Use Open or Download for full view.`
+        );
+        return;
+      }
+
+      if (isPdfSlideshow && parsedFileSizeBytes && parsedFileSizeBytes > MAX_SLIDESHOW_PARSE_BYTES) {
+        setTextLoading(false);
+        setTextError(
+          `File is too large for slide-by-slide preview (${formatFileSize(
             parsedFileSizeBytes
           )}). Use Open or Download for full view.`
         );
@@ -404,20 +587,67 @@ const DocumentAttachment = ({
         }
         const responseMimeType = normalizeMimeType(response.headers.get('content-type')) || normalizedMimeType;
 
+        const applyTextContent = (rawText, labelPrefix = 'Page') => {
+          const normalizedText = String(rawText || '').trim();
+          if (!normalizedText) return;
+          setTextContent(truncateText(normalizedText));
+          if (isSlideshowEnabled) {
+            const textSlides = buildTextSlideEntries(normalizedText, labelPrefix);
+            if (textSlides.length > 0) {
+              setSlides(textSlides);
+            }
+          }
+        };
+
         if (previewMode === 'text') {
           const content = await response.text();
           if (!active) return;
-          setTextContent(truncateText(content));
+          applyTextContent(content, 'Page');
           return;
         }
 
         const arrayBuffer = await response.arrayBuffer();
         if (!active) return;
 
+        if (previewMode === 'pdf') {
+          const loadingTask = getDocument({ data: arrayBuffer });
+          const pdfDocument = await loadingTask.promise;
+          const pageCount = Math.max(1, Number.parseInt(pdfDocument.numPages, 10) || 1);
+          if (typeof pdfDocument.destroy === 'function') {
+            await pdfDocument.destroy();
+          }
+          if (!active) return;
+          setSlides(
+            Array.from({ length: pageCount }, (_, index) => ({
+              id: `pdf-${index + 1}`,
+              type: 'pdf-page',
+              pageNumber: index + 1,
+              label: `Page ${index + 1}`
+            }))
+          );
+          return;
+        }
+
         if (previewMode === 'word') {
           const result = await mammoth.convertToHtml({ arrayBuffer });
           if (!active) return;
-          setHtmlPreview(wrapHtmlPreview(result.value || '<p>No readable text found in this file.</p>'));
+          const html = result.value || '<p>No readable text found in this file.</p>';
+          setHtmlPreview(wrapHtmlPreview(html));
+          if (isSlideshowEnabled) {
+            const textSlides = buildTextSlideEntries(extractPlainTextFromHtml(html), 'Page');
+            if (textSlides.length > 0) {
+              setSlides(textSlides);
+            } else {
+              setSlides([
+                {
+                  id: 'word-1',
+                  type: 'html',
+                  srcDoc: wrapHtmlPreview(html),
+                  label: 'Page 1'
+                }
+              ]);
+            }
+          }
           return;
         }
 
@@ -427,6 +657,16 @@ const DocumentAttachment = ({
           if (!active) return;
           if (sheetDocs.length === 0) {
             setTextError('No readable sheets found in this file.');
+          } else if (isSlideshowEnabled) {
+            setSlides(
+              sheetDocs.map((sheet, index) => ({
+                id: `sheet-${index + 1}`,
+                type: 'sheet',
+                srcDoc: sheet.srcDoc,
+                name: sheet.name,
+                label: `Sheet ${index + 1}: ${sheet.name}`
+              }))
+            );
           } else {
             setSheetPreviews(sheetDocs);
           }
@@ -434,12 +674,21 @@ const DocumentAttachment = ({
         }
 
         if (previewMode === 'presentation') {
-          const slides = await extractPptxSlides(arrayBuffer);
+          const presentationSlides = await extractPptxSlides(arrayBuffer);
           if (!active) return;
-          if (slides.length === 0) {
+          if (presentationSlides.length === 0) {
             setTextError('No readable slide text found in this presentation.');
+          } else if (isSlideshowEnabled) {
+            setSlides(
+              presentationSlides.map((text, index) => ({
+                id: `presentation-${index + 1}`,
+                type: 'text',
+                content: text,
+                label: `Slide ${index + 1}`
+              }))
+            );
           } else {
-            const formatted = slides
+            const formatted = presentationSlides
               .slice(0, 200)
               .map((text, index) => `Slide ${index + 1}\n${text}`)
               .join('\n\n');
@@ -454,7 +703,7 @@ const DocumentAttachment = ({
           if (!odfText) {
             setTextError('No readable content found in this document.');
           } else {
-            setTextContent(truncateText(odfText));
+            applyTextContent(odfText, 'Page');
           }
           return;
         }
@@ -466,7 +715,7 @@ const DocumentAttachment = ({
             setTextError('This archive is empty.');
           } else {
             const listing = entries.map((item, index) => `${index + 1}. ${item}`).join('\n');
-            setTextContent(truncateText(listing));
+            applyTextContent(listing, 'Page');
           }
           return;
         }
@@ -488,7 +737,14 @@ const DocumentAttachment = ({
               if (hasDocxLayout) {
                 const result = await mammoth.convertToHtml({ arrayBuffer });
                 if (!active) return;
-                setHtmlPreview(wrapHtmlPreview(result.value || '<p>No readable text found in this file.</p>'));
+                const html = result.value || '<p>No readable text found in this file.</p>';
+                setHtmlPreview(wrapHtmlPreview(html));
+                if (isSlideshowEnabled) {
+                  const textSlides = buildTextSlideEntries(extractPlainTextFromHtml(html), 'Page');
+                  if (textSlides.length > 0) {
+                    setSlides(textSlides);
+                  }
+                }
                 return;
               }
 
@@ -497,20 +753,43 @@ const DocumentAttachment = ({
                 const sheetDocs = buildSheetPreviewsFromWorkbook(workbook);
                 if (!active) return;
                 if (sheetDocs.length > 0) {
-                  setSheetPreviews(sheetDocs);
+                  if (isSlideshowEnabled) {
+                    setSlides(
+                      sheetDocs.map((sheet, index) => ({
+                        id: `sheet-${index + 1}`,
+                        type: 'sheet',
+                        srcDoc: sheet.srcDoc,
+                        name: sheet.name,
+                        label: `Sheet ${index + 1}: ${sheet.name}`
+                      }))
+                    );
+                  } else {
+                    setSheetPreviews(sheetDocs);
+                  }
                   return;
                 }
               }
 
               if (hasPptxLayout) {
-                const slides = await extractPptxSlides(arrayBuffer);
+                const presentationSlides = await extractPptxSlides(arrayBuffer);
                 if (!active) return;
-                if (slides.length > 0) {
-                  const formatted = slides
-                    .slice(0, 200)
-                    .map((text, index) => `Slide ${index + 1}\n${text}`)
-                    .join('\n\n');
-                  setTextContent(truncateText(formatted));
+                if (presentationSlides.length > 0) {
+                  if (isSlideshowEnabled) {
+                    setSlides(
+                      presentationSlides.map((text, index) => ({
+                        id: `presentation-${index + 1}`,
+                        type: 'text',
+                        content: text,
+                        label: `Slide ${index + 1}`
+                      }))
+                    );
+                  } else {
+                    const formatted = presentationSlides
+                      .slice(0, 200)
+                      .map((text, index) => `Slide ${index + 1}\n${text}`)
+                      .join('\n\n');
+                    setTextContent(truncateText(formatted));
+                  }
                   return;
                 }
               }
@@ -519,7 +798,7 @@ const DocumentAttachment = ({
                 const odfText = await extractOdfText(arrayBuffer);
                 if (!active) return;
                 if (odfText) {
-                  setTextContent(truncateText(odfText));
+                  applyTextContent(odfText, 'Page');
                   return;
                 }
               }
@@ -542,14 +821,14 @@ const DocumentAttachment = ({
 
                 if (!active) return;
                 if (chunks.length > 0) {
-                  setTextContent(truncateText(chunks.join('\n\n')));
+                  applyTextContent(chunks.join('\n\n'), 'Page');
                   return;
                 }
               }
 
               if (entries.length > 0) {
                 const listing = entries.slice(0, 500).map((item, index) => `${index + 1}. ${item}`).join('\n');
-                setTextContent(truncateText(listing));
+                applyTextContent(listing, 'Page');
                 return;
               }
             } catch {
@@ -561,7 +840,7 @@ const DocumentAttachment = ({
             const decoded = new TextDecoder().decode(arrayBuffer.slice(0, MAX_BINARY_PREVIEW_BYTES));
             if (!active) return;
             if (String(decoded || '').trim()) {
-              setTextContent(truncateText(decoded));
+              applyTextContent(decoded, 'Page');
               return;
             }
           }
@@ -571,7 +850,7 @@ const DocumentAttachment = ({
           if (!extracted) {
             setTextError('No readable text could be extracted in browser for this document.');
           } else {
-            setTextContent(truncateText(extracted));
+            applyTextContent(extracted, 'Page');
           }
           return;
         }
@@ -589,9 +868,84 @@ const DocumentAttachment = ({
     return () => {
       active = false;
     };
-  }, [normalizedMimeType, parsedFileSizeBytes, previewMode, sourceUrl]);
+  }, [
+    isSlideshowEnabled,
+    normalizedMimeType,
+    officeViewerUrl,
+    parsedFileSizeBytes,
+    previewMode,
+    sourceUrl
+  ]);
 
   if (!sourceUrl) return null;
+
+  const hasSlides = isSlideshowEnabled && slides.length > 0;
+  const clampedSlideIndex = hasSlides ? Math.min(activeSlideIndex, slides.length - 1) : 0;
+  const activeSlide = hasSlides ? slides[clampedSlideIndex] : null;
+  const slideshowStatusLabel =
+    hasSlides && activeSlide
+      ? `${activeSlide.label || `Page ${clampedSlideIndex + 1}`} • ${clampedSlideIndex + 1} of ${slides.length}`
+      : textLoading
+        ? 'Preparing pages...'
+        : textError
+          ? 'Slide preview unavailable'
+          : 'Single page';
+
+  const slideIndicatorIndexes = (() => {
+    if (!hasSlides) return [];
+    if (slides.length <= 12) {
+      return Array.from({ length: slides.length }, (_, index) => index);
+    }
+
+    const start = Math.max(0, Math.min(clampedSlideIndex - 5, slides.length - 12));
+    return Array.from({ length: 12 }, (_, offset) => start + offset);
+  })();
+
+  const goToSlide = (index) => {
+    if (!hasSlides) return;
+    const target = Math.max(0, Math.min(Number.parseInt(index, 10) || 0, slides.length - 1));
+    setActiveSlideIndex(target);
+  };
+
+  const goToNextSlide = () => {
+    if (!hasSlides || slides.length <= 1) return;
+    setActiveSlideIndex((previous) => (previous + 1) % slides.length);
+  };
+
+  const goToPreviousSlide = () => {
+    if (!hasSlides || slides.length <= 1) return;
+    setActiveSlideIndex((previous) => (previous - 1 + slides.length) % slides.length);
+  };
+
+  const renderSlideFrame = (slide) => {
+    if (!slide) return null;
+
+    if (slide.type === 'pdf-page') {
+      return (
+        <iframe
+          className="document-preview__frame"
+          src={buildPdfPageUrl(sourceUrl, slide.pageNumber)}
+          title={`${title} - ${slide.label || 'Page'}`}
+        />
+      );
+    }
+
+    if (slide.type === 'office-frame') {
+      return <iframe className="document-preview__frame" src={slide.src} title={`${title} - ${slide.label || 'Document'}`} />;
+    }
+
+    if (slide.type === 'sheet' || slide.type === 'html') {
+      return (
+        <iframe
+          className="document-preview__frame"
+          srcDoc={slide.srcDoc || ''}
+          title={`${title} - ${slide.label || 'Slide'}`}
+        />
+      );
+    }
+
+    return <pre className="document-preview__text document-preview__text--slide">{slide.content || ''}</pre>;
+  };
 
   const showTextPreview =
     (previewMode === 'text' ||
@@ -599,6 +953,7 @@ const DocumentAttachment = ({
       previewMode === 'odf' ||
       previewMode === 'zip' ||
       previewMode === 'binary-text') &&
+    !isSlideshowEnabled &&
     (textLoading || Boolean(textError) || Boolean(textContent));
 
   return (
@@ -606,21 +961,80 @@ const DocumentAttachment = ({
       <div className="document-preview__header">
         <p className="document-preview__name">{resolvedName}</p>
         <p className="document-preview__meta">{metaLabel}</p>
+        {isSlideshowEnabled ? (
+          <p className="document-preview__meta document-preview__meta--slideshow">{slideshowStatusLabel}</p>
+        ) : null}
       </div>
 
-      {previewMode === 'pdf' ? (
+      {isSlideshowEnabled ? (
+        <div className="document-preview__slideshow">
+          {textLoading && !activeSlide ? (
+            <p className="document-preview__hint">Loading document pages...</p>
+          ) : null}
+
+          {textError && !activeSlide ? <p className="document-preview__hint">{textError}</p> : null}
+
+          {activeSlide ? renderSlideFrame(activeSlide) : null}
+
+          {hasSlides ? (
+            <div className="document-preview__slideshow-controls">
+              <button
+                type="button"
+                className="btn btn--ghost btn--tiny"
+                onClick={goToPreviousSlide}
+                disabled={slides.length <= 1}
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--tiny"
+                onClick={() => setIsAutoplayActive((value) => !value)}
+                disabled={slides.length <= 1}
+              >
+                {isAutoplayActive ? 'Pause' : 'Play'}
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--tiny"
+                onClick={goToNextSlide}
+                disabled={slides.length <= 1}
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
+
+          {slideIndicatorIndexes.length > 1 ? (
+            <div className="document-preview__dots" role="tablist" aria-label="Document pages">
+              {slideIndicatorIndexes.map((index) => (
+                <button
+                  key={`slide-dot-${index + 1}`}
+                  type="button"
+                  className={`document-preview__dot ${index === clampedSlideIndex ? 'is-active' : ''}`.trim()}
+                  onClick={() => goToSlide(index)}
+                  aria-label={`Go to page ${index + 1}`}
+                  aria-current={index === clampedSlideIndex ? 'true' : 'false'}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!isSlideshowEnabled && previewMode === 'pdf' ? (
         <iframe className="document-preview__frame" src={pdfPreviewUrl} title={title} />
       ) : null}
 
-      {previewMode === 'office-online' ? (
+      {!isSlideshowEnabled && previewMode === 'office-online' ? (
         <iframe className="document-preview__frame" src={officeViewerUrl} title={title} />
       ) : null}
 
-      {htmlPreview ? (
+      {!isSlideshowEnabled && htmlPreview ? (
         <iframe className="document-preview__frame" srcDoc={htmlPreview} title={title} />
       ) : null}
 
-      {sheetPreviews.length > 0 ? (
+      {!isSlideshowEnabled && sheetPreviews.length > 0 ? (
         <div className="document-preview__sheet-list">
           {sheetPreviews.map((sheet) => (
             <div className="document-preview__sheet" key={sheet.name}>

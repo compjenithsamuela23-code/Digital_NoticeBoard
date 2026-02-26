@@ -1338,6 +1338,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 fileSizeBytes={documentFile.size}
                 title="Document preview"
                 className="document-preview--full"
+                slideshow
+                slideshowAutoplay={false}
               />
             ) : null}
 

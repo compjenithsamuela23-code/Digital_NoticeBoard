@@ -35,7 +35,10 @@ const DisplayBoard = () => {
   const [videoVolume, setVideoVolume] = useState(1);
   const [audioStatusHint, setAudioStatusHint] = useState('');
   const [requestError, setRequestError] = useState('');
+  const [documentSlideCount, setDocumentSlideCount] = useState(1);
+  const [documentSlideIndex, setDocumentSlideIndex] = useState(1);
   const liveVideoRef = useRef(null);
+  const previousDocumentSlideIndexRef = useRef(1);
 
   const navigate = useNavigate();
   const { socket } = useSocket();
@@ -75,6 +78,18 @@ const DisplayBoard = () => {
     if (isImageMedia(announcement)) return false;
     return true;
   };
+
+  const handleDocumentSlideCountChange = useCallback((count) => {
+    const parsed = Number.parseInt(count, 10);
+    const next = Number.isNaN(parsed) || parsed <= 0 ? 1 : parsed;
+    setDocumentSlideCount(next);
+  }, []);
+
+  const handleDocumentSlideIndexChange = useCallback((index) => {
+    const parsed = Number.parseInt(index, 10);
+    const next = Number.isNaN(parsed) || parsed <= 0 ? 1 : parsed;
+    setDocumentSlideIndex(next);
+  }, []);
 
   const getCategoryName = (categoryId) => {
     if (!categoryId) return null;
@@ -194,14 +209,38 @@ const DisplayBoard = () => {
   useEffect(() => {
     if (!isPlaying || announcements.length <= 1 || hasEmergency) return;
 
+    const activeAnnouncement = announcements[activeSlideIndex] || null;
+    const activeType = String((activeAnnouncement && activeAnnouncement.type) || '').toLowerCase();
+    const activeImagePath = String((activeAnnouncement && activeAnnouncement.image) || '');
+    const activeIsVideo =
+      activeType.includes('video') ||
+      /\.(mp4|m4v|m4p|mov|avi|mkv|webm|ogg|ogv|flv|f4v|wmv|asf|ts|m2ts|mts|3gp|3g2|mpg|mpeg|mpe|vob|mxf|rm|rmvb|qt|hevc|h265|h264|r3d|braw|cdng|prores|dnxhd|dnxhr|dv|mjpeg)$/i.test(
+        activeImagePath
+      );
+    const activeIsImage =
+      activeType.includes('image') ||
+      /\.(jpg|jpeg|png|gif|bmp|tif|tiff|webp|avif|heif|heic|apng|svg|ai|eps|psd|raw|dng|cr2|cr3|nef|arw|orf|rw2)$/i.test(
+        activeImagePath
+      );
+    const activeHasDocument =
+      Boolean(activeAnnouncement && activeAnnouncement.image) &&
+      (activeType.includes('document') || (!activeIsVideo && !activeIsImage));
+    const shouldPauseAnnouncementRotation =
+      Boolean(activeAnnouncement) && activeHasDocument && documentSlideCount > 1;
+
+    if (shouldPauseAnnouncementRotation) {
+      return;
+    }
+
     const interval = setInterval(() => {
       setCurrentIndex((previous) => (previous + 1) % announcements.length);
     }, 8000);
 
     return () => clearInterval(interval);
-  }, [isPlaying, announcements.length, hasEmergency]);
+  }, [activeSlideIndex, announcements, documentSlideCount, hasEmergency, isPlaying]);
 
   const currentAnnouncement = announcements[activeSlideIndex] || null;
+  const currentAnnouncementId = currentAnnouncement ? String(currentAnnouncement.id || '') : '';
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
   const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
   const currentAnnouncementHasAnyMedia = Boolean(currentAnnouncement && currentAnnouncement.image);
@@ -232,6 +271,8 @@ const DisplayBoard = () => {
   const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
   const showLivePanel = isLiveOn;
   const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementHasAnyMedia;
+  const isDocumentShownInLivePanel =
+    showLivePanel && currentAnnouncementHasDocument && !currentAnnouncementHasVideo && !activeYouTubeId;
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
   const isSingleColumnLayout = !showSecondaryPanel;
   const announcementMediaStatusLabel = currentAnnouncementHasVideo
@@ -251,10 +292,53 @@ const DisplayBoard = () => {
   const liveBadgeClass = isLiveOn ? 'pill pill--success' : 'pill pill--danger';
   const isEmergency = hasEmergency;
 
+  useEffect(() => {
+    setDocumentSlideCount(1);
+    setDocumentSlideIndex(1);
+    previousDocumentSlideIndexRef.current = 1;
+  }, [currentAnnouncementId]);
+
+  useEffect(() => {
+    if (
+      !isPlaying ||
+      hasEmergency ||
+      announcements.length <= 1 ||
+      !currentAnnouncementHasDocument ||
+      documentSlideCount <= 1
+    ) {
+      previousDocumentSlideIndexRef.current = documentSlideIndex;
+      return;
+    }
+
+    const previousIndex = previousDocumentSlideIndexRef.current;
+    if (previousIndex === documentSlideCount && documentSlideIndex === 1) {
+      setCurrentIndex((previous) => (previous + 1) % announcements.length);
+    }
+
+    previousDocumentSlideIndexRef.current = documentSlideIndex;
+  }, [
+    announcements.length,
+    currentAnnouncementHasDocument,
+    documentSlideCount,
+    documentSlideIndex,
+    hasEmergency,
+    isPlaying
+  ]);
+
   const actionHint = useMemo(() => {
     if (!announcements.length) return 'No scheduled announcements';
-    return `Slide ${activeSlideIndex + 1} of ${announcements.length}`;
-  }, [announcements.length, activeSlideIndex]);
+    const announcementLabel = `Slide ${activeSlideIndex + 1} of ${announcements.length}`;
+    if (currentAnnouncementHasDocument && documentSlideCount > 1) {
+      return `${announcementLabel} • Page ${documentSlideIndex} of ${documentSlideCount}`;
+    }
+    return announcementLabel;
+  }, [
+    activeSlideIndex,
+    announcements.length,
+    currentAnnouncementHasDocument,
+    documentSlideCount,
+    documentSlideIndex
+  ]);
 
   const handleNext = () => {
     if (!announcements.length || hasEmergency) return;
@@ -442,6 +526,9 @@ const DisplayBoard = () => {
                       fileSizeBytes={currentAnnouncement.fileSizeBytes}
                       className="media-preview--full media-preview--display media-preview--emergency"
                       documentPreview
+                      documentSlideshow
+                      documentSlideshowAutoplay={isPlaying}
+                      documentSlideshowIntervalMs={6000}
                       title={currentAnnouncementTitle || 'Attachment'}
                       imageAlt={currentAnnouncementTitle || 'Attachment'}
                     />
@@ -593,6 +680,15 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="document-preview--full live-document-preview"
                     documentPreview
+                    documentSlideshow
+                    documentSlideshowAutoplay={isPlaying}
+                    documentSlideshowIntervalMs={6000}
+                    onDocumentSlideCountChange={
+                      isDocumentShownInLivePanel ? handleDocumentSlideCountChange : undefined
+                    }
+                    onDocumentSlideIndexChange={
+                      isDocumentShownInLivePanel ? handleDocumentSlideIndexChange : undefined
+                    }
                     title={currentAnnouncement.title}
                     imageAlt={currentAnnouncement.title}
                   />
@@ -627,6 +723,15 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="media-preview--full media-preview--display media-preview--display-panel"
                     documentPreview
+                    documentSlideshow
+                    documentSlideshowAutoplay={isPlaying}
+                    documentSlideshowIntervalMs={6000}
+                    onDocumentSlideCountChange={
+                      currentAnnouncementHasDocument ? handleDocumentSlideCountChange : undefined
+                    }
+                    onDocumentSlideIndexChange={
+                      currentAnnouncementHasDocument ? handleDocumentSlideIndexChange : undefined
+                    }
                     title={announcementPanelTitle}
                     imageAlt={announcementPanelTitle}
                   />
@@ -654,6 +759,7 @@ const DisplayBoard = () => {
 
               {currentAnnouncementHasAnyMedia &&
               !showAnnouncementMediaPanel &&
+              !isDocumentShownInLivePanel &&
               (!currentAnnouncementHasVideo || !showLivePanel) ? (
                 <div className="announcement-media-frame announcement-media-frame--inline" style={mediaAspectStyle}>
                   <AttachmentPreview
@@ -663,6 +769,15 @@ const DisplayBoard = () => {
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
                     className="media-preview--full media-preview--display"
                     documentPreview
+                    documentSlideshow
+                    documentSlideshowAutoplay={isPlaying}
+                    documentSlideshowIntervalMs={6000}
+                    onDocumentSlideCountChange={
+                      currentAnnouncementHasDocument ? handleDocumentSlideCountChange : undefined
+                    }
+                    onDocumentSlideIndexChange={
+                      currentAnnouncementHasDocument ? handleDocumentSlideIndexChange : undefined
+                    }
                     title={announcementPanelTitle}
                     imageAlt={announcementPanelTitle}
                   />
