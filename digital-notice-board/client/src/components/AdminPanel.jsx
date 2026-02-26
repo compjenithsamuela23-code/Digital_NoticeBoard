@@ -89,17 +89,48 @@ const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
 const MEDIA_ACCEPT =
   'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
+const MAX_BATCH_ATTACHMENTS = 3;
+
+const parseLiveLinkList = (rawValue) =>
+  [...new Set(String(rawValue || '').split(/[\n,]+/).map((item) => item.trim()).filter(Boolean))].slice(
+    0,
+    MAX_BATCH_ATTACHMENTS
+  );
+
+const getMediaKind = (file) => {
+  const mime = String(file?.type || '').toLowerCase();
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  return 'media';
+};
+
+const getDimensionLookupKey = (file) => getFileIdentity(file);
+
+const createDisplayBatchId = () => {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID().replace(/-/g, '_');
+  }
+  return `batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const revokeObjectUrls = (urls = []) => {
+  urls.forEach((url) => {
+    if (url) {
+      URL.revokeObjectURL(url);
+    }
+  });
+};
 
 const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const isStaffWorkspace = workspaceRole === 'staff';
   const isAdminWorkspace = !isStaffWorkspace;
   const [announcements, setAnnouncements] = useState([]);
   const [editingId, setEditingId] = useState(null);
-  const [image, setImage] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [mediaDimensions, setMediaDimensions] = useState({ width: null, height: null });
-  const [documentFile, setDocumentFile] = useState(null);
-  const [documentPreviewUrl, setDocumentPreviewUrl] = useState(null);
+  const [mediaFiles, setMediaFiles] = useState([]);
+  const [mediaPreviewUrls, setMediaPreviewUrls] = useState([]);
+  const [mediaDimensionsByKey, setMediaDimensionsByKey] = useState({});
+  const [documentFiles, setDocumentFiles] = useState([]);
+  const [documentPreviewUrls, setDocumentPreviewUrls] = useState([]);
   const [formData, setFormData] = useState({
     title: '',
     content: '',
@@ -113,7 +144,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [loading, setLoading] = useState(false);
   const [liveLinkInput, setLiveLinkInput] = useState('');
   const [liveStatus, setLiveStatus] = useState('OFF');
-  const [liveLink, setLiveLink] = useState(null);
+  const [liveLinks, setLiveLinks] = useState([]);
   const [liveCategory, setLiveCategory] = useState('all');
   const [categories, setCategories] = useState([]);
   const [newCategory, setNewCategory] = useState('');
@@ -138,7 +169,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [requestError, setRequestError] = useState('');
   const mediaInputRef = useRef(null);
   const documentInputRef = useRef(null);
-  const mediaDetectionRef = useRef('');
 
   const navigate = useNavigate();
   const { socket } = useSocket();
@@ -264,9 +294,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const fetchLiveStatus = useCallback(async () => {
     try {
       const response = await apiClient.get(apiUrl('/api/status'));
-      setLiveStatus(response.data.status || 'OFF');
-      setLiveLink(response.data.link || null);
-      setLiveCategory(normalizeLiveCategory(response.data.category));
+      const statusPayload = response.data || {};
+      const nextLinks =
+        Array.isArray(statusPayload.links) && statusPayload.links.length > 0
+          ? statusPayload.links
+          : statusPayload.link
+            ? [statusPayload.link]
+            : [];
+      setLiveStatus(statusPayload.status || 'OFF');
+      setLiveLinks(nextLinks);
+      setLiveCategory(normalizeLiveCategory(statusPayload.category));
     } catch (error) {
       console.error('Error fetching live status:', error);
     }
@@ -353,9 +390,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     if (!socket) return;
 
     socket.on('liveUpdate', (payload) => {
-      setLiveStatus(payload.status || 'OFF');
-      setLiveLink(payload.link || null);
-      setLiveCategory(normalizeLiveCategory(payload.category));
+      const nextLinks =
+        Array.isArray(payload?.links) && payload.links.length > 0
+          ? payload.links
+          : payload?.link
+            ? [payload.link]
+            : [];
+      setLiveStatus(payload?.status || 'OFF');
+      setLiveLinks(nextLinks);
+      setLiveCategory(normalizeLiveCategory(payload?.category));
     });
 
     socket.on('announcementUpdate', fetchAnnouncements);
@@ -368,14 +411,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   useEffect(() => {
     return () => {
-      if (imagePreview) {
-        URL.revokeObjectURL(imagePreview);
-      }
-      if (documentPreviewUrl) {
-        URL.revokeObjectURL(documentPreviewUrl);
-      }
+      revokeObjectUrls(mediaPreviewUrls);
+      revokeObjectUrls(documentPreviewUrls);
     };
-  }, [documentPreviewUrl, imagePreview]);
+  }, [documentPreviewUrls, mediaPreviewUrls]);
 
   const resetForm = () => {
     setEditingId(null);
@@ -389,15 +428,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       startAt: getDefaultStart(),
       endAt: getDefaultEnd()
     });
-    setImage(null);
-    setImagePreview(null);
-    setMediaDimensions({ width: null, height: null });
-    mediaDetectionRef.current = '';
-    setDocumentFile(null);
-    if (documentPreviewUrl) {
-      URL.revokeObjectURL(documentPreviewUrl);
-      setDocumentPreviewUrl(null);
-    }
+    revokeObjectUrls(mediaPreviewUrls);
+    revokeObjectUrls(documentPreviewUrls);
+    setMediaFiles([]);
+    setMediaPreviewUrls([]);
+    setMediaDimensionsByKey({});
+    setDocumentFiles([]);
+    setDocumentPreviewUrls([]);
     if (mediaInputRef.current) mediaInputRef.current.value = '';
     if (documentInputRef.current) documentInputRef.current.value = '';
   };
@@ -414,74 +451,160 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         ? announcements.find((announcement) => announcement.id === editingId)
         : null;
       const hasExistingAttachment = Boolean(editingAnnouncement && editingAnnouncement.image);
-      const hasNewAttachment = Boolean(image || documentFile);
+      const selectedMediaFiles = [...mediaFiles];
+      const selectedDocumentFiles = [...documentFiles];
+      const selectedAttachments =
+        selectedMediaFiles.length > 0 ? selectedMediaFiles : selectedDocumentFiles;
+      const hasNewAttachment = selectedAttachments.length > 0;
+
+      if (selectedMediaFiles.length > 0 && selectedDocumentFiles.length > 0) {
+        setRequestError('Use either Media Upload or Document Upload, not both together.');
+        return;
+      }
+
+      if (selectedAttachments.length > MAX_BATCH_ATTACHMENTS) {
+        setRequestError(`You can upload up to ${MAX_BATCH_ATTACHMENTS} files at a time.`);
+        return;
+      }
+
+      if (editingId && selectedAttachments.length > 1) {
+        setRequestError('Editing mode supports only one replacement attachment.');
+        return;
+      }
+
+      if (selectedMediaFiles.length > 1) {
+        const mediaKinds = new Set(selectedMediaFiles.map((file) => getMediaKind(file)));
+        if (mediaKinds.size > 1) {
+          setRequestError('Batch upload must be all images, all videos, or all documents.');
+          return;
+        }
+      }
 
       if (!normalizedTitle && !normalizedContent && !hasNewAttachment && !hasExistingAttachment) {
         setRequestError('Add at least one: title, content, media, or document.');
         return;
       }
 
-      const payload = new FormData();
       const startAtIso = toApiDateTime(formData.startAt);
       const endAtIso = toApiDateTime(formData.endAt);
-      payload.append('title', normalizedTitle);
-      payload.append('content', normalizedContent);
-      payload.append('priority', String(formData.priority));
-      payload.append('duration', String(formData.duration));
-      payload.append('active', String(formData.isActive));
-      payload.append('category', formData.category || '');
-      if (mediaDimensions.width && mediaDimensions.height) {
-        payload.append('mediaWidth', String(mediaDimensions.width));
-        payload.append('mediaHeight', String(mediaDimensions.height));
-      }
-      if (startAtIso) {
-        payload.append('startAt', startAtIso);
-      }
-      if (endAtIso) {
-        payload.append('endAt', endAtIso);
-      }
+      const appendBaseFields = (payload, options = {}) => {
+        payload.append('title', normalizedTitle);
+        payload.append('content', normalizedContent);
+        payload.append('priority', String(formData.priority));
+        payload.append('duration', String(formData.duration));
+        payload.append('active', String(formData.isActive));
+        payload.append('category', formData.category || '');
+        if (options.mediaWidth && options.mediaHeight) {
+          payload.append('mediaWidth', String(options.mediaWidth));
+          payload.append('mediaHeight', String(options.mediaHeight));
+        }
+        if (startAtIso) {
+          payload.append('startAt', startAtIso);
+        }
+        if (endAtIso) {
+          payload.append('endAt', endAtIso);
+        }
+        if (options.displayBatchId) {
+          payload.append('displayBatchId', options.displayBatchId);
+        }
+        if (options.displayBatchSlot) {
+          payload.append('displayBatchSlot', String(options.displayBatchSlot));
+        }
+      };
 
-      const selectedAttachment = image || documentFile;
-      let directUploadPayload = null;
-      let shouldUseMultipartUpload = Boolean(selectedAttachment);
-      if (selectedAttachment) {
+      const appendAttachmentPayload = async (payload, file, kind) => {
+        if (!file) return;
+
+        let directUploadPayload = null;
+        let shouldUseMultipartUpload = true;
+
         try {
-          directUploadPayload = await uploadAttachmentToStorage(selectedAttachment);
+          directUploadPayload = await uploadAttachmentToStorage(file);
           shouldUseMultipartUpload = false;
         } catch (uploadError) {
-          const canFallbackToMultipart = selectedAttachment.size <= MULTIPART_FALLBACK_MAX_BYTES;
+          const canFallbackToMultipart = file.size <= MULTIPART_FALLBACK_MAX_BYTES;
           if (!canFallbackToMultipart) {
             throw uploadError;
           }
           console.warn('Direct upload unavailable. Falling back to multipart upload.', uploadError);
         }
-      }
 
-      if (directUploadPayload) {
-        payload.append('attachmentUrl', directUploadPayload.attachmentUrl);
-        payload.append('attachmentFileName', directUploadPayload.attachmentFileName);
-        payload.append('attachmentMimeType', directUploadPayload.attachmentMimeType);
-        payload.append(
-          'attachmentFileSizeBytes',
-          String(directUploadPayload.attachmentFileSizeBytes || '')
-        );
-      } else if (shouldUseMultipartUpload) {
-        if (image) {
-          payload.append('image', image);
+        if (directUploadPayload) {
+          payload.append('attachmentUrl', directUploadPayload.attachmentUrl);
+          payload.append('attachmentFileName', directUploadPayload.attachmentFileName);
+          payload.append('attachmentMimeType', directUploadPayload.attachmentMimeType);
+          payload.append(
+            'attachmentFileSizeBytes',
+            String(directUploadPayload.attachmentFileSizeBytes || '')
+          );
+          return;
         }
 
-        if (documentFile) {
-          payload.append('document', documentFile);
+        if (shouldUseMultipartUpload) {
+          payload.append(kind === 'document' ? 'document' : 'image', file);
         }
-      }
+      };
 
       if (editingId) {
+        const payload = new FormData();
+        const selectedAttachment = selectedAttachments[0] || null;
+        const selectedKind = selectedDocumentFiles.length > 0 ? 'document' : 'media';
+        const selectedDimensions =
+          selectedAttachment && selectedKind === 'media'
+            ? mediaDimensionsByKey[getDimensionLookupKey(selectedAttachment)] || {}
+            : {};
+        appendBaseFields(payload, {
+          mediaWidth: selectedDimensions.width,
+          mediaHeight: selectedDimensions.height
+        });
+        if (selectedAttachment) {
+          await appendAttachmentPayload(payload, selectedAttachment, selectedKind);
+        }
+
         await apiClient.put(apiUrl(`/api/announcements/${editingId}`), payload, {
           ...applyWorkspaceAuth({
             headers: { 'Content-Type': 'multipart/form-data' }
           })
         });
+      } else if (selectedAttachments.length > 1) {
+        const displayBatchId = createDisplayBatchId();
+        const selectedKind = selectedDocumentFiles.length > 0 ? 'document' : 'media';
+
+        for (let index = 0; index < selectedAttachments.length; index += 1) {
+          const file = selectedAttachments[index];
+          const payload = new FormData();
+          const selectedDimensions =
+            selectedKind === 'media' ? mediaDimensionsByKey[getDimensionLookupKey(file)] || {} : {};
+          appendBaseFields(payload, {
+            mediaWidth: selectedDimensions.width,
+            mediaHeight: selectedDimensions.height,
+            displayBatchId,
+            displayBatchSlot: index + 1
+          });
+          await appendAttachmentPayload(payload, file, selectedKind);
+
+          await apiClient.post(apiUrl('/api/announcements'), payload, {
+            ...applyWorkspaceAuth({
+              headers: { 'Content-Type': 'multipart/form-data' }
+            })
+          });
+        }
       } else {
+        const payload = new FormData();
+        const selectedAttachment = selectedAttachments[0] || null;
+        const selectedKind = selectedDocumentFiles.length > 0 ? 'document' : 'media';
+        const selectedDimensions =
+          selectedAttachment && selectedKind === 'media'
+            ? mediaDimensionsByKey[getDimensionLookupKey(selectedAttachment)] || {}
+            : {};
+        appendBaseFields(payload, {
+          mediaWidth: selectedDimensions.width,
+          mediaHeight: selectedDimensions.height
+        });
+        if (selectedAttachment) {
+          await appendAttachmentPayload(payload, selectedAttachment, selectedKind);
+        }
+
         await apiClient.post(apiUrl('/api/announcements'), payload, {
           ...applyWorkspaceAuth({
             headers: { 'Content-Type': 'multipart/form-data' }
@@ -522,8 +645,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   const handleEdit = (announcement) => {
     setEditingId(announcement.id);
-    const parsedMediaWidth = Number.parseInt(announcement.mediaWidth, 10);
-    const parsedMediaHeight = Number.parseInt(announcement.mediaHeight, 10);
     setFormData({
       title: announcement.title || '',
       content: announcement.content || '',
@@ -534,97 +655,111 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       startAt: toInputDateTime(announcement.startAt),
       endAt: toInputDateTime(announcement.endAt)
     });
-    setImage(null);
-    setImagePreview(null);
-    setMediaDimensions({
-      width: Number.isNaN(parsedMediaWidth) || parsedMediaWidth <= 0 ? null : parsedMediaWidth,
-      height: Number.isNaN(parsedMediaHeight) || parsedMediaHeight <= 0 ? null : parsedMediaHeight
-    });
-    mediaDetectionRef.current = '';
-    setDocumentFile(null);
-    if (documentPreviewUrl) {
-      URL.revokeObjectURL(documentPreviewUrl);
-      setDocumentPreviewUrl(null);
-    }
+    revokeObjectUrls(mediaPreviewUrls);
+    revokeObjectUrls(documentPreviewUrls);
+    setMediaFiles([]);
+    setMediaPreviewUrls([]);
+    setMediaDimensionsByKey({});
+    setDocumentFiles([]);
+    setDocumentPreviewUrls([]);
     if (mediaInputRef.current) mediaInputRef.current.value = '';
     if (documentInputRef.current) documentInputRef.current.value = '';
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleImageChange = (event) => {
-    const file = event.target.files[0];
-
-    if (imagePreview) {
-      URL.revokeObjectURL(imagePreview);
+    const rawFiles = Array.from(event.target.files || []);
+    const maxAllowed = editingId ? 1 : MAX_BATCH_ATTACHMENTS;
+    const files = rawFiles.slice(0, maxAllowed);
+    if (rawFiles.length > maxAllowed) {
+      setRequestError(`Only ${maxAllowed} media file${maxAllowed > 1 ? 's' : ''} can be selected here.`);
+    } else {
+      setRequestError('');
     }
 
-    if (!file) {
-      setImage(null);
-      setImagePreview(null);
-      setMediaDimensions({ width: null, height: null });
-      mediaDetectionRef.current = '';
+    revokeObjectUrls(mediaPreviewUrls);
+    if (files.length === 0) {
+      setMediaFiles([]);
+      setMediaPreviewUrls([]);
+      setMediaDimensionsByKey({});
       return;
     }
 
-    setDocumentFile(null);
-    if (documentPreviewUrl) {
-      URL.revokeObjectURL(documentPreviewUrl);
-      setDocumentPreviewUrl(null);
-    }
+    revokeObjectUrls(documentPreviewUrls);
+    setDocumentFiles([]);
+    setDocumentPreviewUrls([]);
     if (documentInputRef.current) documentInputRef.current.value = '';
-    setImage(file);
-    setImagePreview(URL.createObjectURL(file));
-    setMediaDimensions({ width: null, height: null });
 
-    const fileIdentity = getFileIdentity(file);
-    mediaDetectionRef.current = fileIdentity;
-    detectMediaDimensions(file).then((dimensions) => {
-      if (mediaDetectionRef.current !== fileIdentity) return;
-      setMediaDimensions({
-        width: dimensions.width,
-        height: dimensions.height
+    const nextPreviewUrls = files.map((file) => URL.createObjectURL(file));
+    setMediaFiles(files);
+    setMediaPreviewUrls(nextPreviewUrls);
+    setMediaDimensionsByKey({});
+
+    files.forEach((file) => {
+      const lookupKey = getDimensionLookupKey(file);
+      detectMediaDimensions(file).then((dimensions) => {
+        setMediaDimensionsByKey((previous) => {
+          const currentFiles = Array.from(mediaInputRef.current?.files || []);
+          const currentKeys = new Set(currentFiles.map((item) => getDimensionLookupKey(item)));
+          if (!currentKeys.has(lookupKey)) {
+            return previous;
+          }
+          return {
+            ...previous,
+            [lookupKey]: {
+              width: dimensions.width,
+              height: dimensions.height
+            }
+          };
+        });
       });
     });
   };
 
   const handleDocumentChange = (event) => {
-    const file = event.target.files[0];
-    if (documentPreviewUrl) {
-      URL.revokeObjectURL(documentPreviewUrl);
-      setDocumentPreviewUrl(null);
+    const rawFiles = Array.from(event.target.files || []);
+    const maxAllowed = editingId ? 1 : MAX_BATCH_ATTACHMENTS;
+    const files = rawFiles.slice(0, maxAllowed);
+    if (rawFiles.length > maxAllowed) {
+      setRequestError(`Only ${maxAllowed} document file${maxAllowed > 1 ? 's' : ''} can be selected here.`);
+    } else {
+      setRequestError('');
     }
 
-    if (!file) {
-      setDocumentFile(null);
-      setMediaDimensions({ width: null, height: null });
-      mediaDetectionRef.current = '';
+    revokeObjectUrls(documentPreviewUrls);
+    if (files.length === 0) {
+      setDocumentFiles([]);
+      setDocumentPreviewUrls([]);
       return;
     }
 
-    const mime = String(file.type || '').toLowerCase();
-    if (mime.startsWith('image/') || mime.startsWith('video/')) {
+    const invalidMediaFile = files.find((file) => {
+      const mime = String(file.type || '').toLowerCase();
+      return mime.startsWith('image/') || mime.startsWith('video/');
+    });
+    if (invalidMediaFile) {
       setRequestError('Please use the Media Upload field for image or video files.');
-      setDocumentFile(null);
+      setDocumentFiles([]);
+      setDocumentPreviewUrls([]);
       if (documentInputRef.current) documentInputRef.current.value = '';
       return;
     }
 
-    if (imagePreview) {
-      URL.revokeObjectURL(imagePreview);
-    }
-    setDocumentFile(file);
-    setDocumentPreviewUrl(URL.createObjectURL(file));
-    setImage(null);
-    setImagePreview(null);
-    setMediaDimensions({ width: null, height: null });
-    mediaDetectionRef.current = '';
+    revokeObjectUrls(mediaPreviewUrls);
+    setMediaFiles([]);
+    setMediaPreviewUrls([]);
+    setMediaDimensionsByKey({});
     if (mediaInputRef.current) mediaInputRef.current.value = '';
+
+    const nextPreviewUrls = files.map((file) => URL.createObjectURL(file));
+    setDocumentFiles(files);
+    setDocumentPreviewUrls(nextPreviewUrls);
   };
 
   const startLive = async () => {
-    const trimmed = liveLinkInput.trim();
-    if (!trimmed) {
-      setRequestError('Paste a live YouTube link first.');
+    const parsedLinks = parseLiveLinkList(liveLinkInput);
+    if (parsedLinks.length === 0) {
+      setRequestError('Paste at least one live YouTube link first.');
       return;
     }
 
@@ -632,12 +767,19 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       setRequestError('');
       const response = await apiClient.post(
         apiUrl('/api/start'),
-        { link: trimmed, category: liveCategory },
+        { link: parsedLinks[0], links: parsedLinks, category: liveCategory },
         applyWorkspaceAuth()
       );
-      setLiveStatus(response.data?.status || 'ON');
-      setLiveLink(response.data?.link || trimmed);
-      setLiveCategory(normalizeLiveCategory(response.data?.category || liveCategory));
+      const statusPayload = response.data || {};
+      const nextLinks =
+        Array.isArray(statusPayload.links) && statusPayload.links.length > 0
+          ? statusPayload.links
+          : statusPayload.link
+            ? [statusPayload.link]
+            : parsedLinks;
+      setLiveStatus(statusPayload.status || 'ON');
+      setLiveLinks(nextLinks);
+      setLiveCategory(normalizeLiveCategory(statusPayload.category || liveCategory));
       setLiveLinkInput('');
     } catch (error) {
       if (handleRequestError(error, 'Failed to start live feed.')) return;
@@ -650,7 +792,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       setRequestError('');
       const response = await apiClient.post(apiUrl('/api/stop'), {}, applyWorkspaceAuth());
       setLiveStatus(response.data?.status || 'OFF');
-      setLiveLink(response.data?.link || null);
+      setLiveLinks([]);
       setLiveCategory(normalizeLiveCategory(response.data?.category || 'all'));
     } catch (error) {
       if (handleRequestError(error, 'Failed to stop live feed.')) return;
@@ -1176,14 +1318,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           </div>
 
           <div className="field">
-            <label htmlFor="live-link">YouTube Live Link</label>
-            <input
+            <label htmlFor="live-link">YouTube Live Link(s)</label>
+            <textarea
               id="live-link"
-              type="text"
               value={liveLinkInput}
               onChange={(event) => setLiveLinkInput(event.target.value)}
-              placeholder="https://www.youtube.com/watch?v=..."
+              placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\n(Use newline or comma to add up to 3 links)"
             />
+            <p className="file-help">You can start 1 to 3 streams at the same time.</p>
           </div>
 
           <div className="field">
@@ -1211,14 +1353,19 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             </button>
           </div>
 
-          {liveLink ? (
+          {liveLinks.length > 0 ? (
             <p className="file-help">
               Category: {liveCategoryLabel}
               <br />
-              Current live link:{' '}
-              <a href={liveLink} target="_blank" rel="noreferrer">
-                {liveLink}
-              </a>
+              Current live links:{' '}
+              {liveLinks.map((link, index) => (
+                <React.Fragment key={`${link}-${index}`}>
+                  <a href={link} target="_blank" rel="noreferrer">
+                    {link}
+                  </a>
+                  {index < liveLinks.length - 1 ? ', ' : ''}
+                </React.Fragment>
+              ))}
             </p>
           ) : (
             <p className="file-help">No live link is currently active.</p>
@@ -1300,10 +1447,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 id="announcement-media"
                 type="file"
                 accept={MEDIA_ACCEPT}
+                multiple
                 onChange={handleImageChange}
                 ref={mediaInputRef}
               />
-              <p className="file-help">Supported video: mp4, webm, ogg, mov, m4v, avi, mkv.</p>
+              <p className="file-help">
+                Supported video: mp4, webm, ogg, mov, m4v, avi, mkv. Select up to 3 files of the same type.
+              </p>
             </div>
 
             <div className="field">
@@ -1312,35 +1462,49 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 id="announcement-document"
                 type="file"
                 accept={DOCUMENT_ACCEPT}
+                multiple
                 onChange={handleDocumentChange}
                 ref={documentInputRef}
               />
               <p className="file-help">
-                All document formats are accepted. The board will attempt inline preview and fall back to open/download when browser limits apply.
+                All document formats are accepted. Select up to 3 document files at once for split display mode.
               </p>
             </div>
 
-            {imagePreview ? (
-              <AttachmentPreview
-                fileUrl={imagePreview}
-                fileName={image && image.name}
-                typeHint={image && image.type}
-                fileSizeBytes={image && image.size}
-                title="Media preview"
-              />
+            {mediaPreviewUrls.length > 0 ? (
+              <div className="batch-preview-grid">
+                {mediaPreviewUrls.map((previewUrl, index) => {
+                  const file = mediaFiles[index];
+                  return (
+                    <AttachmentPreview
+                      key={`${file?.name || 'media'}-${index}`}
+                      fileUrl={previewUrl}
+                      fileName={file && file.name}
+                      typeHint={file && file.type}
+                      fileSizeBytes={file && file.size}
+                      title={`Media preview ${index + 1}`}
+                    />
+                  );
+                })}
+              </div>
             ) : null}
 
-            {documentFile && documentPreviewUrl ? (
-              <DocumentAttachment
-                fileUrl={documentPreviewUrl}
-                fileName={documentFile.name}
-                mimeType={documentFile.type}
-                fileSizeBytes={documentFile.size}
-                title="Document preview"
-                className="document-preview--full"
-                slideshow
-                slideshowAutoplay={false}
-              />
+            {documentFiles.length > 0 && documentPreviewUrls.length > 0 ? (
+              <div className="batch-preview-grid">
+                {documentFiles.map((file, index) => (
+                  <DocumentAttachment
+                    key={`${file.name || 'document'}-${index}`}
+                    fileUrl={documentPreviewUrls[index]}
+                    fileName={file.name}
+                    mimeType={file.type}
+                    fileSizeBytes={file.size}
+                    title={`Document preview ${index + 1}`}
+                    className="document-preview--full"
+                    slideshow
+                    slideshowAutoplay={false}
+                  />
+                ))}
+              </div>
             ) : null}
 
             <div className="grid-2-equal">

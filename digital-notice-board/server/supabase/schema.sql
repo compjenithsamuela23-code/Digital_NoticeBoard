@@ -27,6 +27,8 @@ create table if not exists announcements (
   file_size_bytes bigint null,
   media_width integer null,
   media_height integer null,
+  display_batch_id text null,
+  display_batch_slot integer null,
   created_at timestamptz not null default timezone('utc', now()),
   start_at timestamptz not null,
   end_at timestamptz not null,
@@ -71,6 +73,8 @@ create table if not exists history (
   file_size_bytes bigint null,
   media_width integer null,
   media_height integer null,
+  display_batch_id text null,
+  display_batch_slot integer null,
   created_at timestamptz not null,
   start_at timestamptz not null,
   end_at timestamptz not null,
@@ -113,6 +117,8 @@ alter table announcements add column if not exists file_mime_type text null;
 alter table announcements add column if not exists file_size_bytes bigint null;
 alter table announcements add column if not exists media_width integer null;
 alter table announcements add column if not exists media_height integer null;
+alter table announcements add column if not exists display_batch_id text null;
+alter table announcements add column if not exists display_batch_slot integer null;
 
 do $$
 begin
@@ -135,3 +141,37 @@ alter table history add column if not exists file_mime_type text null;
 alter table history add column if not exists file_size_bytes bigint null;
 alter table history add column if not exists media_width integer null;
 alter table history add column if not exists media_height integer null;
+alter table history add column if not exists display_batch_id text null;
+alter table history add column if not exists display_batch_slot integer null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'announcements_display_batch_slot_chk'
+      and conrelid = 'announcements'::regclass
+  ) then
+    alter table announcements
+      add constraint announcements_display_batch_slot_chk
+      check (display_batch_slot is null or display_batch_slot between 1 and 3)
+      not valid;
+  end if;
+end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'history_display_batch_slot_chk'
+      and conrelid = 'history'::regclass
+  ) then
+    alter table history
+      add constraint history_display_batch_slot_chk
+      check (display_batch_slot is null or display_batch_slot between 1 and 3)
+      not valid;
+  end if;
+end
+$$;

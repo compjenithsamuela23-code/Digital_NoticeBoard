@@ -379,6 +379,7 @@ const DocumentAttachment = ({
   className = '',
   preview = true,
   hideHeader = false,
+  showActions = true,
   slideshow = false,
   slideshowAutoplay = true,
   slideshowIntervalMs = DEFAULT_SLIDESHOW_INTERVAL_MS,
@@ -1068,14 +1069,16 @@ const DocumentAttachment = ({
         </p>
       ) : null}
 
-      <div className="inline-actions">
-        <a className="btn btn--ghost btn--tiny" href={sourceUrl} target="_blank" rel="noreferrer">
-          Open Document
-        </a>
-        <a className="btn btn--ghost btn--tiny" href={sourceUrl} download={resolvedName}>
-          Download
-        </a>
-      </div>
+      {showActions ? (
+        <div className="inline-actions">
+          <a className="btn btn--ghost btn--tiny" href={sourceUrl} target="_blank" rel="noreferrer">
+            Open Document
+          </a>
+          <a className="btn btn--ghost btn--tiny" href={sourceUrl} download={resolvedName}>
+            Download
+          </a>
+        </div>
+      ) : null}
     </div>
   );
 };

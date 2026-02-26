@@ -71,6 +71,7 @@ const ID_HISTORY_ACTIONS = [
 const liveStateFallback = {
   status: 'OFF',
   link: null,
+  links: [],
   category: null,
   startedAt: null,
   stoppedAt: null
@@ -445,6 +446,36 @@ function parseNonNegativeInteger(value) {
 function parsePositiveInteger(value) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function normalizeDisplayBatchId(value, { strict = false } = {}) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  if (normalized.length > 80) {
+    if (strict) {
+      throw createBadRequestError('displayBatchId is too long.');
+    }
+    return null;
+  }
+  if (!/^[a-z0-9_-]+$/i.test(normalized)) {
+    if (strict) {
+      throw createBadRequestError('displayBatchId can contain only letters, numbers, "_" and "-".');
+    }
+    return null;
+  }
+  return normalized;
+}
+
+function parseDisplayBatchSlot(value, { strict = false } = {}) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) return null;
+  if (parsed < 1 || parsed > 3) {
+    if (strict) {
+      throw createBadRequestError('displayBatchSlot must be between 1 and 3.');
+    }
     return null;
   }
   return parsed;
@@ -1028,6 +1059,8 @@ function toAnnouncementDto(row) {
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
     mediaWidth: resolvedDimensions.mediaWidth,
     mediaHeight: resolvedDimensions.mediaHeight,
+    displayBatchId: normalizeDisplayBatchId(row.display_batch_id) || null,
+    displayBatchSlot: parseDisplayBatchSlot(row.display_batch_slot),
     createdAt: toIsoStringOrNull(row.created_at),
     startAt: toIsoStringOrNull(row.start_at),
     endAt: toIsoStringOrNull(row.end_at),
@@ -1042,6 +1075,9 @@ function toHistoryDto(row) {
   const snapshot = row.data && typeof row.data === 'object' ? row.data : {};
   const announcementId = row.announcement_id || row.id || snapshot.id;
   const parsedFileSize = Number.parseInt(row.file_size_bytes ?? snapshot.file_size_bytes, 10);
+  const displayBatchId =
+    normalizeDisplayBatchId(row.display_batch_id || snapshot.display_batch_id) || null;
+  const displayBatchSlot = parseDisplayBatchSlot(row.display_batch_slot ?? snapshot.display_batch_slot);
   const imageReference = row.image || snapshot.image || null;
   const resolvedMimeType = resolveAttachmentMimeType(row.file_mime_type || snapshot.file_mime_type, [
     row.file_name || snapshot.file_name,
@@ -1075,6 +1111,8 @@ function toHistoryDto(row) {
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
     mediaWidth: resolvedDimensions.mediaWidth,
     mediaHeight: resolvedDimensions.mediaHeight,
+    displayBatchId,
+    displayBatchSlot,
     createdAt: toIsoStringOrNull(row.created_at || snapshot.created_at),
     startAt: toIsoStringOrNull(row.start_at || snapshot.start_at),
     endAt: toIsoStringOrNull(row.end_at || snapshot.end_at),
@@ -1149,15 +1187,50 @@ async function findCategoryByInput(categoryInput, errorContext = 'Error validati
 
 const LIVE_LINK_META_PREFIX = 'dnb_live:';
 
-function encodeLiveLinkMetadata(linkValue, categoryValue) {
-  const normalizedLink = String(linkValue || '').trim();
-  if (!normalizedLink) {
+function normalizeLiveLinks(rawLinks) {
+  const values = Array.isArray(rawLinks) ? rawLinks : [];
+  const normalized = [];
+
+  values.forEach((item) => {
+    const cleaned = String(item || '').trim();
+    if (!cleaned) return;
+    if (normalized.includes(cleaned)) return;
+    normalized.push(cleaned);
+  });
+
+  return normalized.slice(0, 3);
+}
+
+function parseLiveLinksInput(linkValue, linksValue) {
+  let candidates = [];
+
+  if (Array.isArray(linksValue)) {
+    candidates = linksValue;
+  } else if (typeof linksValue === 'string') {
+    candidates = linksValue.split(/[\n,]+/);
+  } else {
+    const normalizedLinkValue = String(linkValue || '').trim();
+    if (normalizedLinkValue.includes('\n') || normalizedLinkValue.includes(',')) {
+      candidates = normalizedLinkValue.split(/[\n,]+/);
+    } else if (normalizedLinkValue) {
+      candidates = [normalizedLinkValue];
+    }
+  }
+
+  return normalizeLiveLinks(candidates);
+}
+
+function encodeLiveLinkMetadata(linkValue, categoryValue, linksValue) {
+  const normalizedLinks = parseLiveLinksInput(linkValue, linksValue);
+  if (normalizedLinks.length === 0) {
     return null;
   }
 
+  const normalizedLink = normalizedLinks[0];
   const normalizedCategory = String(categoryValue || '').trim() || null;
   const payload = JSON.stringify({
     link: normalizedLink,
+    links: normalizedLinks,
     category: normalizedCategory
   });
   const encodedPayload = Buffer.from(payload, 'utf8').toString('base64url');
@@ -1167,32 +1240,40 @@ function encodeLiveLinkMetadata(linkValue, categoryValue) {
 function decodeLiveLinkMetadata(storedLinkValue) {
   const normalized = String(storedLinkValue || '').trim();
   if (!normalized) {
-    return { link: null, category: null };
+    return { link: null, links: [], category: null };
   }
 
   if (!normalized.startsWith(LIVE_LINK_META_PREFIX)) {
-    return { link: normalized, category: null };
+    return { link: normalized, links: [normalized], category: null };
   }
 
   const encodedPayload = normalized.slice(LIVE_LINK_META_PREFIX.length);
   if (!encodedPayload) {
-    return { link: null, category: null };
+    return { link: null, links: [], category: null };
   }
 
   try {
     const decodedPayload = Buffer.from(encodedPayload, 'base64url').toString('utf8');
     const parsedPayload = JSON.parse(decodedPayload);
+    const normalizedLinks = normalizeLiveLinks(
+      Array.isArray(parsedPayload.links) && parsedPayload.links.length > 0
+        ? parsedPayload.links
+        : parsedPayload.link
+          ? [parsedPayload.link]
+          : []
+    );
     return {
-      link: String(parsedPayload.link || '').trim() || null,
+      link: normalizedLinks[0] || null,
+      links: normalizedLinks,
       category: String(parsedPayload.category || '').trim() || null
     };
   } catch {
-    return { link: normalized, category: null };
+    return { link: normalized, links: [normalized], category: null };
   }
 }
 
 function toLiveDto(row) {
-  const decodedLinkMeta = row ? decodeLiveLinkMetadata(row.link) : { link: null, category: null };
+  const decodedLinkMeta = row ? decodeLiveLinkMetadata(row.link) : { link: null, links: [], category: null };
   const hasCategoryField = row && Object.prototype.hasOwnProperty.call(row, 'category');
   const rawCategory = hasCategoryField
     ? row.category || decodedLinkMeta.category
@@ -1200,11 +1281,12 @@ function toLiveDto(row) {
   const normalizedCategory = String(rawCategory || '').trim();
 
   if (!row) {
-    return { status: 'OFF', link: null, category: 'all' };
+    return { status: 'OFF', link: null, links: [], category: 'all' };
   }
   return {
     status: row.status || 'OFF',
     link: decodedLinkMeta.link || null,
+    links: decodedLinkMeta.links || [],
     category: normalizedCategory || 'all',
     startedAt: toIsoStringOrNull(row.started_at) || undefined,
     stoppedAt: toIsoStringOrNull(row.stopped_at) || undefined
@@ -1452,9 +1534,11 @@ async function runLiveStateUpsert(upsertPayload, context) {
 
 function getFallbackLiveDto() {
   const normalizedCategory = String(liveStateFallback.category || '').trim();
+  const fallbackLinks = normalizeLiveLinks(liveStateFallback.links);
   return {
     status: liveStateFallback.status || 'OFF',
     link: liveStateFallback.link || null,
+    links: fallbackLinks,
     category: normalizedCategory || 'all',
     startedAt: liveStateFallback.startedAt || undefined,
     stoppedAt: liveStateFallback.stoppedAt || undefined
@@ -1511,6 +1595,8 @@ async function appendHistory(announcementRow, action, userEmail, options = {}) {
         file_size_bytes: announcementRow.file_size_bytes ?? null,
         media_width: announcementRow.media_width ?? null,
         media_height: announcementRow.media_height ?? null,
+        display_batch_id: normalizeDisplayBatchId(announcementRow.display_batch_id) || null,
+        display_batch_slot: parseDisplayBatchSlot(announcementRow.display_batch_slot),
         created_at: announcementRow.created_at,
         start_at: announcementRow.start_at,
         end_at: announcementRow.end_at,
@@ -1536,6 +1622,8 @@ async function appendHistory(announcementRow, action, userEmail, options = {}) {
     file_size_bytes: announcementRow.file_size_bytes ?? null,
     media_width: announcementRow.media_width ?? null,
     media_height: announcementRow.media_height ?? null,
+    display_batch_id: normalizeDisplayBatchId(announcementRow.display_batch_id) || null,
+    display_batch_slot: parseDisplayBatchSlot(announcementRow.display_batch_slot),
     created_at: announcementRow.created_at,
     start_at: announcementRow.start_at,
     end_at: announcementRow.end_at,
@@ -2190,12 +2278,16 @@ app.post(
       startAt,
       endAt,
       mediaWidth,
-      mediaHeight
+      mediaHeight,
+      displayBatchId,
+      displayBatchSlot
     } = req.body;
     const normalizedTitle = String(title || '').trim();
     const normalizedContent = String(content || '').trim();
     const normalizedMediaWidth = parsePositiveInteger(mediaWidth);
     const normalizedMediaHeight = parsePositiveInteger(mediaHeight);
+    const normalizedDisplayBatchId = normalizeDisplayBatchId(displayBatchId, { strict: true });
+    const normalizedDisplayBatchSlot = parseDisplayBatchSlot(displayBatchSlot, { strict: true });
 
     const durationValue = Number.parseInt(duration, 10);
     const safePriority = normalizePriorityValue(priority, 1);
@@ -2255,6 +2347,8 @@ app.post(
       ...attachmentMetadata,
       media_width: normalizedMediaWidth,
       media_height: normalizedMediaHeight,
+      display_batch_id: normalizedDisplayBatchId,
+      display_batch_slot: normalizedDisplayBatchSlot,
       created_at: new Date().toISOString(),
       start_at: startDate.toISOString(),
       end_at: endDate.toISOString(),
@@ -2309,16 +2403,26 @@ app.put(
       startAt,
       endAt,
       mediaWidth,
-      mediaHeight
+      mediaHeight,
+      displayBatchId,
+      displayBatchSlot
     } = req.body;
     const hasTitleField = Object.prototype.hasOwnProperty.call(req.body || {}, 'title');
     const hasContentField = Object.prototype.hasOwnProperty.call(req.body || {}, 'content');
     const hasMediaWidthField = Object.prototype.hasOwnProperty.call(req.body || {}, 'mediaWidth');
     const hasMediaHeightField = Object.prototype.hasOwnProperty.call(req.body || {}, 'mediaHeight');
+    const hasDisplayBatchIdField = Object.prototype.hasOwnProperty.call(req.body || {}, 'displayBatchId');
+    const hasDisplayBatchSlotField = Object.prototype.hasOwnProperty.call(req.body || {}, 'displayBatchSlot');
     const normalizedTitle = hasTitleField ? String(title || '').trim() : null;
     const normalizedContent = hasContentField ? String(content || '').trim() : null;
     const normalizedMediaWidth = hasMediaWidthField ? parsePositiveInteger(mediaWidth) : null;
     const normalizedMediaHeight = hasMediaHeightField ? parsePositiveInteger(mediaHeight) : null;
+    const normalizedDisplayBatchId = hasDisplayBatchIdField
+      ? normalizeDisplayBatchId(displayBatchId, { strict: true })
+      : null;
+    const normalizedDisplayBatchSlot = hasDisplayBatchSlotField
+      ? parseDisplayBatchSlot(displayBatchSlot, { strict: true })
+      : null;
 
     const { mediaFile, documentFile } = getUploadedAttachment(req);
     if (mediaFile && documentFile) {
@@ -2394,6 +2498,8 @@ app.put(
       ...attachmentMetadata,
       media_width: hasIncomingAttachment ? normalizedMediaWidth : existingMediaWidth,
       media_height: hasIncomingAttachment ? normalizedMediaHeight : existingMediaHeight,
+      display_batch_id: normalizeDisplayBatchId(existing.display_batch_id) || null,
+      display_batch_slot: parseDisplayBatchSlot(existing.display_batch_slot),
       start_at: newStart.toISOString(),
       end_at: newEnd.toISOString(),
       expires_at: newEnd.toISOString(),
@@ -2404,6 +2510,8 @@ app.put(
     if (hasContentField) updateRow.content = normalizedContent;
     if (hasMediaWidthField) updateRow.media_width = normalizedMediaWidth;
     if (hasMediaHeightField) updateRow.media_height = normalizedMediaHeight;
+    if (hasDisplayBatchIdField) updateRow.display_batch_id = normalizedDisplayBatchId;
+    if (hasDisplayBatchSlotField) updateRow.display_batch_slot = normalizedDisplayBatchSlot;
     if (priority !== undefined && priority !== null && String(priority).trim() !== '') {
       updateRow.priority = normalizePriorityValue(priority, existing.priority);
     }
@@ -2891,9 +2999,10 @@ app.delete('/api/staff-users/:id', simpleAuth, requireAdminRole, async (req, res
 
 app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
-    const link = String((req.body && req.body.link) || '').trim();
+    const liveLinks = parseLiveLinksInput(req.body && req.body.link, req.body && req.body.links);
+    const link = liveLinks[0] || null;
     const categoryInput = String((req.body && req.body.category) || '').trim();
-    if (!link) return res.status(400).json({ error: 'Link is required' });
+    if (!link) return res.status(400).json({ error: 'At least one live link is required.' });
 
     const isGlobalLive = !categoryInput || categoryInput.toLowerCase() === 'all';
     let liveCategoryId = null;
@@ -2907,7 +3016,7 @@ app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
       liveCategoryLabel = matchedCategory.name || matchedCategory.id;
     }
 
-    const persistedLink = encodeLiveLinkMetadata(link, liveCategoryId);
+    const persistedLink = encodeLiveLinkMetadata(link, liveCategoryId, liveLinks);
     const now = new Date().toISOString();
     const liveRow = {
       id: LIVE_STATUS_ID,
@@ -2922,13 +3031,18 @@ app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
     const data = await runLiveStateUpsert(liveRow, 'Error starting live');
     liveStateFallback.status = 'ON';
     liveStateFallback.link = link;
+    liveStateFallback.links = liveLinks;
     liveStateFallback.category = liveCategoryId;
     liveStateFallback.startedAt = now;
     liveStateFallback.stoppedAt = null;
 
+    const streamLabel =
+      liveLinks.length > 1
+        ? `links: ${liveLinks.join(', ')}`
+        : `link: ${link}`;
     await appendSystemHistory('live_started', (req.user && req.user.email) || null, {
       title: 'Live Broadcast Started',
-      content: `Live stream started for ${liveCategoryLabel} with link: ${link}`,
+      content: `Live stream started for ${liveCategoryLabel} with ${streamLabel}`,
       type: 'system_live',
       actionAt: now
     });
@@ -2956,6 +3070,7 @@ app.post('/api/stop', simpleAuth, requireWorkspaceRole, async (req, res) => {
     const data = await runLiveStateUpsert(liveRow, 'Error stopping live');
     liveStateFallback.status = 'OFF';
     liveStateFallback.link = null;
+    liveStateFallback.links = [];
     liveStateFallback.category = null;
     liveStateFallback.stoppedAt = now;
 

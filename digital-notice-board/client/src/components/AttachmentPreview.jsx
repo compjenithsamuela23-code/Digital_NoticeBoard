@@ -132,11 +132,13 @@ const AttachmentPreview = ({
   preview = true,
   documentPreview = true,
   documentHideHeader = false,
+  documentShowActions = true,
   documentSlideshow = false,
   documentSlideshowAutoplay = true,
   documentSlideshowIntervalMs,
   onDocumentSlideCountChange,
   onDocumentSlideIndexChange,
+  showActions = true,
   title = 'Attachment',
   imageAlt = 'Attachment'
 }) => {
@@ -179,6 +181,7 @@ const AttachmentPreview = ({
         className={className}
         preview={documentPreview && preview}
         hideHeader={documentHideHeader}
+        showActions={documentShowActions && showActions}
         slideshow={documentSlideshow}
         slideshowAutoplay={documentSlideshowAutoplay}
         slideshowIntervalMs={documentSlideshowIntervalMs}
@@ -241,14 +244,16 @@ const AttachmentPreview = ({
         <p className="document-preview__meta">{extension ? extension.toUpperCase() : 'FILE'}</p>
       </div>
       <p className="document-preview__hint">{hint}</p>
-      <div className="inline-actions">
-        <a className="btn btn--ghost btn--tiny" href={sourceUrl} target="_blank" rel="noreferrer">
-          Open
-        </a>
-        <a className="btn btn--ghost btn--tiny" href={sourceUrl} download={resolvedName}>
-          Download
-        </a>
-      </div>
+      {showActions ? (
+        <div className="inline-actions">
+          <a className="btn btn--ghost btn--tiny" href={sourceUrl} target="_blank" rel="noreferrer">
+            Open
+          </a>
+          <a className="btn btn--ghost btn--tiny" href={sourceUrl} download={resolvedName}>
+            Download
+          </a>
+        </div>
+      ) : null}
     </div>
   );
 };
