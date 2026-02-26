@@ -39,6 +39,7 @@ const DisplayBoard = () => {
   const [documentSlideIndex, setDocumentSlideIndex] = useState(1);
   const liveVideoRef = useRef(null);
   const previousDocumentSlideIndexRef = useRef(1);
+  const documentCycleCountRef = useRef(0);
 
   const navigate = useNavigate();
   const { socket } = useSocket();
@@ -311,6 +312,7 @@ const DisplayBoard = () => {
     setDocumentSlideCount(1);
     setDocumentSlideIndex(1);
     previousDocumentSlideIndexRef.current = 1;
+    documentCycleCountRef.current = 0;
   }, [currentAnnouncementId]);
 
   useEffect(() => {
@@ -327,7 +329,13 @@ const DisplayBoard = () => {
 
     const previousIndex = previousDocumentSlideIndexRef.current;
     if (previousIndex === documentSlideCount && documentSlideIndex === 1) {
-      setCurrentIndex((previous) => (previous + 1) % announcements.length);
+      documentCycleCountRef.current += 1;
+
+      // Let each document complete at least one full loop and restart from page 1.
+      if (documentCycleCountRef.current >= 2) {
+        setCurrentIndex((previous) => (previous + 1) % announcements.length);
+        documentCycleCountRef.current = 0;
+      }
     }
 
     previousDocumentSlideIndexRef.current = documentSlideIndex;
