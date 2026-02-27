@@ -100,6 +100,12 @@ const parseLiveLinkList = (rawValue) =>
 
 const getDimensionLookupKey = (file) => getFileIdentity(file);
 
+const isLikelyMediaFile = (file) => {
+  const mime = String(file?.type || '').toLowerCase();
+  if (!mime) return true;
+  return mime.startsWith('image/') || mime.startsWith('video/');
+};
+
 const createDisplayBatchId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID().replace(/-/g, '_');
@@ -162,7 +168,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [staffAccessSaving, setStaffAccessSaving] = useState(false);
   const [requestError, setRequestError] = useState('');
   const mediaInputRef = useRef(null);
+  const mediaReplaceInputRef = useRef(null);
   const documentInputRef = useRef(null);
+  const documentReplaceInputRef = useRef(null);
+  const [mediaReplaceIndex, setMediaReplaceIndex] = useState(-1);
+  const [documentReplaceIndex, setDocumentReplaceIndex] = useState(-1);
 
   const navigate = useNavigate();
   const { socket } = useSocket();
@@ -410,6 +420,32 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     };
   }, [documentPreviewUrls, mediaPreviewUrls]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setMediaDimensionsByKey({});
+
+    mediaFiles.forEach((file) => {
+      const lookupKey = getDimensionLookupKey(file);
+      detectMediaDimensions(file).then((dimensions) => {
+        if (cancelled) {
+          return;
+        }
+
+        setMediaDimensionsByKey((previous) => ({
+          ...previous,
+          [lookupKey]: {
+            width: dimensions.width,
+            height: dimensions.height
+          }
+        }));
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mediaFiles]);
+
   const resetForm = () => {
     setEditingId(null);
     setFormData({
@@ -429,8 +465,12 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setMediaDimensionsByKey({});
     setDocumentFiles([]);
     setDocumentPreviewUrls([]);
+    setMediaReplaceIndex(-1);
+    setDocumentReplaceIndex(-1);
     if (mediaInputRef.current) mediaInputRef.current.value = '';
+    if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
     if (documentInputRef.current) documentInputRef.current.value = '';
+    if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
   };
 
   const handleSubmit = async (event) => {
@@ -648,99 +688,223 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setMediaDimensionsByKey({});
     setDocumentFiles([]);
     setDocumentPreviewUrls([]);
+    setMediaReplaceIndex(-1);
+    setDocumentReplaceIndex(-1);
     if (mediaInputRef.current) mediaInputRef.current.value = '';
+    if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
     if (documentInputRef.current) documentInputRef.current.value = '';
+    if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleImageChange = (event) => {
-    const rawFiles = Array.from(event.target.files || []);
-    const maxAllowed = editingId ? 1 : MAX_BATCH_ATTACHMENTS;
-    const files = rawFiles.slice(0, maxAllowed);
-    const maxMediaByCombinedLimit = Math.max(0, MAX_BATCH_ATTACHMENTS - documentFiles.length);
-    const boundedFiles = files.slice(0, editingId ? 1 : maxMediaByCombinedLimit);
-    if (rawFiles.length > maxAllowed) {
-      setRequestError(`Only ${maxAllowed} media file${maxAllowed > 1 ? 's' : ''} can be selected here.`);
-    } else if (!editingId && files.length + documentFiles.length > MAX_BATCH_ATTACHMENTS) {
+    const incomingFiles = Array.from(event.target.files || []);
+    if (mediaInputRef.current) {
+      mediaInputRef.current.value = '';
+    }
+    if (incomingFiles.length === 0) return;
+
+    if (editingId) {
+      const selectedFile = incomingFiles[0] || null;
+      if (!selectedFile) return;
+
+      revokeObjectUrls(mediaPreviewUrls);
+      setMediaFiles([selectedFile]);
+      setMediaPreviewUrls([URL.createObjectURL(selectedFile)]);
       setRequestError(
-        `Total attachments cannot exceed ${MAX_BATCH_ATTACHMENTS}. Reduce media or document files.`
+        incomingFiles.length > 1 ? 'Editing mode supports only one replacement attachment.' : ''
+      );
+      return;
+    }
+
+    const remainingSlotCount = Math.max(0, MAX_BATCH_ATTACHMENTS - (mediaFiles.length + documentFiles.length));
+    if (remainingSlotCount <= 0) {
+      setRequestError(
+        `Total attachments cannot exceed ${MAX_BATCH_ATTACHMENTS}. Remove existing media/document items first.`
+      );
+      return;
+    }
+
+    const boundedFiles = incomingFiles.slice(0, remainingSlotCount);
+    if (incomingFiles.length > remainingSlotCount) {
+      setRequestError(
+        `Only ${remainingSlotCount} more attachment${remainingSlotCount === 1 ? '' : 's'} can be added.`
       );
     } else {
       setRequestError('');
     }
 
-    revokeObjectUrls(mediaPreviewUrls);
     if (boundedFiles.length === 0) {
-      setMediaFiles([]);
-      setMediaPreviewUrls([]);
-      setMediaDimensionsByKey({});
       return;
     }
 
     const nextPreviewUrls = boundedFiles.map((file) => URL.createObjectURL(file));
-    setMediaFiles(boundedFiles);
-    setMediaPreviewUrls(nextPreviewUrls);
-    setMediaDimensionsByKey({});
-
-    boundedFiles.forEach((file) => {
-      const lookupKey = getDimensionLookupKey(file);
-      detectMediaDimensions(file).then((dimensions) => {
-        setMediaDimensionsByKey((previous) => {
-          const currentFiles = Array.from(mediaInputRef.current?.files || []);
-          const currentKeys = new Set(currentFiles.map((item) => getDimensionLookupKey(item)));
-          if (!currentKeys.has(lookupKey)) {
-            return previous;
-          }
-          return {
-            ...previous,
-            [lookupKey]: {
-              width: dimensions.width,
-              height: dimensions.height
-            }
-          };
-        });
-      });
-    });
+    setMediaFiles((previous) => [...previous, ...boundedFiles]);
+    setMediaPreviewUrls((previous) => [...previous, ...nextPreviewUrls]);
   };
 
   const handleDocumentChange = (event) => {
-    const rawFiles = Array.from(event.target.files || []);
-    const maxAllowed = editingId ? 1 : MAX_BATCH_ATTACHMENTS;
-    const files = rawFiles.slice(0, maxAllowed);
-    const maxDocumentsByCombinedLimit = Math.max(0, MAX_BATCH_ATTACHMENTS - mediaFiles.length);
-    const boundedFiles = files.slice(0, editingId ? 1 : maxDocumentsByCombinedLimit);
-    if (rawFiles.length > maxAllowed) {
-      setRequestError(`Only ${maxAllowed} document file${maxAllowed > 1 ? 's' : ''} can be selected here.`);
-    } else if (!editingId && files.length + mediaFiles.length > MAX_BATCH_ATTACHMENTS) {
-      setRequestError(
-        `Total attachments cannot exceed ${MAX_BATCH_ATTACHMENTS}. Reduce media or document files.`
-      );
-    } else {
-      setRequestError('');
+    const incomingFiles = Array.from(event.target.files || []);
+    if (documentInputRef.current) {
+      documentInputRef.current.value = '';
     }
+    if (incomingFiles.length === 0) return;
 
-    revokeObjectUrls(documentPreviewUrls);
-    if (boundedFiles.length === 0) {
-      setDocumentFiles([]);
-      setDocumentPreviewUrls([]);
-      return;
-    }
-
-    const invalidMediaFile = boundedFiles.find((file) => {
+    const invalidMediaFile = incomingFiles.find((file) => {
       const mime = String(file.type || '').toLowerCase();
       return mime.startsWith('image/') || mime.startsWith('video/');
     });
     if (invalidMediaFile) {
       setRequestError('Please use the Media Upload field for image or video files.');
-      setDocumentFiles([]);
-      setDocumentPreviewUrls([]);
-      if (documentInputRef.current) documentInputRef.current.value = '';
       return;
     }
 
+    if (editingId) {
+      const selectedFile = incomingFiles[0] || null;
+      if (!selectedFile) return;
+
+      revokeObjectUrls(documentPreviewUrls);
+      setDocumentFiles([selectedFile]);
+      setDocumentPreviewUrls([URL.createObjectURL(selectedFile)]);
+      setRequestError(
+        incomingFiles.length > 1 ? 'Editing mode supports only one replacement attachment.' : ''
+      );
+      return;
+    }
+
+    const remainingSlotCount = Math.max(0, MAX_BATCH_ATTACHMENTS - (mediaFiles.length + documentFiles.length));
+    if (remainingSlotCount <= 0) {
+      setRequestError(
+        `Total attachments cannot exceed ${MAX_BATCH_ATTACHMENTS}. Remove existing media/document items first.`
+      );
+      return;
+    }
+
+    const boundedFiles = incomingFiles.slice(0, remainingSlotCount);
+    if (incomingFiles.length > remainingSlotCount) {
+      setRequestError(
+        `Only ${remainingSlotCount} more attachment${remainingSlotCount === 1 ? '' : 's'} can be added.`
+      );
+    } else {
+      setRequestError('');
+    }
+
+    if (boundedFiles.length === 0) return;
+
     const nextPreviewUrls = boundedFiles.map((file) => URL.createObjectURL(file));
-    setDocumentFiles(boundedFiles);
-    setDocumentPreviewUrls(nextPreviewUrls);
+    setDocumentFiles((previous) => [...previous, ...boundedFiles]);
+    setDocumentPreviewUrls((previous) => [...previous, ...nextPreviewUrls]);
+  };
+
+  const removeMediaAt = (index) => {
+    if (index < 0 || index >= mediaFiles.length) return;
+
+    setMediaFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+    setMediaPreviewUrls((previous) => {
+      const next = [...previous];
+      const removed = next[index];
+      if (removed) {
+        URL.revokeObjectURL(removed);
+      }
+      next.splice(index, 1);
+      return next;
+    });
+    setRequestError('');
+  };
+
+  const removeDocumentAt = (index) => {
+    if (index < 0 || index >= documentFiles.length) return;
+
+    setDocumentFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+    setDocumentPreviewUrls((previous) => {
+      const next = [...previous];
+      const removed = next[index];
+      if (removed) {
+        URL.revokeObjectURL(removed);
+      }
+      next.splice(index, 1);
+      return next;
+    });
+    setRequestError('');
+  };
+
+  const openMediaReplacePicker = (index) => {
+    if (index < 0 || index >= mediaFiles.length) return;
+    setMediaReplaceIndex(index);
+    if (mediaReplaceInputRef.current) {
+      mediaReplaceInputRef.current.value = '';
+      mediaReplaceInputRef.current.click();
+    }
+  };
+
+  const openDocumentReplacePicker = (index) => {
+    if (index < 0 || index >= documentFiles.length) return;
+    setDocumentReplaceIndex(index);
+    if (documentReplaceInputRef.current) {
+      documentReplaceInputRef.current.value = '';
+      documentReplaceInputRef.current.click();
+    }
+  };
+
+  const handleMediaReplaceChange = (event) => {
+    const selectedFile = Array.from(event.target.files || [])[0] || null;
+    const targetIndex = mediaReplaceIndex;
+    setMediaReplaceIndex(-1);
+    if (mediaReplaceInputRef.current) {
+      mediaReplaceInputRef.current.value = '';
+    }
+    if (!selectedFile || targetIndex < 0 || targetIndex >= mediaFiles.length) {
+      return;
+    }
+
+    if (!isLikelyMediaFile(selectedFile)) {
+      setRequestError('Please choose an image or video file for media replacement.');
+      return;
+    }
+
+    setMediaFiles((previous) =>
+      previous.map((file, index) => (index === targetIndex ? selectedFile : file))
+    );
+    setMediaPreviewUrls((previous) => {
+      const next = [...previous];
+      if (next[targetIndex]) {
+        URL.revokeObjectURL(next[targetIndex]);
+      }
+      next[targetIndex] = URL.createObjectURL(selectedFile);
+      return next;
+    });
+    setRequestError('');
+  };
+
+  const handleDocumentReplaceChange = (event) => {
+    const selectedFile = Array.from(event.target.files || [])[0] || null;
+    const targetIndex = documentReplaceIndex;
+    setDocumentReplaceIndex(-1);
+    if (documentReplaceInputRef.current) {
+      documentReplaceInputRef.current.value = '';
+    }
+    if (!selectedFile || targetIndex < 0 || targetIndex >= documentFiles.length) {
+      return;
+    }
+
+    const mime = String(selectedFile.type || '').toLowerCase();
+    if (mime.startsWith('image/') || mime.startsWith('video/')) {
+      setRequestError('Please use the Media Upload field for image or video files.');
+      return;
+    }
+
+    setDocumentFiles((previous) =>
+      previous.map((file, index) => (index === targetIndex ? selectedFile : file))
+    );
+    setDocumentPreviewUrls((previous) => {
+      const next = [...previous];
+      if (next[targetIndex]) {
+        URL.revokeObjectURL(next[targetIndex]);
+      }
+      next[targetIndex] = URL.createObjectURL(selectedFile);
+      return next;
+    });
+    setRequestError('');
   };
 
   const startLive = async () => {
@@ -1438,8 +1602,20 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 onChange={handleImageChange}
                 ref={mediaInputRef}
               />
+              <input
+                type="file"
+                accept={MEDIA_ACCEPT}
+                onChange={handleMediaReplaceChange}
+                ref={mediaReplaceInputRef}
+                className="visually-hidden"
+                tabIndex={-1}
+                aria-hidden="true"
+              />
               <p className="file-help">
                 Supported video: mp4, webm, ogg, mov, m4v, avi, mkv. Select up to {MAX_BATCH_ATTACHMENTS} media files.
+              </p>
+              <p className="file-help">
+                You can add files in multiple rounds and change/remove each selected item before publishing.
               </p>
             </div>
 
@@ -1453,6 +1629,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 onChange={handleDocumentChange}
                 ref={documentInputRef}
               />
+              <input
+                type="file"
+                accept={DOCUMENT_ACCEPT}
+                onChange={handleDocumentReplaceChange}
+                ref={documentReplaceInputRef}
+                className="visually-hidden"
+                tabIndex={-1}
+                aria-hidden="true"
+              />
               <p className="file-help">
                 All document formats are accepted. Select up to {MAX_BATCH_ATTACHMENTS} files total (media + document).
               </p>
@@ -1463,14 +1648,37 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 {mediaPreviewUrls.map((previewUrl, index) => {
                   const file = mediaFiles[index];
                   return (
-                    <AttachmentPreview
-                      key={`${file?.name || 'media'}-${index}`}
-                      fileUrl={previewUrl}
-                      fileName={file && file.name}
-                      typeHint={file && file.type}
-                      fileSizeBytes={file && file.size}
-                      title={`Media preview ${index + 1}`}
-                    />
+                    <div className="batch-preview-card" key={`${file?.name || 'media'}-${index}`}>
+                      <AttachmentPreview
+                        fileUrl={previewUrl}
+                        fileName={file && file.name}
+                        typeHint={file && file.type}
+                        fileSizeBytes={file && file.size}
+                        title={`Media preview ${index + 1}`}
+                      />
+                      <div className="batch-preview-card__actions">
+                        <span className="batch-preview-card__label">
+                          Media {index + 1}
+                          {file?.name ? ` • ${file.name}` : ''}
+                        </span>
+                        <div className="inline-actions">
+                          <button
+                            className="btn btn--ghost btn--tiny"
+                            type="button"
+                            onClick={() => openMediaReplacePicker(index)}
+                          >
+                            Change
+                          </button>
+                          <button
+                            className="btn btn--danger btn--tiny"
+                            type="button"
+                            onClick={() => removeMediaAt(index)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -1479,17 +1687,40 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             {documentFiles.length > 0 && documentPreviewUrls.length > 0 ? (
               <div className="batch-preview-grid">
                 {documentFiles.map((file, index) => (
-                  <DocumentAttachment
-                    key={`${file.name || 'document'}-${index}`}
-                    fileUrl={documentPreviewUrls[index]}
-                    fileName={file.name}
-                    mimeType={file.type}
-                    fileSizeBytes={file.size}
-                    title={`Document preview ${index + 1}`}
-                    className="document-preview--full"
-                    slideshow
-                    slideshowAutoplay={false}
-                  />
+                  <div className="batch-preview-card" key={`${file.name || 'document'}-${index}`}>
+                    <DocumentAttachment
+                      fileUrl={documentPreviewUrls[index]}
+                      fileName={file.name}
+                      mimeType={file.type}
+                      fileSizeBytes={file.size}
+                      title={`Document preview ${index + 1}`}
+                      className="document-preview--full"
+                      slideshow
+                      slideshowAutoplay={false}
+                    />
+                    <div className="batch-preview-card__actions">
+                      <span className="batch-preview-card__label">
+                        Document {index + 1}
+                        {file?.name ? ` • ${file.name}` : ''}
+                      </span>
+                      <div className="inline-actions">
+                        <button
+                          className="btn btn--ghost btn--tiny"
+                          type="button"
+                          onClick={() => openDocumentReplacePicker(index)}
+                        >
+                          Change
+                        </button>
+                        <button
+                          className="btn btn--danger btn--tiny"
+                          type="button"
+                          onClick={() => removeDocumentAt(index)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             ) : null}
