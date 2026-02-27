@@ -522,44 +522,29 @@ const DisplayBoard = () => {
         return true;
       });
   }, [announcementLiveLinks, globalLiveLinks, isAudioMuted, isLiveOn]);
+  const visibleLiveStreamEmbeds = useMemo(
+    () => activeLiveStreamEmbeds.slice(0, MAX_VISIBLE_SPLIT_ITEMS),
+    [activeLiveStreamEmbeds]
+  );
+  const hiddenLiveStreamCount = Math.max(0, activeLiveStreamEmbeds.length - visibleLiveStreamEmbeds.length);
   const liveSourceTiles = useMemo(() => {
     if (!showLivePanel) return [];
-    const tiles = [];
-
-    activeLiveStreamEmbeds.forEach((stream, index) => {
-      tiles.push({
+    return visibleLiveStreamEmbeds.map((stream, index) => ({
         id: `stream-${stream.id}-${index}`,
         kind: 'stream',
         stream
-      });
-    });
-
-    currentAnnouncementMediaGroup.forEach((announcement, index) => {
-      if (!announcement || !announcement.image) return;
-      tiles.push({
-        id: `announcement-${announcement.id || index}`,
-        kind: 'announcement',
-        announcement
-      });
-    });
-
-    return tiles;
-  }, [activeLiveStreamEmbeds, currentAnnouncementMediaGroup, showLivePanel]);
-  const livePageCount = Math.max(1, Math.ceil(liveSourceTiles.length / MAX_VISIBLE_SPLIT_ITEMS));
-  const activeLivePage = Math.min(currentMediaGroupPage, Math.max(0, livePageCount - 1));
+    }));
+  }, [showLivePanel, visibleLiveStreamEmbeds]);
   const combinedLiveTiles = useMemo(() => {
-    if (!showLivePanel || liveSourceTiles.length === 0) return [];
-    const startIndex = activeLivePage * MAX_VISIBLE_SPLIT_ITEMS;
-    return liveSourceTiles.slice(startIndex, startIndex + MAX_VISIBLE_SPLIT_ITEMS);
-  }, [activeLivePage, liveSourceTiles, showLivePanel]);
+    if (!showLivePanel) return [];
+    return liveSourceTiles;
+  }, [liveSourceTiles, showLivePanel]);
   const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementMediaGroupCount > 0;
-  const isAnnouncementMediaShownInLivePanel = showLivePanel && combinedLiveTiles.some(
-    (tile) => tile.kind === 'announcement'
-  );
+  const isAnnouncementMediaShownInLivePanel = false;
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
   const isSingleColumnLayout = !showSecondaryPanel;
-  const activePanelPageCount = showLivePanel ? livePageCount : announcementMediaPageCount;
-  const activePanelPageIndex = showLivePanel ? activeLivePage : activeAnnouncementMediaPage;
+  const activePanelPageCount = showLivePanel ? 1 : announcementMediaPageCount;
+  const activePanelPageIndex = showLivePanel ? 0 : activeAnnouncementMediaPage;
 
   useEffect(() => {
     const maxPageIndex = Math.max(0, activePanelPageCount - 1);
@@ -603,6 +588,16 @@ const DisplayBoard = () => {
     }),
     [mediaSplitColumns, mediaSplitRows]
   );
+  const liveStreamsStatusText = useMemo(() => {
+    const visibleCount = liveSourceTiles.length;
+    if (visibleCount === 0) {
+      return 'No active stream source';
+    }
+    if (hiddenLiveStreamCount > 0) {
+      return `${activeLiveStreamEmbeds.length} streams configured • showing ${visibleCount} always-on`;
+    }
+    return `${visibleCount} ${visibleCount === 1 ? 'stream' : 'streams'} live`;
+  }, [activeLiveStreamEmbeds.length, hiddenLiveStreamCount, liveSourceTiles.length]);
   const showAnnouncementFallbackText = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
   const announcementPanelTitle = currentAnnouncementTitle || 'Notice Attachment';
   const announcementPanelContent =
@@ -706,21 +701,19 @@ const DisplayBoard = () => {
   const actionHint = useMemo(() => {
     if (!displaySlides.length) {
       if (showLivePanel) {
-        if (activePanelPageCount > 1) {
-          return `Live split (${liveSourceTiles.length} items) • Panel ${activePanelPageIndex + 1} of ${activePanelPageCount}`;
+        if (hiddenLiveStreamCount > 0) {
+          return `Live always on (${liveSourceTiles.length} of ${activeLiveStreamEmbeds.length} streams shown)`;
         }
-        return `${liveSourceTiles.length > 0 ? `Live split (${liveSourceTiles.length} items)` : 'Live mode active'}`;
+        return `${liveSourceTiles.length > 0 ? `Live always on (${liveSourceTiles.length} ${liveSourceTiles.length === 1 ? 'stream' : 'streams'})` : 'Live mode active'}`;
       }
       return 'No scheduled announcements';
     }
     const announcementLabel = `Slide ${activeSlideIndex + 1} of ${displaySlides.length}`;
     if (showLivePanel) {
-      if (activePanelPageCount > 1) {
-        return `${announcementLabel} • Live split (${liveSourceTiles.length} items) • Panel ${
-          activePanelPageIndex + 1
-        } of ${activePanelPageCount}`;
+      if (hiddenLiveStreamCount > 0) {
+        return `${announcementLabel} • Live always on (${liveSourceTiles.length}/${activeLiveStreamEmbeds.length} streams shown)`;
       }
-      return `${announcementLabel} • Live split (${liveSourceTiles.length} items)`;
+      return `${announcementLabel} • Live always on (${liveSourceTiles.length} ${liveSourceTiles.length === 1 ? 'stream' : 'streams'})`;
     }
     if (currentAnnouncementMediaGroupCount > 1) {
       if (announcementMediaPageCount > 1) {
@@ -735,19 +728,26 @@ const DisplayBoard = () => {
     }
     return announcementLabel;
   }, [
+    activeLiveStreamEmbeds.length,
     activeAnnouncementMediaPage,
     activeSlideIndex,
-    activePanelPageCount,
-    activePanelPageIndex,
     announcementMediaPageCount,
     currentAnnouncementMediaGroupCount,
     currentAnnouncementHasDocument,
     displaySlides.length,
     documentSlideCount,
     documentSlideIndex,
+    hiddenLiveStreamCount,
     liveSourceTiles.length,
     showLivePanel
   ]);
+  const rotationControlLabel = showLivePanel
+    ? isPlaying
+      ? 'Pause Notice Slideshow'
+      : 'Resume Notice Slideshow'
+    : isPlaying
+      ? 'Pause Auto-Rotate'
+      : 'Resume Auto-Rotate';
 
   const handleNext = () => {
     if (hasEmergency) return;
@@ -913,17 +913,7 @@ const DisplayBoard = () => {
               <div className="panel-head">
                 <h2>Live Broadcast</h2>
                 <div className="inline-actions live-panel-actions">
-                  <p className="topbar__subtitle">
-                    {liveSourceTiles.length > 1
-                      ? `${liveSourceTiles.length} items in split view${
-                          activePanelPageCount > 1
-                            ? ` • Panel ${activePanelPageIndex + 1} of ${activePanelPageCount}`
-                            : ''
-                        }`
-                      : liveSourceTiles.length === 1
-                        ? '1 live item active'
-                        : 'No active stream source'}
-                  </p>
+                  <p className="topbar__subtitle">{liveStreamsStatusText}</p>
                   {activeLiveStreamEmbeds.length > 0 ? (
                     <button className="btn btn--ghost btn--tiny" type="button" onClick={handleAudioToggle}>
                       {isAudioMuted ? 'Unmute' : 'Mute'}
@@ -978,7 +968,7 @@ const DisplayBoard = () => {
                 type="button"
                 onClick={() => setIsPlaying((value) => !value)}
               >
-                {isPlaying ? 'Pause Auto-Rotate' : 'Resume Auto-Rotate'}
+                {rotationControlLabel}
               </button>
               <button className="btn btn--ghost btn--tiny" type="button" onClick={handleNext}>
                 Next
@@ -1137,17 +1127,7 @@ const DisplayBoard = () => {
             <div className="panel-head">
               <h2>Live Broadcast</h2>
               <div className="inline-actions live-panel-actions">
-                <p className="topbar__subtitle">
-                  {liveSourceTiles.length > 1
-                    ? `${liveSourceTiles.length} items in split view${
-                        activePanelPageCount > 1
-                          ? ` • Panel ${activePanelPageIndex + 1} of ${activePanelPageCount}`
-                          : ''
-                      }`
-                    : liveSourceTiles.length === 1
-                      ? '1 live item active'
-                      : 'No active stream or attachment'}
-                </p>
+                <p className="topbar__subtitle">{liveStreamsStatusText}</p>
                 {activeLiveStreamEmbeds.length > 0 ? (
                   <button className="btn btn--ghost btn--tiny" type="button" onClick={handleAudioToggle}>
                     {isAudioMuted ? 'Unmute' : 'Mute'}
@@ -1162,53 +1142,21 @@ const DisplayBoard = () => {
                   style={liveGridStyle}
                 >
                   {combinedLiveTiles.map((tile, index) => {
-                    if (tile.kind === 'stream') {
-                      const tileStream = tile.stream;
-                      const streamSrc = withAutoplay(
-                        tileStream.embedUrl,
-                        tileStream.provider,
-                        index === 0
-                      );
-                      return (
-                        <iframe
-                          className="live-stream-grid__frame"
-                          key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
-                          title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
-                          src={streamSrc}
-                          allow="autoplay; encrypted-media; fullscreen"
-                          allowFullScreen
-                        />
-                      );
-                    }
-
-                    const tileAnnouncement = tile.announcement;
-                    const tileHasDocument = isDocumentMedia(tileAnnouncement);
-                    const trackDocumentSlide = liveTileCount === 1 && tileHasDocument;
+                    const tileStream = tile.stream;
+                    const streamSrc = withAutoplay(
+                      tileStream.embedUrl,
+                      tileStream.provider,
+                      index === 0
+                    );
                     return (
-                      <div className="announcement-media-split-grid__item" key={tile.id}>
-                        <AttachmentPreview
-                          filePath={tileAnnouncement.image}
-                          fileName={tileAnnouncement.fileName}
-                          typeHint={tileAnnouncement.fileMimeType || tileAnnouncement.type}
-                          fileSizeBytes={tileAnnouncement.fileSizeBytes}
-                          className="media-preview--full media-preview--display media-preview--display-panel media-preview--split-item"
-                          documentPreview
-                          documentHideHeader
-                          documentShowActions={false}
-                          documentSlideshow
-                          documentSlideshowAutoplay={isPlaying}
-                          documentSlideshowIntervalMs={6000}
-                          onDocumentSlideCountChange={
-                            trackDocumentSlide ? handleDocumentSlideCountChange : undefined
-                          }
-                          onDocumentSlideIndexChange={
-                            trackDocumentSlide ? handleDocumentSlideIndexChange : undefined
-                          }
-                          title={tileAnnouncement.title || `Attachment ${index + 1}`}
-                          imageAlt={tileAnnouncement.title || `Attachment ${index + 1}`}
-                          showActions={false}
-                        />
-                      </div>
+                      <iframe
+                        className="live-stream-grid__frame"
+                        key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
+                        title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
+                        src={streamSrc}
+                        allow="autoplay; encrypted-media; fullscreen"
+                        allowFullScreen
+                      />
                     );
                   })}
                 </div>
@@ -1391,7 +1339,7 @@ const DisplayBoard = () => {
               type="button"
               onClick={() => setIsPlaying((value) => !value)}
             >
-              {isPlaying ? 'Pause Auto-Rotate' : 'Resume Auto-Rotate'}
+              {rotationControlLabel}
             </button>
             <button className="btn btn--ghost btn--tiny" type="button" onClick={handleNext}>
               Next
