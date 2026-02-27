@@ -101,6 +101,12 @@ const parseLiveLinkList = (rawValue) =>
     MAX_LIVE_LINKS
   );
 
+const normalizeLiveLinkArray = (rawValues = []) =>
+  [...new Set((Array.isArray(rawValues) ? rawValues : []).map((item) => String(item || '').trim()).filter(Boolean))].slice(
+    0,
+    MAX_LIVE_LINKS
+  );
+
 const getDimensionLookupKey = (file) => getFileIdentity(file);
 
 const isLikelyMediaFile = (file) => {
@@ -173,6 +179,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLinks, setLiveLinks] = useState([]);
   const [liveCategory, setLiveCategory] = useState('all');
+  const [announcementLiveLinkInput, setAnnouncementLiveLinkInput] = useState('');
+  const [announcementLiveLinks, setAnnouncementLiveLinks] = useState([]);
   const [categories, setCategories] = useState([]);
   const [newCategory, setNewCategory] = useState('');
   const [categorySaving, setCategorySaving] = useState(false);
@@ -526,11 +534,48 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setDocumentPreviewUrls([]);
     setMediaReplaceIndex(-1);
     setDocumentReplaceIndex(-1);
+    setAnnouncementLiveLinkInput('');
+    setAnnouncementLiveLinks([]);
     if (mediaInputRef.current) mediaInputRef.current.value = '';
     if (videoInputRef.current) videoInputRef.current.value = '';
     if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
     if (documentInputRef.current) documentInputRef.current.value = '';
     if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
+  };
+
+  const addAnnouncementLiveLinksFromInput = () => {
+    const parsedLinks = parseLiveLinkList(announcementLiveLinkInput);
+    if (parsedLinks.length === 0) {
+      setRequestError('Paste at least one announcement live stream link.');
+      return;
+    }
+
+    const mergedLinks = normalizeLiveLinkArray([...announcementLiveLinks, ...parsedLinks]);
+    setAnnouncementLiveLinks(mergedLinks);
+    setAnnouncementLiveLinkInput('');
+
+    if (mergedLinks.length < announcementLiveLinks.length + parsedLinks.length) {
+      setRequestError(`Announcement stream links are limited to ${MAX_LIVE_LINKS} unique links.`);
+      return;
+    }
+    setRequestError('');
+  };
+
+  const updateAnnouncementLiveLinkAt = (index, value) => {
+    setAnnouncementLiveLinks((previous) =>
+      previous.map((item, itemIndex) => (itemIndex === index ? String(value || '') : item))
+    );
+  };
+
+  const removeAnnouncementLiveLinkAt = (index) => {
+    setAnnouncementLiveLinks((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+    setRequestError('');
+  };
+
+  const clearAnnouncementLiveLinks = () => {
+    setAnnouncementLiveLinks([]);
+    setAnnouncementLiveLinkInput('');
+    setRequestError('');
   };
 
   const handleSubmit = async (event) => {
@@ -546,6 +591,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         : null;
       const editingBatchSize = editingAnnouncement ? getBatchAttachmentCount(editingAnnouncement) : 1;
       const hasExistingAttachment = Boolean(editingAnnouncement && editingAnnouncement.image);
+      const normalizedAnnouncementLiveLinks = normalizeLiveLinkArray(announcementLiveLinks);
       const selectedMediaFiles = [...mediaFiles];
       const selectedDocumentFiles = [...documentFiles];
       const selectedAttachmentEntries = [
@@ -564,8 +610,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         return;
       }
 
-      if (!normalizedTitle && !normalizedContent && !hasNewAttachment && !hasExistingAttachment) {
-        setRequestError('Add at least one: title, content, media, or document.');
+      if (
+        !normalizedTitle &&
+        !normalizedContent &&
+        !hasNewAttachment &&
+        !hasExistingAttachment &&
+        normalizedAnnouncementLiveLinks.length === 0
+      ) {
+        setRequestError('Add at least one: title, content, live stream, media, or document.');
         return;
       }
 
@@ -579,6 +631,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         payload.append('duration', String(formData.duration));
         payload.append('active', String(formData.isActive));
         payload.append('category', formData.category || '');
+        payload.append('liveStreamLinks', JSON.stringify(normalizedAnnouncementLiveLinks));
         if (options.mediaWidth && options.mediaHeight) {
           payload.append('mediaWidth', String(options.mediaWidth));
           payload.append('mediaHeight', String(options.mediaHeight));
@@ -729,6 +782,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             active: Boolean(formData.isActive),
             category: formData.category || '',
             displayBatchId,
+            liveStreamLinks: normalizedAnnouncementLiveLinks,
             attachments: preparedEntries.map((entry) => ({
               attachmentUrl: entry.directUploadPayload.attachmentUrl,
               attachmentFileName: entry.directUploadPayload.attachmentFileName,
@@ -835,6 +889,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setDocumentPreviewUrls([]);
     setMediaReplaceIndex(-1);
     setDocumentReplaceIndex(-1);
+    setAnnouncementLiveLinkInput('');
+    setAnnouncementLiveLinks(normalizeLiveLinkArray(announcement.liveStreamLinks || []));
     if (mediaInputRef.current) mediaInputRef.current.value = '';
     if (videoInputRef.current) videoInputRef.current.value = '';
     if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
@@ -1800,6 +1856,56 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             </div>
 
             <div className="field">
+              <label htmlFor="announcement-live-link">Announcement Live Stream Link(s)</label>
+              <div className="announcement-live-input-row">
+                <input
+                  id="announcement-live-link"
+                  type="url"
+                  value={announcementLiveLinkInput}
+                  onChange={(event) => setAnnouncementLiveLinkInput(event.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=... (use comma/newline for multiple)"
+                />
+                <button
+                  className="btn btn--ghost btn--tiny"
+                  type="button"
+                  onClick={addAnnouncementLiveLinksFromInput}
+                >
+                  Add Stream
+                </button>
+              </div>
+              <p className="file-help">
+                Add up to {MAX_LIVE_LINKS} live stream links for this announcement. You can change/remove any stream
+                before publishing.
+              </p>
+              {announcementLiveLinks.length > 0 ? (
+                <div className="announcement-live-list">
+                  {announcementLiveLinks.map((link, index) => (
+                    <div className="announcement-live-list__item" key={`announcement-stream-${index}`}>
+                      <input
+                        type="url"
+                        value={link}
+                        onChange={(event) => updateAnnouncementLiveLinkAt(index, event.target.value)}
+                        placeholder="https://..."
+                      />
+                      <button
+                        className="btn btn--danger btn--tiny"
+                        type="button"
+                        onClick={() => removeAnnouncementLiveLinkAt(index)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  <div className="inline-actions">
+                    <button className="btn btn--ghost btn--tiny" type="button" onClick={clearAnnouncementLiveLinks}>
+                      Clear All Streams
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="field">
               <label htmlFor="announcement-image">Image Upload</label>
               <input
                 id="announcement-image"
@@ -2042,9 +2148,18 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             {announcements.map((announcement) => {
               const noticeTitle = String(announcement.title || '').trim();
               const noticeContent = String(announcement.content || '').trim();
-              const cardTitle = noticeTitle || (announcement.image ? 'Attachment-only post' : 'Untitled notice');
-              const cardContent = noticeContent || (announcement.image ? 'No text content.' : 'No content.');
               const batchItemCount = getBatchAttachmentCount(announcement);
+              const streamCount = normalizeLiveLinkArray(announcement.liveStreamLinks || []).length;
+              const hasAttachment = Boolean(announcement.image);
+              const hasStream = streamCount > 0;
+              const cardTitle = noticeTitle || (hasAttachment || hasStream ? 'Media-only post' : 'Untitled notice');
+              const cardContent =
+                noticeContent ||
+                (hasAttachment
+                  ? 'No text content.'
+                  : hasStream
+                    ? 'Live stream links are attached to this announcement.'
+                    : 'No content.');
 
               return (
               <article className="notice-card" key={announcement.id} onClick={() => handleEdit(announcement)}>
@@ -2079,6 +2194,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     {categories.find((category) => category.id === announcement.category)?.name ||
                       'All categories'}
                   </div>
+                  {streamCount > 0 ? <div>Live streams: {streamCount}</div> : null}
                   {batchItemCount > 1 ? <div>Batch attachments: {batchItemCount}</div> : null}
                   <div>Created: {new Date(announcement.createdAt).toLocaleString()}</div>
                 </div>

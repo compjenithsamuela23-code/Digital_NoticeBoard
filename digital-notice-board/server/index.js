@@ -43,6 +43,8 @@ if (!process.env.JWT_SECRET) {
 }
 const LIVE_STATUS_ID = 1;
 const MAX_DISPLAY_BATCH_SLOT = 24;
+const MAX_GLOBAL_LIVE_LINKS = 4;
+const MAX_ANNOUNCEMENT_LIVE_LINKS = 4;
 const ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS = 60 * 1000;
 const REQUIRED_SUPABASE_TABLES = ['users', 'categories', 'announcements', 'history'];
 const OPTIONAL_SUPABASE_TABLES = ['live_state'];
@@ -1091,6 +1093,9 @@ function resolveMediaAspectDimensions({ mediaPath, mimeType, type, widthValue, h
 function toAnnouncementDto(row) {
   if (!row) return null;
   const parsedFileSize = Number.parseInt(row.file_size_bytes, 10);
+  const liveStreamLinks = parseStoredLiveLinks(row.live_stream_links, {
+    maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS
+  });
   const resolvedMimeType = resolveAttachmentMimeType(row.file_mime_type, [row.file_name, row.image]);
   const resolvedType = getAnnouncementType(row.image, row.content, resolvedMimeType);
   const resolvedDimensions = resolveMediaAspectDimensions({
@@ -1116,6 +1121,7 @@ function toAnnouncementDto(row) {
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
     mediaWidth: resolvedDimensions.mediaWidth,
     mediaHeight: resolvedDimensions.mediaHeight,
+    liveStreamLinks,
     displayBatchId: normalizeDisplayBatchId(row.display_batch_id) || null,
     displayBatchSlot: parseDisplayBatchSlot(row.display_batch_slot),
     createdAt: toIsoStringOrNull(row.created_at),
@@ -1132,6 +1138,10 @@ function toHistoryDto(row) {
   const snapshot = row.data && typeof row.data === 'object' ? row.data : {};
   const announcementId = row.announcement_id || row.id || snapshot.id;
   const parsedFileSize = Number.parseInt(row.file_size_bytes ?? snapshot.file_size_bytes, 10);
+  const liveStreamLinks = parseStoredLiveLinks(
+    row.live_stream_links !== undefined ? row.live_stream_links : snapshot.live_stream_links,
+    { maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS }
+  );
   const displayBatchId =
     normalizeDisplayBatchId(row.display_batch_id || snapshot.display_batch_id) || null;
   const displayBatchSlot = parseDisplayBatchSlot(row.display_batch_slot ?? snapshot.display_batch_slot);
@@ -1168,6 +1178,7 @@ function toHistoryDto(row) {
     fileSizeBytes: Number.isNaN(parsedFileSize) ? null : parsedFileSize,
     mediaWidth: resolvedDimensions.mediaWidth,
     mediaHeight: resolvedDimensions.mediaHeight,
+    liveStreamLinks,
     displayBatchId,
     displayBatchSlot,
     createdAt: toIsoStringOrNull(row.created_at || snapshot.created_at),
@@ -1244,7 +1255,32 @@ async function findCategoryByInput(categoryInput, errorContext = 'Error validati
 
 const LIVE_LINK_META_PREFIX = 'dnb_live:';
 
-function normalizeLiveLinks(rawLinks) {
+function tryParseJsonArrayInput(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return { matched: false, values: [] };
+  }
+
+  if (Array.isArray(rawValue)) {
+    return { matched: true, values: rawValue };
+  }
+
+  const normalized = String(rawValue || '').trim();
+  if (!normalized || !normalized.startsWith('[') || !normalized.endsWith(']')) {
+    return { matched: false, values: [] };
+  }
+
+  try {
+    const parsed = JSON.parse(normalized);
+    if (Array.isArray(parsed)) {
+      return { matched: true, values: parsed };
+    }
+    return { matched: true, values: [] };
+  } catch {
+    return { matched: true, values: [] };
+  }
+}
+
+function normalizeLiveLinks(rawLinks, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {}) {
   const values = Array.isArray(rawLinks) ? rawLinks : [];
   const normalized = [];
 
@@ -1255,7 +1291,55 @@ function normalizeLiveLinks(rawLinks) {
     normalized.push(cleaned);
   });
 
-  return normalized.slice(0, 4);
+  return normalized.slice(0, Math.max(1, Number.parseInt(maxLinks, 10) || 1));
+}
+
+function normalizeAnnouncementLiveStreamLinks(rawLinks) {
+  return normalizeLiveLinks(rawLinks, { maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS });
+}
+
+function parseAnnouncementLiveStreamsInput(value) {
+  if (Array.isArray(value)) {
+    return normalizeAnnouncementLiveStreamLinks(value);
+  }
+
+  const parsedJson = tryParseJsonArrayInput(value);
+  if (parsedJson.matched) {
+    return normalizeAnnouncementLiveStreamLinks(parsedJson.values);
+  }
+
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return [];
+  }
+
+  if (normalized.includes('\n') || normalized.includes(',')) {
+    return normalizeAnnouncementLiveStreamLinks(normalized.split(/[\n,]+/));
+  }
+
+  return normalizeAnnouncementLiveStreamLinks([normalized]);
+}
+
+function parseStoredLiveLinks(value, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {}) {
+  if (Array.isArray(value)) {
+    return normalizeLiveLinks(value, { maxLinks });
+  }
+
+  const parsedJson = tryParseJsonArrayInput(value);
+  if (parsedJson.matched) {
+    return normalizeLiveLinks(parsedJson.values, { maxLinks });
+  }
+
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return [];
+  }
+
+  if (normalized.includes('\n') || normalized.includes(',')) {
+    return normalizeLiveLinks(normalized.split(/[\n,]+/), { maxLinks });
+  }
+
+  return normalizeLiveLinks([normalized], { maxLinks });
 }
 
 function parseLiveLinksInput(linkValue, linksValue) {
@@ -1264,7 +1348,12 @@ function parseLiveLinksInput(linkValue, linksValue) {
   if (Array.isArray(linksValue)) {
     candidates = linksValue;
   } else if (typeof linksValue === 'string') {
-    candidates = linksValue.split(/[\n,]+/);
+    const parsedJsonLinks = tryParseJsonArrayInput(linksValue);
+    if (parsedJsonLinks.matched) {
+      candidates = parsedJsonLinks.values;
+    } else {
+      candidates = linksValue.split(/[\n,]+/);
+    }
   } else {
     const normalizedLinkValue = String(linkValue || '').trim();
     if (normalizedLinkValue.includes('\n') || normalizedLinkValue.includes(',')) {
@@ -1312,7 +1401,7 @@ function decodeLiveLinkMetadata(storedLinkValue) {
   try {
     const decodedPayload = Buffer.from(encodedPayload, 'base64url').toString('utf8');
     const parsedPayload = JSON.parse(decodedPayload);
-    const normalizedLinks = normalizeLiveLinks(
+    const normalizedLinks = parseStoredLiveLinks(
       Array.isArray(parsedPayload.links) && parsedPayload.links.length > 0
         ? parsedPayload.links
         : parsedPayload.link
@@ -1325,7 +1414,12 @@ function decodeLiveLinkMetadata(storedLinkValue) {
       category: String(parsedPayload.category || '').trim() || null
     };
   } catch {
-    return { link: normalized, links: [normalized], category: null };
+    const fallbackLinks = parseStoredLiveLinks(normalized);
+    return {
+      link: fallbackLinks[0] || null,
+      links: fallbackLinks,
+      category: null
+    };
   }
 }
 
@@ -1507,6 +1601,11 @@ async function insertHistoryRow(payload) {
       Object.prototype.hasOwnProperty.call(writablePayload, missingColumn) &&
       !removedColumns.has(missingColumn)
     ) {
+      if (missingColumn === 'live_stream_links') {
+        console.log(
+          '⚠️ announcements.live_stream_links column is missing. Run server/supabase/migration_announcement_live_stream_links.sql.'
+        );
+      }
       removedColumns.add(missingColumn);
       delete writablePayload[missingColumn];
       continue;
@@ -1544,6 +1643,11 @@ async function runAnnouncementUpdate(updatePayload, applyFilters, context) {
       Object.prototype.hasOwnProperty.call(writablePayload, missingColumn) &&
       !removedColumns.has(missingColumn)
     ) {
+      if (missingColumn === 'live_stream_links') {
+        console.log(
+          '⚠️ announcements.live_stream_links column is missing. Run server/supabase/migration_announcement_live_stream_links.sql.'
+        );
+      }
       removedColumns.add(missingColumn);
       delete writablePayload[missingColumn];
       continue;
@@ -1585,6 +1689,11 @@ async function runAnnouncementInsert(insertPayload, context) {
       Object.prototype.hasOwnProperty.call(writablePayload, missingColumn) &&
       !removedColumns.has(missingColumn)
     ) {
+      if (missingColumn === 'live_stream_links') {
+        console.log(
+          '⚠️ history.live_stream_links column is missing. Run server/supabase/migration_announcement_live_stream_links.sql.'
+        );
+      }
       removedColumns.add(missingColumn);
       delete writablePayload[missingColumn];
       continue;
@@ -1695,6 +1804,9 @@ async function appendHistory(announcementRow, action, userEmail, options = {}) {
   const mode = await detectHistoryTableMode();
   const actionDate = toDateOrNull(options.actionAt);
   const actionAtIso = actionDate ? actionDate.toISOString() : new Date().toISOString();
+  const liveStreamLinks = parseStoredLiveLinks(announcementRow.live_stream_links, {
+    maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS
+  });
 
   if (mode === 'legacy') {
     await insertHistoryRow({
@@ -1718,6 +1830,7 @@ async function appendHistory(announcementRow, action, userEmail, options = {}) {
         file_size_bytes: announcementRow.file_size_bytes ?? null,
         media_width: announcementRow.media_width ?? null,
         media_height: announcementRow.media_height ?? null,
+        live_stream_links: liveStreamLinks,
         display_batch_id: normalizeDisplayBatchId(announcementRow.display_batch_id) || null,
         display_batch_slot: parseDisplayBatchSlot(announcementRow.display_batch_slot),
         created_at: announcementRow.created_at,
@@ -1745,6 +1858,7 @@ async function appendHistory(announcementRow, action, userEmail, options = {}) {
     file_size_bytes: announcementRow.file_size_bytes ?? null,
     media_width: announcementRow.media_width ?? null,
     media_height: announcementRow.media_height ?? null,
+    live_stream_links: liveStreamLinks,
     display_batch_id: normalizeDisplayBatchId(announcementRow.display_batch_id) || null,
     display_batch_slot: parseDisplayBatchSlot(announcementRow.display_batch_slot),
     created_at: announcementRow.created_at,
@@ -1779,6 +1893,7 @@ function buildSystemHistoryRow(details = {}) {
     file_size_bytes: Number.isNaN(fileSizeValue) ? null : Math.max(0, fileSizeValue),
     media_width: parsePositiveInteger(details.mediaWidth),
     media_height: parsePositiveInteger(details.mediaHeight),
+    live_stream_links: parseAnnouncementLiveStreamsInput(details.liveStreamLinks),
     created_at: eventIso,
     start_at: eventIso,
     end_at: eventIso,
@@ -2403,7 +2518,8 @@ app.post(
       mediaWidth,
       mediaHeight,
       displayBatchId,
-      displayBatchSlot
+      displayBatchSlot,
+      liveStreamLinks
     } = req.body;
     const normalizedTitle = String(title || '').trim();
     const normalizedContent = String(content || '').trim();
@@ -2411,6 +2527,7 @@ app.post(
     const normalizedMediaHeight = parsePositiveInteger(mediaHeight);
     const normalizedDisplayBatchId = normalizeDisplayBatchId(displayBatchId, { strict: true });
     const normalizedDisplayBatchSlot = parseDisplayBatchSlot(displayBatchSlot, { strict: true });
+    const normalizedLiveStreamLinks = parseAnnouncementLiveStreamsInput(liveStreamLinks);
 
     const durationValue = Number.parseInt(duration, 10);
     const safePriority = normalizePriorityValue(priority, 1);
@@ -2447,9 +2564,9 @@ app.post(
     }
 
     const hasAttachment = Boolean(uploadedFile || attachmentInput.attachmentPath);
-    if (!normalizedTitle && !normalizedContent && !hasAttachment) {
+    if (!normalizedTitle && !normalizedContent && !hasAttachment && normalizedLiveStreamLinks.length === 0) {
       return res.status(400).json({
-        error: 'Add at least one: title, content, image/video, or document attachment.'
+        error: 'Add at least one: title, content, stream link, image/video, or document attachment.'
       });
     }
 
@@ -2478,6 +2595,7 @@ app.post(
       ...attachmentMetadata,
       media_width: normalizedMediaWidth,
       media_height: normalizedMediaHeight,
+      live_stream_links: normalizedLiveStreamLinks,
       display_batch_id: normalizedDisplayBatchId,
       display_batch_slot: normalizedDisplayBatchSlot,
       created_at: new Date().toISOString(),
@@ -2518,7 +2636,8 @@ app.post('/api/announcements/batch', simpleAuth, requireWorkspaceRole, async (re
       startAt,
       endAt,
       displayBatchId,
-      attachments
+      attachments,
+      liveStreamLinks
     } = req.body || {};
 
     const normalizedTitle = String(title || '').trim();
@@ -2526,6 +2645,7 @@ app.post('/api/announcements/batch', simpleAuth, requireWorkspaceRole, async (re
     const safePriority = normalizePriorityValue(priority, 1);
     const durationValue = Number.parseInt(duration, 10);
     const safeDuration = Number.isNaN(durationValue) ? 7 : durationValue;
+    const normalizedLiveStreamLinks = parseAnnouncementLiveStreamsInput(liveStreamLinks);
     const attachmentList = Array.isArray(attachments) ? attachments : [];
 
     if (attachmentList.length < 2) {
@@ -2594,6 +2714,7 @@ app.post('/api/announcements/batch', simpleAuth, requireWorkspaceRole, async (re
         ...attachmentMetadata,
         media_width: normalizedMediaWidth,
         media_height: normalizedMediaHeight,
+        live_stream_links: normalizedLiveStreamLinks,
         display_batch_id: normalizedDisplayBatchId,
         display_batch_slot: index + 1,
         created_at: createdAtIso,
@@ -2686,7 +2807,8 @@ app.put(
       mediaWidth,
       mediaHeight,
       displayBatchId,
-      displayBatchSlot
+      displayBatchSlot,
+      liveStreamLinks
     } = req.body;
     const hasTitleField = Object.prototype.hasOwnProperty.call(req.body || {}, 'title');
     const hasContentField = Object.prototype.hasOwnProperty.call(req.body || {}, 'content');
@@ -2694,6 +2816,7 @@ app.put(
     const hasMediaHeightField = Object.prototype.hasOwnProperty.call(req.body || {}, 'mediaHeight');
     const hasDisplayBatchIdField = Object.prototype.hasOwnProperty.call(req.body || {}, 'displayBatchId');
     const hasDisplayBatchSlotField = Object.prototype.hasOwnProperty.call(req.body || {}, 'displayBatchSlot');
+    const hasLiveStreamLinksField = Object.prototype.hasOwnProperty.call(req.body || {}, 'liveStreamLinks');
     const normalizedTitle = hasTitleField ? String(title || '').trim() : null;
     const normalizedContent = hasContentField ? String(content || '').trim() : null;
     const normalizedMediaWidth = hasMediaWidthField ? parsePositiveInteger(mediaWidth) : null;
@@ -2703,6 +2826,9 @@ app.put(
       : null;
     const normalizedDisplayBatchSlot = hasDisplayBatchSlotField
       ? parseDisplayBatchSlot(displayBatchSlot, { strict: true })
+      : null;
+    const normalizedLiveStreamLinks = hasLiveStreamLinksField
+      ? parseAnnouncementLiveStreamsInput(liveStreamLinks)
       : null;
 
     const { mediaFile, documentFile } = getUploadedAttachment(req);
@@ -2766,9 +2892,14 @@ app.put(
       const nextTitle = hasTitleField ? normalizedTitle : String(anchorRow.title || '').trim();
       const nextContent = hasContentField ? normalizedContent : String(anchorRow.content || '').trim();
       const hasAnyAttachmentInBatch = batchRows.some((row) => Boolean(row.image));
-      if (!nextTitle && !nextContent && !hasAnyAttachmentInBatch) {
+      const nextLiveStreamLinks = hasLiveStreamLinksField
+        ? normalizedLiveStreamLinks
+        : parseStoredLiveLinks(anchorRow.live_stream_links, {
+            maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS
+          });
+      if (!nextTitle && !nextContent && !hasAnyAttachmentInBatch && nextLiveStreamLinks.length === 0) {
         return res.status(400).json({
-          error: 'Add at least one: title, content, image/video, or document attachment.'
+          error: 'Add at least one: title, content, stream link, image/video, or document attachment.'
         });
       }
 
@@ -2795,6 +2926,9 @@ app.put(
       }
       if (category !== undefined) {
         batchUpdateRow.category = category || null;
+      }
+      if (hasLiveStreamLinksField) {
+        batchUpdateRow.live_stream_links = normalizedLiveStreamLinks;
       }
 
       const updatedRows = await runAnnouncementUpdate(
@@ -2872,9 +3006,14 @@ app.put(
 
     const nextTitle = hasTitleField ? normalizedTitle : String(existing.title || '').trim();
     const nextContent = hasContentField ? normalizedContent : String(existing.content || '').trim();
-    if (!nextTitle && !nextContent && !attachmentPath) {
+    const nextLiveStreamLinks = hasLiveStreamLinksField
+      ? normalizedLiveStreamLinks
+      : parseStoredLiveLinks(existing.live_stream_links, {
+          maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS
+        });
+    if (!nextTitle && !nextContent && !attachmentPath && nextLiveStreamLinks.length === 0) {
       return res.status(400).json({
-        error: 'Add at least one: title, content, image/video, or document attachment.'
+        error: 'Add at least one: title, content, stream link, image/video, or document attachment.'
       });
     }
 
@@ -2892,6 +3031,7 @@ app.put(
       ...attachmentMetadata,
       media_width: hasIncomingAttachment ? normalizedMediaWidth : existingMediaWidth,
       media_height: hasIncomingAttachment ? normalizedMediaHeight : existingMediaHeight,
+      live_stream_links: nextLiveStreamLinks,
       display_batch_id: normalizeDisplayBatchId(existing.display_batch_id) || null,
       display_batch_slot: parseDisplayBatchSlot(existing.display_batch_slot),
       start_at: newStart.toISOString(),

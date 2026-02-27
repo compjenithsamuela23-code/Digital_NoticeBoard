@@ -7,6 +7,8 @@
    - `digital-notice-board/server/supabase/migration_display_batch_slot_1_to_24.sql`
    - To enforce display batch integrity checks on older databases, also run:
    - `digital-notice-board/server/supabase/migration_display_batch_pair_consistency.sql`
+   - To enable announcement-level multi-stream links on older databases, also run:
+   - `digital-notice-board/server/supabase/migration_announcement_live_stream_links.sql`
 2. Add these variables in the root `.env`:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`

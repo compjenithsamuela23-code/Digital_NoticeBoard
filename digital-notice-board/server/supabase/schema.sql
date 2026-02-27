@@ -27,6 +27,7 @@ create table if not exists announcements (
   file_size_bytes bigint null,
   media_width integer null,
   media_height integer null,
+  live_stream_links jsonb not null default '[]'::jsonb,
   display_batch_id text null,
   display_batch_slot integer null,
   created_at timestamptz not null default timezone('utc', now()),
@@ -73,6 +74,7 @@ create table if not exists history (
   file_size_bytes bigint null,
   media_width integer null,
   media_height integer null,
+  live_stream_links jsonb not null default '[]'::jsonb,
   display_batch_id text null,
   display_batch_slot integer null,
   created_at timestamptz not null,
@@ -117,8 +119,14 @@ alter table announcements add column if not exists file_mime_type text null;
 alter table announcements add column if not exists file_size_bytes bigint null;
 alter table announcements add column if not exists media_width integer null;
 alter table announcements add column if not exists media_height integer null;
+alter table announcements add column if not exists live_stream_links jsonb null;
 alter table announcements add column if not exists display_batch_id text null;
 alter table announcements add column if not exists display_batch_slot integer null;
+update announcements
+set live_stream_links = '[]'::jsonb
+where live_stream_links is null;
+alter table announcements alter column live_stream_links set default '[]'::jsonb;
+alter table announcements alter column live_stream_links set not null;
 
 do $$
 begin
@@ -141,13 +149,29 @@ alter table history add column if not exists file_mime_type text null;
 alter table history add column if not exists file_size_bytes bigint null;
 alter table history add column if not exists media_width integer null;
 alter table history add column if not exists media_height integer null;
+alter table history add column if not exists live_stream_links jsonb null;
 alter table history add column if not exists display_batch_id text null;
 alter table history add column if not exists display_batch_slot integer null;
+update history
+set live_stream_links = '[]'::jsonb
+where live_stream_links is null;
+alter table history alter column live_stream_links set default '[]'::jsonb;
+alter table history alter column live_stream_links set not null;
 
 alter table announcements drop constraint if exists announcements_display_batch_slot_chk;
 alter table announcements
   add constraint announcements_display_batch_slot_chk
   check (display_batch_slot is null or display_batch_slot between 1 and 24)
+  not valid;
+
+alter table announcements drop constraint if exists announcements_live_stream_links_chk;
+alter table announcements
+  add constraint announcements_live_stream_links_chk
+  check (
+    live_stream_links is not null
+    and jsonb_typeof(live_stream_links) = 'array'
+    and jsonb_array_length(live_stream_links) between 0 and 4
+  )
   not valid;
 
 create index if not exists announcements_display_batch_id_idx
@@ -166,6 +190,16 @@ alter table history drop constraint if exists history_display_batch_slot_chk;
 alter table history
   add constraint history_display_batch_slot_chk
   check (display_batch_slot is null or display_batch_slot between 1 and 24)
+  not valid;
+
+alter table history drop constraint if exists history_live_stream_links_chk;
+alter table history
+  add constraint history_live_stream_links_chk
+  check (
+    live_stream_links is not null
+    and jsonb_typeof(live_stream_links) = 'array'
+    and jsonb_array_length(live_stream_links) between 0 and 4
+  )
   not valid;
 
 alter table history drop constraint if exists history_display_batch_pair_chk;

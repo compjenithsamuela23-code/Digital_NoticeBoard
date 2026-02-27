@@ -22,13 +22,119 @@ const normalizeLiveCategory = (value) => {
   return normalized;
 };
 
-const getYouTubeID = (url) => {
-  const regex = /(?:youtube\.com.*v=|youtu\.be\/)([^&\n?#]+)/;
-  const match = url && url.match(regex);
-  return match ? match[1] : null;
+const MAX_VISIBLE_SPLIT_ITEMS = 4;
+const MAX_ANNOUNCEMENT_STREAM_LINKS = 4;
+
+const normalizeLiveLinkArray = (rawValues = [], maxLinks = MAX_ANNOUNCEMENT_STREAM_LINKS) =>
+  [...new Set((Array.isArray(rawValues) ? rawValues : []).map((item) => String(item || '').trim()).filter(Boolean))].slice(
+    0,
+    maxLinks
+  );
+
+const safeUrl = (value) => {
+  try {
+    return new URL(String(value || '').trim());
+  } catch {
+    return null;
+  }
 };
 
-const MAX_VISIBLE_SPLIT_ITEMS = 4;
+const getYouTubeIdFromUrl = (sourceUrl) => {
+  const parsed = safeUrl(sourceUrl);
+  if (!parsed) return null;
+
+  const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+  if (host === 'youtu.be') {
+    const id = parsed.pathname.replace(/^\/+/, '').split('/')[0];
+    return id || null;
+  }
+
+  if (host.endsWith('youtube.com')) {
+    const queryId = parsed.searchParams.get('v');
+    if (queryId) return queryId;
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments[0] === 'embed' && segments[1]) return segments[1];
+    if (segments[0] === 'live' && segments[1]) return segments[1];
+    if (segments[0] === 'shorts' && segments[1]) return segments[1];
+  }
+
+  return null;
+};
+
+const getVimeoIdFromUrl = (sourceUrl) => {
+  const parsed = safeUrl(sourceUrl);
+  if (!parsed) return null;
+  const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+  if (!host.endsWith('vimeo.com')) return null;
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  const numericSegment = [...segments].reverse().find((segment) => /^\d+$/.test(segment));
+  return numericSegment || null;
+};
+
+const getTwitchTargetFromUrl = (sourceUrl) => {
+  const parsed = safeUrl(sourceUrl);
+  if (!parsed) return null;
+  const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+  if (!host.endsWith('twitch.tv')) return null;
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (!segments[0]) return null;
+
+  if (segments[0].toLowerCase() === 'videos' && segments[1]) {
+    return {
+      type: 'video',
+      value: segments[1].replace(/^v/i, '')
+    };
+  }
+
+  return {
+    type: 'channel',
+    value: segments[0]
+  };
+};
+
+const toLiveStreamEmbed = (sourceUrl, options = {}) => {
+  const normalized = String(sourceUrl || '').trim();
+  if (!normalized) return null;
+
+  const isAudioMuted = options.isAudioMuted !== false;
+  const parentHost = options.parentHost || 'localhost';
+
+  const youTubeId = getYouTubeIdFromUrl(normalized);
+  if (youTubeId) {
+    return {
+      id: `youtube:${youTubeId}`,
+      provider: 'YouTube',
+      sourceUrl: normalized,
+      embedUrl: `https://www.youtube.com/embed/${youTubeId}?autoplay=1&mute=${isAudioMuted ? 1 : 0}&playsinline=1`
+    };
+  }
+
+  const vimeoId = getVimeoIdFromUrl(normalized);
+  if (vimeoId) {
+    return {
+      id: `vimeo:${vimeoId}`,
+      provider: 'Vimeo',
+      sourceUrl: normalized,
+      embedUrl: `https://player.vimeo.com/video/${vimeoId}?autoplay=1&muted=${isAudioMuted ? 1 : 0}`
+    };
+  }
+
+  const twitchTarget = getTwitchTargetFromUrl(normalized);
+  if (twitchTarget) {
+    const baseUrl =
+      twitchTarget.type === 'video'
+        ? `https://player.twitch.tv/?video=v${twitchTarget.value}`
+        : `https://player.twitch.tv/?channel=${encodeURIComponent(twitchTarget.value)}`;
+    return {
+      id: `twitch:${twitchTarget.type}:${twitchTarget.value}`,
+      provider: 'Twitch',
+      sourceUrl: normalized,
+      embedUrl: `${baseUrl}&parent=${encodeURIComponent(parentHost)}&autoplay=true&muted=${isAudioMuted ? 'true' : 'false'}`
+    };
+  }
+
+  return null;
+};
 
 const getSplitColumnCount = (count) => {
   if (count <= 1) return 1;
@@ -363,14 +469,15 @@ const DisplayBoard = () => {
     currentAnnouncementMediaWidth,
     hasMediaDimensions
   ]);
-  const activeYouTubeIds = useMemo(() => {
+  const globalLiveLinks = useMemo(() => {
     const sourceLinks =
       Array.isArray(liveLinks) && liveLinks.length > 0 ? liveLinks : liveLink ? [liveLink] : [];
-    return [...new Set(sourceLinks.map((item) => getYouTubeID(item)).filter(Boolean))].slice(
-      0,
-      MAX_VISIBLE_SPLIT_ITEMS
-    );
+    return normalizeLiveLinkArray(sourceLinks, MAX_VISIBLE_SPLIT_ITEMS);
   }, [liveLink, liveLinks]);
+  const announcementLiveLinks = useMemo(
+    () => normalizeLiveLinkArray(currentAnnouncement?.liveStreamLinks || [], MAX_ANNOUNCEMENT_STREAM_LINKS),
+    [currentAnnouncement]
+  );
   const normalizedDisplayCategory = String(displayCategoryId || 'all').trim() || 'all';
   const normalizedLiveCategory = normalizeLiveCategory(liveCategory);
   const isLiveVisibleForDisplay =
@@ -378,16 +485,39 @@ const DisplayBoard = () => {
     normalizedDisplayCategory === 'all' ||
     normalizedDisplayCategory === normalizedLiveCategory;
   const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
-  const showLivePanel = isLiveOn;
+  const hasAnnouncementStreams = announcementLiveLinks.length > 0;
+  const showLivePanel = isLiveOn || hasAnnouncementStreams;
+  const activeLiveStreamEmbeds = useMemo(() => {
+    const parentHost =
+      typeof window !== 'undefined' && window.location && window.location.hostname
+        ? window.location.hostname
+        : 'localhost';
+    const candidateLinks = normalizeLiveLinkArray(
+      isLiveOn ? [...globalLiveLinks, ...announcementLiveLinks] : announcementLiveLinks,
+      MAX_VISIBLE_SPLIT_ITEMS * 2
+    );
+    const seenStreamIds = new Set();
+
+    return candidateLinks
+      .map((link) => toLiveStreamEmbed(link, { isAudioMuted, parentHost }))
+      .filter((stream) => {
+        if (!stream || seenStreamIds.has(stream.id)) {
+          return false;
+        }
+        seenStreamIds.add(stream.id);
+        return true;
+      })
+      .slice(0, MAX_VISIBLE_SPLIT_ITEMS);
+  }, [announcementLiveLinks, globalLiveLinks, isAudioMuted, isLiveOn]);
   const combinedLiveTiles = useMemo(() => {
     if (!showLivePanel) return [];
     const tiles = [];
 
-    activeYouTubeIds.forEach((youTubeId, index) => {
+    activeLiveStreamEmbeds.forEach((stream, index) => {
       tiles.push({
-        id: `stream-${youTubeId}-${index}`,
+        id: `stream-${stream.id}-${index}`,
         kind: 'stream',
-        youTubeId
+        stream
       });
     });
 
@@ -401,7 +531,7 @@ const DisplayBoard = () => {
     });
 
     return tiles.slice(0, MAX_VISIBLE_SPLIT_ITEMS);
-  }, [activeYouTubeIds, currentAnnouncementMediaGroupPageItems, showLivePanel]);
+  }, [activeLiveStreamEmbeds, currentAnnouncementMediaGroupPageItems, showLivePanel]);
   const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementMediaGroupCount > 0;
   const isAnnouncementMediaShownInLivePanel = showLivePanel && combinedLiveTiles.some(
     (tile) => tile.kind === 'announcement'
@@ -462,7 +592,8 @@ const DisplayBoard = () => {
     ? getCategoryName(currentAnnouncement.category)
     : null;
 
-  const liveBadgeClass = isLiveOn ? 'pill pill--success' : 'pill pill--danger';
+  const liveBadgeClass = showLivePanel ? 'pill pill--success' : 'pill pill--danger';
+  const liveStatusLabel = isLiveOn ? 'ON' : hasAnnouncementStreams ? 'ANNOUNCEMENT' : 'OFF';
   const isEmergency = hasEmergency;
 
   useEffect(() => {
@@ -745,7 +876,7 @@ const DisplayBoard = () => {
             <p className="topbar__eyebrow">Digital Notice Board</p>
             <div className={`${liveBadgeClass} live-status-pill`}>
               <span className="badge-dot" />
-              Live Status: {isLiveOn ? 'ON' : 'OFF'}
+              Live Status: {liveStatusLabel}
             </div>
           </div>
 
@@ -794,7 +925,7 @@ const DisplayBoard = () => {
                       ? '1 live item active'
                       : 'No active stream or attachment'}
                 </p>
-                {activeYouTubeIds.length > 0 ? (
+                {activeLiveStreamEmbeds.length > 0 ? (
                   <button className="btn btn--ghost btn--tiny" type="button" onClick={handleAudioToggle}>
                     {isAudioMuted ? 'Unmute' : 'Mute'}
                   </button>
@@ -809,14 +940,13 @@ const DisplayBoard = () => {
                 >
                   {combinedLiveTiles.map((tile, index) => {
                     if (tile.kind === 'stream') {
+                      const tileStream = tile.stream;
                       return (
                         <iframe
                           className="live-stream-grid__frame"
                           key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
-                          title={`Live Broadcast ${index + 1}`}
-                          src={`https://www.youtube.com/embed/${tile.youTubeId}?autoplay=1&mute=${
-                            isAudioMuted ? 1 : 0
-                          }&controls=1&playsinline=1&rel=0&modestbranding=1`}
+                          title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
+                          src={tileStream.embedUrl}
                           allow="autoplay; encrypted-media; fullscreen"
                           allowFullScreen
                         />
@@ -857,7 +987,11 @@ const DisplayBoard = () => {
               ) : (
                 <div className="live-placeholder">
                   <h3>Live Broadcast Unavailable</h3>
-                  <p>Live mode is ON, but no stream source is currently available.</p>
+                  <p>
+                    {isLiveOn
+                      ? 'Live mode is ON, but no stream source is currently available.'
+                      : 'This announcement has live links, but none could be embedded on this display.'}
+                  </p>
                 </div>
               )}
             </div>

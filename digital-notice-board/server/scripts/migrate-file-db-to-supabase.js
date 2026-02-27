@@ -87,6 +87,36 @@ function toBoolean(value, fallback) {
   return value === true || value === 'true';
 }
 
+function normalizeLiveStreamLinks(value, maxLinks = 4) {
+  let values = [];
+  if (Array.isArray(value)) {
+    values = value;
+  } else {
+    const normalized = String(value || '').trim();
+    if (normalized.startsWith('[') && normalized.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(normalized);
+        if (Array.isArray(parsed)) {
+          values = parsed;
+        }
+      } catch {
+        values = [];
+      }
+    } else if (normalized) {
+      values = normalized.split(/[\n,]+/).map((item) => item.trim());
+    }
+  }
+
+  const unique = [];
+  values.forEach((item) => {
+    const normalized = String(item || '').trim();
+    if (!normalized) return;
+    if (unique.includes(normalized)) return;
+    unique.push(normalized);
+  });
+  return unique.slice(0, maxLinks);
+}
+
 function sanitizeOriginalFileName(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -140,6 +170,9 @@ function normalizeAnnouncement(row, index, announcementIdMap, categoryIdMap) {
         : Number.isNaN(fileSize)
           ? null
           : Math.max(0, fileSize),
+    live_stream_links: normalizeLiveStreamLinks(
+      row.liveStreamLinks !== undefined ? row.liveStreamLinks : row.live_stream_links
+    ),
     created_at: createdAt,
     start_at: startAt,
     end_at: endAt,
@@ -174,6 +207,9 @@ function normalizeHistory(row, index, announcementIdMap, categoryIdMap) {
         : Number.isNaN(fileSize)
           ? null
           : Math.max(0, fileSize),
+    live_stream_links: normalizeLiveStreamLinks(
+      row.liveStreamLinks !== undefined ? row.liveStreamLinks : row.live_stream_links
+    ),
     created_at: createdAt,
     start_at: startAt,
     end_at: endAt,

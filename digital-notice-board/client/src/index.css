@@ -940,6 +940,25 @@ textarea {
   font-size: 0.84rem;
 }
 
+.announcement-live-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.announcement-live-list {
+  display: grid;
+  gap: 8px;
+}
+
+.announcement-live-list__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .inline-actions {
   display: flex;
   gap: 10px;
@@ -2477,6 +2496,11 @@ textarea {
 
   .topbar-status--admin {
     text-align: center;
+  }
+
+  .announcement-live-input-row,
+  .announcement-live-list__item {
+    grid-template-columns: 1fr;
   }
 
   .topbar-status--history {
