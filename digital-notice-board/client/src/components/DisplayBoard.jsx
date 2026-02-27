@@ -159,6 +159,12 @@ const getSplitColumnCount = (count) => {
   return 2;
 };
 
+const getSplitRowCount = (count, columns) => {
+  if (count <= 0) return 1;
+  const safeColumns = Math.max(1, Number.parseInt(columns, 10) || 1);
+  return Math.max(1, Math.ceil(count / safeColumns));
+};
+
 const sortBatchMediaItems = (left, right) => {
   const leftSlot = Number.parseInt(left && left.displayBatchSlot, 10);
   const rightSlot = Number.parseInt(right && right.displayBatchSlot, 10);
@@ -577,7 +583,26 @@ const DisplayBoard = () => {
           : 'Posted image';
   const liveTileCount = combinedLiveTiles.length;
   const liveSplitColumns = getSplitColumnCount(liveTileCount);
+  const liveSplitRows = getSplitRowCount(liveTileCount, liveSplitColumns);
   const mediaSplitColumns = getSplitColumnCount(currentAnnouncementMediaGroupPageItems.length);
+  const mediaSplitRows = getSplitRowCount(
+    currentAnnouncementMediaGroupPageItems.length,
+    mediaSplitColumns
+  );
+  const liveGridStyle = useMemo(
+    () => ({
+      gridTemplateColumns: `repeat(${liveSplitColumns}, minmax(0, 1fr))`,
+      gridTemplateRows: `repeat(${liveSplitRows}, minmax(0, 1fr))`
+    }),
+    [liveSplitColumns, liveSplitRows]
+  );
+  const mediaGridStyle = useMemo(
+    () => ({
+      gridTemplateColumns: `repeat(${mediaSplitColumns}, minmax(0, 1fr))`,
+      gridTemplateRows: `repeat(${mediaSplitRows}, minmax(0, 1fr))`
+    }),
+    [mediaSplitColumns, mediaSplitRows]
+  );
   const showAnnouncementFallbackText = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
   const announcementPanelTitle = currentAnnouncementTitle || 'Notice Attachment';
   const announcementPanelContent =
@@ -910,7 +935,7 @@ const DisplayBoard = () => {
                 {liveTileCount > 0 ? (
                   <div
                     className="live-stream-grid"
-                    style={{ gridTemplateColumns: `repeat(${liveSplitColumns}, minmax(0, 1fr))` }}
+                    style={liveGridStyle}
                   >
                     {combinedLiveTiles.map((tile, index) => {
                       const tileStream = tile.stream;
@@ -1134,7 +1159,7 @@ const DisplayBoard = () => {
               {liveTileCount > 0 ? (
                 <div
                   className="live-stream-grid"
-                  style={{ gridTemplateColumns: `repeat(${liveSplitColumns}, minmax(0, 1fr))` }}
+                  style={liveGridStyle}
                 >
                   {combinedLiveTiles.map((tile, index) => {
                     if (tile.kind === 'stream') {
@@ -1225,7 +1250,7 @@ const DisplayBoard = () => {
                   {currentAnnouncementMediaGroupCount > 1 ? (
                     <div
                       className="announcement-media-split-grid"
-                      style={{ gridTemplateColumns: `repeat(${mediaSplitColumns}, minmax(0, 1fr))` }}
+                      style={mediaGridStyle}
                     >
                       {currentAnnouncementMediaGroupPageItems.map((item, index) => (
                         <div className="announcement-media-split-grid__item" key={item.id || `split-${index}`}>
