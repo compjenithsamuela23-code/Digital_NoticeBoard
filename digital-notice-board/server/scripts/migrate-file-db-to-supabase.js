@@ -87,7 +87,16 @@ function toBoolean(value, fallback) {
   return value === true || value === 'true';
 }
 
-function normalizeLiveStreamLinks(value, maxLinks = 4) {
+function isValidHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function normalizeLiveStreamLinks(value, maxLinks = 24) {
   let values = [];
   if (Array.isArray(value)) {
     values = value;
@@ -111,6 +120,7 @@ function normalizeLiveStreamLinks(value, maxLinks = 4) {
   values.forEach((item) => {
     const normalized = String(item || '').trim();
     if (!normalized) return;
+    if (!isValidHttpUrl(normalized)) return;
     if (unique.includes(normalized)) return;
     unique.push(normalized);
   });

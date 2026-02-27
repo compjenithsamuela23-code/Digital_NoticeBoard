@@ -23,7 +23,8 @@ const normalizeLiveCategory = (value) => {
 };
 
 const MAX_VISIBLE_SPLIT_ITEMS = 4;
-const MAX_ANNOUNCEMENT_STREAM_LINKS = 4;
+const MAX_ANNOUNCEMENT_STREAM_LINKS = 24;
+const MAX_GLOBAL_STREAM_LINKS = 24;
 
 const normalizeLiveLinkArray = (rawValues = [], maxLinks = MAX_ANNOUNCEMENT_STREAM_LINKS) =>
   [...new Set((Array.isArray(rawValues) ? rawValues : []).map((item) => String(item || '').trim()).filter(Boolean))].slice(
@@ -464,7 +465,7 @@ const DisplayBoard = () => {
   const globalLiveLinks = useMemo(() => {
     const sourceLinks =
       Array.isArray(liveLinks) && liveLinks.length > 0 ? liveLinks : liveLink ? [liveLink] : [];
-    return normalizeLiveLinkArray(sourceLinks, MAX_VISIBLE_SPLIT_ITEMS);
+    return normalizeLiveLinkArray(sourceLinks, MAX_GLOBAL_STREAM_LINKS);
   }, [liveLink, liveLinks]);
   const announcementLiveLinks = useMemo(
     () => normalizeLiveLinkArray(currentAnnouncement?.liveStreamLinks || [], MAX_ANNOUNCEMENT_STREAM_LINKS),
@@ -486,7 +487,7 @@ const DisplayBoard = () => {
         : 'localhost';
     const candidateLinks = normalizeLiveLinkArray(
       isLiveOn ? [...globalLiveLinks, ...announcementLiveLinks] : announcementLiveLinks,
-      MAX_VISIBLE_SPLIT_ITEMS * 2
+      MAX_GLOBAL_STREAM_LINKS + MAX_ANNOUNCEMENT_STREAM_LINKS
     );
     const seenStreamIds = new Set();
 
@@ -498,8 +499,7 @@ const DisplayBoard = () => {
         }
         seenStreamIds.add(stream.id);
         return true;
-      })
-      .slice(0, MAX_VISIBLE_SPLIT_ITEMS);
+      });
   }, [announcementLiveLinks, globalLiveLinks, isAudioMuted, isLiveOn]);
   const liveSourceTiles = useMemo(() => {
     if (!showLivePanel) return [];

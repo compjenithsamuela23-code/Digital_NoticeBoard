@@ -93,16 +93,38 @@ const VIDEO_ACCEPT =
 const MEDIA_ACCEPT = `${IMAGE_ACCEPT},${VIDEO_ACCEPT}`;
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 const MAX_BATCH_ATTACHMENTS = 24;
-const MAX_LIVE_LINKS = 4;
+const MAX_LIVE_LINKS = 24;
+
+const isHttpUrl = (value) => {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
 
 const parseLiveLinkList = (rawValue) =>
-  [...new Set(String(rawValue || '').split(/[\n,]+/).map((item) => item.trim()).filter(Boolean))].slice(
+  [
+    ...new Set(
+      String(rawValue || '')
+        .split(/[\n,]+/)
+        .map((item) => item.trim())
+        .filter((item) => item && isHttpUrl(item))
+    )
+  ].slice(
     0,
     MAX_LIVE_LINKS
   );
 
 const normalizeLiveLinkArray = (rawValues = []) =>
-  [...new Set((Array.isArray(rawValues) ? rawValues : []).map((item) => String(item || '').trim()).filter(Boolean))].slice(
+  [
+    ...new Set(
+      (Array.isArray(rawValues) ? rawValues : [])
+        .map((item) => String(item || '').trim())
+        .filter((item) => item && isHttpUrl(item))
+    )
+  ].slice(
     0,
     MAX_LIVE_LINKS
   );
@@ -178,6 +200,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [liveLinkInput, setLiveLinkInput] = useState('');
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLinks, setLiveLinks] = useState([]);
+  const [liveDraftLinks, setLiveDraftLinks] = useState([]);
   const [liveCategory, setLiveCategory] = useState('all');
   const [announcementLiveLinkInput, setAnnouncementLiveLinkInput] = useState('');
   const [announcementLiveLinks, setAnnouncementLiveLinks] = useState([]);
@@ -374,6 +397,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             : [];
       setLiveStatus(statusPayload.status || 'OFF');
       setLiveLinks(nextLinks);
+      setLiveDraftLinks((previous) =>
+        previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)
+      );
       setLiveCategory(normalizeLiveCategory(statusPayload.category));
     } catch (error) {
       console.error('Error fetching live status:', error);
@@ -469,6 +495,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             : [];
       setLiveStatus(payload?.status || 'OFF');
       setLiveLinks(nextLinks);
+      setLiveDraftLinks((previous) =>
+        previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)
+      );
       setLiveCategory(normalizeLiveCategory(payload?.category));
     });
 
@@ -1163,10 +1192,59 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setRequestError('');
   };
 
-  const startLive = async () => {
+  const addLiveDraftLinks = () => {
     const parsedLinks = parseLiveLinkList(liveLinkInput);
     if (parsedLinks.length === 0) {
-      setRequestError('Paste at least one live YouTube link first.');
+      setRequestError('Paste at least one valid live stream URL (https://...).');
+      return;
+    }
+
+    const merged = normalizeLiveLinkArray([...liveDraftLinks, ...parsedLinks]);
+    setLiveDraftLinks(merged);
+    setLiveLinkInput('');
+
+    if (merged.length < liveDraftLinks.length + parsedLinks.length) {
+      setRequestError(`Live stream list is limited to ${MAX_LIVE_LINKS} unique links.`);
+      return;
+    }
+
+    setRequestError('');
+  };
+
+  const updateLiveDraftLinkAt = (index, value) => {
+    setLiveDraftLinks((previous) =>
+      previous.map((item, itemIndex) => (itemIndex === index ? String(value || '') : item))
+    );
+    setRequestError('');
+  };
+
+  const removeLiveDraftLinkAt = (index) => {
+    setLiveDraftLinks((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
+    setRequestError('');
+  };
+
+  const clearLiveDraftLinks = () => {
+    setLiveDraftLinks([]);
+    setLiveLinkInput('');
+    setRequestError('');
+  };
+
+  const useCurrentLiveLinks = () => {
+    if (!Array.isArray(liveLinks) || liveLinks.length === 0) {
+      setRequestError('No active live links are available to copy.');
+      return;
+    }
+
+    setLiveDraftLinks(normalizeLiveLinkArray(liveLinks));
+    setLiveLinkInput('');
+    setRequestError('');
+  };
+
+  const startLive = async () => {
+    const parsedLinks =
+      liveDraftLinks.length > 0 ? normalizeLiveLinkArray(liveDraftLinks) : parseLiveLinkList(liveLinkInput);
+    if (parsedLinks.length === 0) {
+      setRequestError('Add at least one valid live stream URL before starting.');
       return;
     }
 
@@ -1186,6 +1264,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             : parsedLinks;
       setLiveStatus(statusPayload.status || 'ON');
       setLiveLinks(nextLinks);
+      setLiveDraftLinks(normalizeLiveLinkArray(nextLinks));
       setLiveCategory(normalizeLiveCategory(statusPayload.category || liveCategory));
       setLiveLinkInput('');
     } catch (error) {
@@ -1200,6 +1279,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       const response = await apiClient.post(apiUrl('/api/stop'), {}, applyWorkspaceAuth());
       setLiveStatus(response.data?.status || 'OFF');
       setLiveLinks([]);
+      setLiveDraftLinks([]);
       setLiveCategory(normalizeLiveCategory(response.data?.category || 'all'));
     } catch (error) {
       if (handleRequestError(error, 'Failed to stop live feed.')) return;
@@ -1725,14 +1805,59 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           </div>
 
           <div className="field">
-            <label htmlFor="live-link">YouTube Live Link(s)</label>
-            <textarea
-              id="live-link"
-              value={liveLinkInput}
-              onChange={(event) => setLiveLinkInput(event.target.value)}
-              placeholder={`https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\n(Use newline or comma to add up to ${MAX_LIVE_LINKS} links)`}
-            />
-            <p className="file-help">You can start 1 to {MAX_LIVE_LINKS} streams at the same time.</p>
+            <label htmlFor="live-link">Stream Link(s)</label>
+            <div className="announcement-live-input-row">
+              <input
+                id="live-link"
+                type="url"
+                value={liveLinkInput}
+                onChange={(event) => setLiveLinkInput(event.target.value)}
+                placeholder="https://www.youtube.com/watch?v=... (comma/newline supports bulk add)"
+              />
+              <button className="btn btn--ghost btn--tiny" type="button" onClick={addLiveDraftLinks}>
+                Add
+              </button>
+            </div>
+            <p className="file-help">
+              Supports YouTube, Vimeo, and Twitch URLs. Add up to {MAX_LIVE_LINKS} stream sources.
+            </p>
+          </div>
+
+          {liveDraftLinks.length > 0 ? (
+            <div className="announcement-live-list">
+              {liveDraftLinks.map((link, index) => (
+                <div className="announcement-live-list__item" key={`live-draft-${index}`}>
+                  <input
+                    type="url"
+                    value={link}
+                    onChange={(event) => updateLiveDraftLinkAt(index, event.target.value)}
+                    placeholder="https://..."
+                  />
+                  <button
+                    className="btn btn--danger btn--tiny"
+                    type="button"
+                    onClick={() => removeLiveDraftLinkAt(index)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="inline-actions">
+            <button className="btn btn--ghost btn--tiny" type="button" onClick={useCurrentLiveLinks}>
+              Use Current Links
+            </button>
+            <button className="btn btn--ghost btn--tiny" type="button" onClick={clearLiveDraftLinks}>
+              Clear Draft
+            </button>
+          </div>
+
+          <div className="live-broadcast-metrics">
+            <span className="pill pill--info">Draft: {liveDraftLinks.length}</span>
+            <span className="pill pill--success">Active: {liveLinks.length}</span>
+            <span className="pill">Limit: {MAX_LIVE_LINKS}</span>
           </div>
 
           <div className="field">

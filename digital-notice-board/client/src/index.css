@@ -959,6 +959,12 @@ textarea {
   align-items: center;
 }
 
+.live-broadcast-metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .inline-actions {
   display: flex;
   gap: 10px;

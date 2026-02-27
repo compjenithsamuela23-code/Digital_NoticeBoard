@@ -43,8 +43,8 @@ if (!process.env.JWT_SECRET) {
 }
 const LIVE_STATUS_ID = 1;
 const MAX_DISPLAY_BATCH_SLOT = 24;
-const MAX_GLOBAL_LIVE_LINKS = 4;
-const MAX_ANNOUNCEMENT_LIVE_LINKS = 4;
+const MAX_GLOBAL_LIVE_LINKS = 24;
+const MAX_ANNOUNCEMENT_LIVE_LINKS = 24;
 const ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS = 60 * 1000;
 const REQUIRED_SUPABASE_TABLES = ['users', 'categories', 'announcements', 'history'];
 const OPTIONAL_SUPABASE_TABLES = ['live_state'];
@@ -1255,6 +1255,15 @@ async function findCategoryByInput(categoryInput, errorContext = 'Error validati
 
 const LIVE_LINK_META_PREFIX = 'dnb_live:';
 
+function isValidHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function tryParseJsonArrayInput(rawValue) {
   if (rawValue === null || rawValue === undefined) {
     return { matched: false, values: [] };
@@ -1285,8 +1294,13 @@ function normalizeLiveLinks(rawLinks, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {})
   const normalized = [];
 
   values.forEach((item) => {
-    const cleaned = String(item || '').trim();
+    const rawValue =
+      item && typeof item === 'object'
+        ? item.url || item.link || ''
+        : item;
+    const cleaned = String(rawValue || '').trim();
     if (!cleaned) return;
+    if (!isValidHttpUrl(cleaned)) return;
     if (normalized.includes(cleaned)) return;
     normalized.push(cleaned);
   });

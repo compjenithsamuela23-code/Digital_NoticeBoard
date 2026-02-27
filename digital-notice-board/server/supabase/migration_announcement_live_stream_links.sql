@@ -21,7 +21,7 @@ alter table if exists announcements
   check (
     live_stream_links is not null
     and jsonb_typeof(live_stream_links) = 'array'
-    and jsonb_array_length(live_stream_links) between 0 and 4
+    and jsonb_array_length(live_stream_links) between 0 and 24
   )
   not valid;
 
@@ -31,6 +31,6 @@ alter table if exists history
   check (
     live_stream_links is not null
     and jsonb_typeof(live_stream_links) = 'array'
-    and jsonb_array_length(live_stream_links) between 0 and 4
+    and jsonb_array_length(live_stream_links) between 0 and 24
   )
   not valid;
