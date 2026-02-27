@@ -99,6 +99,7 @@ create table if not exists live_state (
   id integer primary key,
   status text not null default 'OFF',
   link text null,
+  links jsonb not null default '[]'::jsonb,
   category uuid null,
   started_at timestamptz null,
   stopped_at timestamptz null,
@@ -106,6 +107,22 @@ create table if not exists live_state (
 );
 
 alter table live_state add column if not exists category uuid null;
+alter table live_state add column if not exists links jsonb null;
+update live_state
+set links = '[]'::jsonb
+where links is null;
+alter table live_state alter column links set default '[]'::jsonb;
+alter table live_state alter column links set not null;
+
+alter table live_state drop constraint if exists live_state_links_chk;
+alter table live_state
+  add constraint live_state_links_chk
+  check (
+    links is not null
+    and jsonb_typeof(links) = 'array'
+    and jsonb_array_length(links) between 0 and 24
+  )
+  not valid;
 
 create index if not exists live_state_category_idx
   on live_state (category);

@@ -9,6 +9,8 @@
    - `digital-notice-board/server/supabase/migration_display_batch_pair_consistency.sql`
    - To enable announcement-level multi-stream links on older databases, also run:
    - `digital-notice-board/server/supabase/migration_announcement_live_stream_links.sql`
+   - To enable persisted global live multi-stream links in `live_state`, also run:
+   - `digital-notice-board/server/supabase/migration_live_state_links.sql`
 2. Add these variables in the root `.env`:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`

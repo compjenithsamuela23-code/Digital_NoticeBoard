@@ -254,10 +254,18 @@ function normalizeUser(row, index, userIdMap) {
 
 function normalizeLive(row) {
   const now = new Date().toISOString();
+  const normalizedLinks = normalizeLiveStreamLinks(
+    row && row.links !== undefined
+      ? row.links
+      : row && row.link
+        ? [row.link]
+        : []
+  );
   return {
     id: 1,
     status: row && row.status ? row.status : 'OFF',
-    link: row && row.link ? row.link : null,
+    link: normalizedLinks[0] || (row && row.link ? row.link : null),
+    links: normalizedLinks,
     started_at: toIso(row && row.startedAt, null),
     stopped_at: toIso(row && row.stoppedAt, null),
     updated_at: now

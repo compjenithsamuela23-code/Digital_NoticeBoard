@@ -1468,6 +1468,14 @@ function decodeLiveLinkMetadata(storedLinkValue) {
 
 function toLiveDto(row) {
   const decodedLinkMeta = row ? decodeLiveLinkMetadata(row.link) : { link: null, links: [], category: null };
+  const storedLinks = row
+    ? parseStoredLiveLinks(row.links, { maxLinks: MAX_GLOBAL_LIVE_LINKS })
+    : [];
+  const resolvedLinks =
+    storedLinks.length > 0
+      ? storedLinks
+      : decodedLinkMeta.links || [];
+  const resolvedLink = resolvedLinks[0] || decodedLinkMeta.link || null;
   const hasCategoryField = row && Object.prototype.hasOwnProperty.call(row, 'category');
   const rawCategory = hasCategoryField
     ? row.category || decodedLinkMeta.category
@@ -1479,8 +1487,8 @@ function toLiveDto(row) {
   }
   return {
     status: row.status || 'OFF',
-    link: decodedLinkMeta.link || null,
-    links: decodedLinkMeta.links || [],
+    link: resolvedLink,
+    links: resolvedLinks,
     category: normalizedCategory || 'all',
     startedAt: toIsoStringOrNull(row.started_at) || undefined,
     stoppedAt: toIsoStringOrNull(row.stopped_at) || undefined
@@ -2096,6 +2104,7 @@ async function initializeSupabase() {
       id: LIVE_STATUS_ID,
       status: 'OFF',
       link: null,
+      links: [],
       category: null,
       updated_at: new Date().toISOString()
     },
@@ -3648,6 +3657,7 @@ app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
       id: LIVE_STATUS_ID,
       status: 'ON',
       link: persistedLink,
+      links: liveLinks,
       category: liveCategoryId,
       started_at: now,
       stopped_at: null,
@@ -3697,6 +3707,7 @@ app.post('/api/stop', simpleAuth, requireWorkspaceRole, async (req, res) => {
       id: LIVE_STATUS_ID,
       status: 'OFF',
       link: null,
+      links: [],
       category: null,
       stopped_at: now,
       updated_at: now

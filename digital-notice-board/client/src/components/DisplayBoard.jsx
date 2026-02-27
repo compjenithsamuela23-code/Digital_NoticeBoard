@@ -569,7 +569,13 @@ const DisplayBoard = () => {
     currentAnnouncementContent || 'Media has been posted without additional text content.';
 
   useEffect(() => {
-    if (!isPlaying || displaySlides.length <= 1 || hasEmergency) return;
+    if (!isPlaying || hasEmergency) return;
+
+    const canRotatePanels = activePanelPageCount > 1;
+    const canRotateSlides = displaySlides.length > 1;
+    if (!canRotatePanels && !canRotateSlides) {
+      return;
+    }
 
     const shouldPauseAnnouncementRotation =
       !showLivePanel &&
@@ -582,10 +588,12 @@ const DisplayBoard = () => {
 
     const interval = setInterval(() => {
       setCurrentMediaGroupPage((previousPage) => {
-        if (activePanelPageCount > 1 && previousPage < activePanelPageCount - 1) {
+        if (canRotatePanels && previousPage < activePanelPageCount - 1) {
           return previousPage + 1;
         }
-        setCurrentIndex((previous) => (previous + 1) % displaySlides.length);
+        if (canRotateSlides) {
+          setCurrentIndex((previous) => (previous + 1) % displaySlides.length);
+        }
         return 0;
       });
     }, 8000);
@@ -656,7 +664,15 @@ const DisplayBoard = () => {
   ]);
 
   const actionHint = useMemo(() => {
-    if (!displaySlides.length) return 'No scheduled announcements';
+    if (!displaySlides.length) {
+      if (showLivePanel) {
+        if (activePanelPageCount > 1) {
+          return `Live split (${liveSourceTiles.length} items) • Panel ${activePanelPageIndex + 1} of ${activePanelPageCount}`;
+        }
+        return `${liveSourceTiles.length > 0 ? `Live split (${liveSourceTiles.length} items)` : 'Live mode active'}`;
+      }
+      return 'No scheduled announcements';
+    }
     const announcementLabel = `Slide ${activeSlideIndex + 1} of ${displaySlides.length}`;
     if (showLivePanel) {
       if (activePanelPageCount > 1) {
@@ -694,7 +710,15 @@ const DisplayBoard = () => {
   ]);
 
   const handleNext = () => {
-    if (!displaySlides.length || hasEmergency) return;
+    if (hasEmergency) return;
+
+    if (!displaySlides.length) {
+      if (!showLivePanel || activePanelPageCount <= 1) return;
+      setCurrentMediaGroupPage((previous) =>
+        previous < activePanelPageCount - 1 ? previous + 1 : 0
+      );
+      return;
+    }
 
     if (activePanelPageCount > 1 && activePanelPageIndex < activePanelPageCount - 1) {
       setCurrentMediaGroupPage((previous) => Math.min(previous + 1, activePanelPageCount - 1));
@@ -706,7 +730,15 @@ const DisplayBoard = () => {
   };
 
   const handlePrev = () => {
-    if (!displaySlides.length || hasEmergency) return;
+    if (hasEmergency) return;
+
+    if (!displaySlides.length) {
+      if (!showLivePanel || activePanelPageCount <= 1) return;
+      setCurrentMediaGroupPage((previous) =>
+        previous > 0 ? previous - 1 : Math.max(0, activePanelPageCount - 1)
+      );
+      return;
+    }
 
     if (activePanelPageCount > 1 && activePanelPageIndex > 0) {
       setCurrentMediaGroupPage((previous) => Math.max(previous - 1, 0));
@@ -744,7 +776,7 @@ const DisplayBoard = () => {
     setIsAudioMuted((value) => !value);
   };
 
-  if (!currentAnnouncement) {
+  if (!currentAnnouncement && !showLivePanel) {
     return (
       <div className="display-page fade-up">
         <div className="display-shell">
@@ -790,6 +822,129 @@ const DisplayBoard = () => {
 
           <footer className="display-footer">
             <p className="footer-hint">Publish notices from Admin to start the display cycle.</p>
+          </footer>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentAnnouncement && showLivePanel) {
+    return (
+      <div className="display-page fade-up">
+        <div className="display-shell">
+          <header className="display-header">
+            <div className="display-header__brand">
+              <p className="topbar__eyebrow">Digital Notice Board</p>
+              <div className={`${liveBadgeClass} live-status-pill`}>
+                <span className="badge-dot" />
+                Live Status: {liveStatusLabel}
+              </div>
+            </div>
+            <div className="display-header__title display-header__title--main">
+              <h1>Live Broadcast Mode</h1>
+              <p>
+                {displayCategoryLabel
+                  ? `Viewing: ${displayCategoryLabel}`
+                  : 'Live stream is running without scheduled announcements.'}
+              </p>
+            </div>
+            <div className="display-meta display-meta--header">
+              <TopbarStatus className="topbar-status--display" />
+              <div className="display-meta__actions">
+                <button className="btn btn--ghost btn--tiny" type="button" onClick={toggleTheme}>
+                  {isDark ? 'Light Mode' : 'Dark Mode'}
+                </button>
+                <button className="btn btn--danger btn--tiny" type="button" onClick={handleDisplayLogout}>
+                  Display Logout
+                </button>
+                {isAdmin ? (
+                  <button className="btn btn--danger btn--tiny" type="button" onClick={handleLogout}>
+                    Admin Logout
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </header>
+
+          {requestError ? <div className="auth-error">{requestError}</div> : null}
+
+          <main className="display-main display-main--single">
+            <section className="live-panel display-panel">
+              <div className="panel-head">
+                <h2>Live Broadcast</h2>
+                <div className="inline-actions live-panel-actions">
+                  <p className="topbar__subtitle">
+                    {liveSourceTiles.length > 1
+                      ? `${liveSourceTiles.length} items in split view${
+                          activePanelPageCount > 1
+                            ? ` • Panel ${activePanelPageIndex + 1} of ${activePanelPageCount}`
+                            : ''
+                        }`
+                      : liveSourceTiles.length === 1
+                        ? '1 live item active'
+                        : 'No active stream source'}
+                  </p>
+                  {activeLiveStreamEmbeds.length > 0 ? (
+                    <button className="btn btn--ghost btn--tiny" type="button" onClick={handleAudioToggle}>
+                      {isAudioMuted ? 'Unmute' : 'Mute'}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="live-body">
+                {liveTileCount > 0 ? (
+                  <div
+                    className="live-stream-grid"
+                    style={{ gridTemplateColumns: `repeat(${liveSplitColumns}, minmax(0, 1fr))` }}
+                  >
+                    {combinedLiveTiles.map((tile, index) => {
+                      const tileStream = tile.stream;
+                      return (
+                        <iframe
+                          className="live-stream-grid__frame"
+                          key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
+                          title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
+                          src={tileStream.embedUrl}
+                          allow="autoplay; encrypted-media; fullscreen"
+                          allowFullScreen
+                        />
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="live-placeholder">
+                    <h3>Live Broadcast Unavailable</h3>
+                    <p>Live mode is ON, but no stream source is currently available.</p>
+                  </div>
+                )}
+              </div>
+            </section>
+          </main>
+
+          <footer className="display-footer">
+            <p className="footer-hint">{actionHint}</p>
+
+            <div className="controls">
+              <button className="btn btn--ghost btn--tiny" type="button" onClick={handlePrev}>
+                Previous
+              </button>
+              <button
+                className="btn btn--primary btn--tiny"
+                type="button"
+                onClick={() => setIsPlaying((value) => !value)}
+              >
+                {isPlaying ? 'Pause Auto-Rotate' : 'Resume Auto-Rotate'}
+              </button>
+              <button className="btn btn--ghost btn--tiny" type="button" onClick={handleNext}>
+                Next
+              </button>
+            </div>
+
+            <div className="dot-pager">
+              {Array.from({ length: Math.max(1, activePanelPageCount) }).map((_, index) => (
+                <span key={`live-only-page-${index}`} className={index === activePanelPageIndex ? 'is-active' : ''} />
+              ))}
+            </div>
           </footer>
         </div>
       </div>
