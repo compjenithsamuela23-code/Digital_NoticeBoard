@@ -137,6 +137,21 @@ const toLiveStreamEmbed = (sourceUrl, options = {}) => {
   return null;
 };
 
+const withAutoplay = (embedUrl, provider, shouldAutoplay) => {
+  try {
+    const parsed = new URL(String(embedUrl || '').trim());
+    if (!parsed) return embedUrl;
+    if (String(provider || '').toLowerCase() === 'twitch') {
+      parsed.searchParams.set('autoplay', shouldAutoplay ? 'true' : 'false');
+    } else {
+      parsed.searchParams.set('autoplay', shouldAutoplay ? '1' : '0');
+    }
+    return parsed.toString();
+  } catch {
+    return embedUrl;
+  }
+};
+
 const getSplitColumnCount = (count) => {
   if (count <= 1) return 1;
   if (count === 2) return 2;
@@ -899,12 +914,17 @@ const DisplayBoard = () => {
                   >
                     {combinedLiveTiles.map((tile, index) => {
                       const tileStream = tile.stream;
+                      const streamSrc = withAutoplay(
+                        tileStream.embedUrl,
+                        tileStream.provider,
+                        index === 0
+                      );
                       return (
                         <iframe
                           className="live-stream-grid__frame"
                           key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
                           title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
-                          src={tileStream.embedUrl}
+                          src={streamSrc}
                           allow="autoplay; encrypted-media; fullscreen"
                           allowFullScreen
                         />
@@ -1119,12 +1139,17 @@ const DisplayBoard = () => {
                   {combinedLiveTiles.map((tile, index) => {
                     if (tile.kind === 'stream') {
                       const tileStream = tile.stream;
+                      const streamSrc = withAutoplay(
+                        tileStream.embedUrl,
+                        tileStream.provider,
+                        index === 0
+                      );
                       return (
                         <iframe
                           className="live-stream-grid__frame"
                           key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
                           title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
-                          src={tileStream.embedUrl}
+                          src={streamSrc}
                           allow="autoplay; encrypted-media; fullscreen"
                           allowFullScreen
                         />
