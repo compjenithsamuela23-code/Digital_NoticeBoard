@@ -482,6 +482,15 @@ function parseDisplayBatchSlot(value, { strict = false } = {}) {
   return parsed;
 }
 
+function normalizeAnnouncementMutationScope(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'batch' ? 'batch' : 'single';
+}
+
+function createServerDisplayBatchId() {
+  return generateId().replace(/-/g, '_');
+}
+
 function inferFileNameFromReference(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -1654,6 +1663,22 @@ async function getAnnouncementById(id) {
   return data && data.length > 0 ? data[0] : null;
 }
 
+async function getAnnouncementsByDisplayBatchId(displayBatchId) {
+  const normalizedDisplayBatchId = normalizeDisplayBatchId(displayBatchId);
+  if (!normalizedDisplayBatchId) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('announcements')
+    .select('*')
+    .eq('display_batch_id', normalizedDisplayBatchId)
+    .order('created_at', { ascending: true });
+
+  throwSupabaseError('Error reading announcement batch', error);
+  return data || [];
+}
+
 async function getUserByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
   const { data, error } = await supabase
@@ -2478,6 +2503,154 @@ app.post(
   }
 });
 
+app.post('/api/announcements/batch', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  const insertedRows = [];
+
+  try {
+    const {
+      title,
+      content,
+      priority = 1,
+      duration = 7,
+      isActive,
+      active,
+      category = '',
+      startAt,
+      endAt,
+      displayBatchId,
+      attachments
+    } = req.body || {};
+
+    const normalizedTitle = String(title || '').trim();
+    const normalizedContent = String(content || '').trim();
+    const safePriority = normalizePriorityValue(priority, 1);
+    const durationValue = Number.parseInt(duration, 10);
+    const safeDuration = Number.isNaN(durationValue) ? 7 : durationValue;
+    const attachmentList = Array.isArray(attachments) ? attachments : [];
+
+    if (attachmentList.length < 2) {
+      return res.status(400).json({
+        error: 'Batch announcements require at least 2 attachments.'
+      });
+    }
+
+    if (attachmentList.length > MAX_DISPLAY_BATCH_SLOT) {
+      return res.status(400).json({
+        error: `Batch announcement cannot exceed ${MAX_DISPLAY_BATCH_SLOT} attachments.`
+      });
+    }
+
+    const startDate = toDateOrNull(startAt) || new Date();
+    const endDate = endAt
+      ? toDateOrNull(endAt)
+      : new Date(startDate.getTime() + safeDuration * 24 * 60 * 60 * 1000);
+    if (!isValidDate(startDate) || !isValidDate(endDate)) {
+      return res.status(400).json({ error: 'Invalid startAt or endAt date' });
+    }
+
+    const normalizedDisplayBatchId =
+      normalizeDisplayBatchId(displayBatchId, { strict: true }) || createServerDisplayBatchId();
+    const createdAtIso = new Date().toISOString();
+
+    for (let index = 0; index < attachmentList.length; index += 1) {
+      const attachmentPayload = attachmentList[index] || {};
+      const attachmentInput = parseAttachmentInput(attachmentPayload);
+      if (!attachmentInput.hasAttachmentInput || !attachmentInput.attachmentPath) {
+        return res.status(400).json({
+          error: `Attachment ${index + 1} is missing a managed attachmentUrl.`
+        });
+      }
+
+      const isReady = await waitForStorageAttachmentAvailability(attachmentInput.attachmentPath);
+      if (!isReady) {
+        return res.status(409).json({
+          error: `Attachment ${index + 1} is not ready yet. Please retry in a moment.`
+        });
+      }
+
+      const normalizedMediaWidth = parsePositiveInteger(attachmentPayload.mediaWidth);
+      const normalizedMediaHeight = parsePositiveInteger(attachmentPayload.mediaHeight);
+      const attachmentMetadata = {
+        ...attachmentInput.attachmentMetadata
+      };
+      const attachmentMimeType = resolveAttachmentMimeType(attachmentMetadata.file_mime_type, [
+        attachmentMetadata.file_name,
+        attachmentInput.attachmentPath
+      ]);
+      if (attachmentMimeType) {
+        attachmentMetadata.file_mime_type = attachmentMimeType;
+      }
+
+      const announcementRow = {
+        id: generateId(),
+        title: normalizedTitle,
+        content: normalizedContent,
+        priority: safePriority,
+        duration: safeDuration,
+        is_active: toBoolean(isActive !== undefined ? isActive : active, true),
+        category: category || null,
+        image: attachmentInput.attachmentPath,
+        type: getAnnouncementType(attachmentInput.attachmentPath, normalizedContent, attachmentMimeType),
+        ...attachmentMetadata,
+        media_width: normalizedMediaWidth,
+        media_height: normalizedMediaHeight,
+        display_batch_id: normalizedDisplayBatchId,
+        display_batch_slot: index + 1,
+        created_at: createdAtIso,
+        start_at: startDate.toISOString(),
+        end_at: endDate.toISOString(),
+        expires_at: endDate.toISOString()
+      };
+
+      const inserted = await runAnnouncementInsert(
+        announcementRow,
+        `Error creating announcement batch item ${index + 1}`
+      );
+      insertedRows.push(inserted);
+    }
+
+    for (const row of insertedRows) {
+      await appendHistory(row, 'created', (req.user && req.user.email) || null);
+    }
+
+    io.emit('announcementUpdate', {
+      action: 'batch_create',
+      batchId: normalizedDisplayBatchId,
+      count: insertedRows.length,
+      timestamp: new Date().toISOString()
+    });
+
+    res.status(201).json({
+      batchId: normalizedDisplayBatchId,
+      count: insertedRows.length,
+      announcements: insertedRows.map(toAnnouncementDto)
+    });
+  } catch (error) {
+    if (insertedRows.length > 0) {
+      await Promise.all(
+        insertedRows.map(async (row) => {
+          try {
+            await removeAttachmentReference(row.image);
+          } catch (cleanupError) {
+            console.log('Note: Could not delete attachment during batch rollback:', cleanupError.message);
+          }
+          try {
+            const { error: deleteError } = await supabase.from('announcements').delete().eq('id', row.id);
+            if (deleteError) {
+              throw deleteError;
+            }
+          } catch (cleanupError) {
+            console.log('Note: Could not rollback announcement row during batch failure:', cleanupError.message);
+          }
+        })
+      );
+    }
+
+    console.error('❌ Error creating announcement batch:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.put(
   '/api/announcements/:id',
   simpleAuth,
@@ -2497,6 +2670,8 @@ app.put(
         error: 'Expired announcements are archived to history and can no longer be modified.'
       });
     }
+
+    const mutationScope = normalizeAnnouncementMutationScope(req.query && req.query.scope);
 
     const {
       title,
@@ -2542,6 +2717,111 @@ app.put(
         error: 'Provide either file upload or attachmentUrl metadata, not both.'
       });
     }
+    if (mutationScope === 'batch') {
+      const existingBatchId = normalizeDisplayBatchId(existing.display_batch_id);
+      if (!existingBatchId) {
+        return res.status(400).json({
+          error: 'This announcement is not part of a batch.'
+        });
+      }
+      if (uploadedFile || attachmentInput.hasAttachmentInput) {
+        return res.status(400).json({
+          error:
+            'Batch update does not support replacing attachments. Edit a single file to replace media/document.'
+        });
+      }
+      if (hasDisplayBatchIdField || hasDisplayBatchSlotField) {
+        return res.status(400).json({
+          error: 'Batch identity/slot cannot be changed during batch update.'
+        });
+      }
+
+      const batchRows = await getAnnouncementsByDisplayBatchId(existingBatchId);
+      if (!batchRows || batchRows.length === 0) {
+        return res.status(404).json({ error: 'Announcement batch not found.' });
+      }
+      if (batchRows.some((row) => isAnnouncementExpired(row))) {
+        return res.status(410).json({
+          error: 'This batch contains expired announcements and can no longer be modified together.'
+        });
+      }
+
+      const anchorRow = batchRows.find((row) => row.id === existing.id) || batchRows[0];
+      const prevStart = toDateOrNull(anchorRow.start_at) || new Date();
+      const prevEnd = toDateOrNull(anchorRow.end_at) || new Date();
+      const parsedStart = startAt ? toDateOrNull(startAt) : null;
+      const newStart = parsedStart || prevStart;
+      const parsedDuration = duration ? Number.parseInt(duration, 10) : null;
+      const safeDuration = Number.isNaN(parsedDuration) ? null : parsedDuration;
+      const newEnd = endAt
+        ? toDateOrNull(endAt)
+        : safeDuration
+          ? new Date(newStart.getTime() + safeDuration * 24 * 60 * 60 * 1000)
+          : prevEnd;
+
+      if (!isValidDate(newStart) || !isValidDate(newEnd)) {
+        return res.status(400).json({ error: 'Invalid startAt or endAt date' });
+      }
+
+      const nextTitle = hasTitleField ? normalizedTitle : String(anchorRow.title || '').trim();
+      const nextContent = hasContentField ? normalizedContent : String(anchorRow.content || '').trim();
+      const hasAnyAttachmentInBatch = batchRows.some((row) => Boolean(row.image));
+      if (!nextTitle && !nextContent && !hasAnyAttachmentInBatch) {
+        return res.status(400).json({
+          error: 'Add at least one: title, content, image/video, or document attachment.'
+        });
+      }
+
+      const batchUpdateRow = {
+        start_at: newStart.toISOString(),
+        end_at: newEnd.toISOString(),
+        expires_at: newEnd.toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      if (hasTitleField) batchUpdateRow.title = normalizedTitle;
+      if (hasContentField) batchUpdateRow.content = normalizedContent;
+      if (priority !== undefined && priority !== null && String(priority).trim() !== '') {
+        batchUpdateRow.priority = normalizePriorityValue(priority, anchorRow.priority);
+      }
+      if (duration && safeDuration !== null) {
+        batchUpdateRow.duration = safeDuration;
+      }
+      if (isActive !== undefined || active !== undefined) {
+        batchUpdateRow.is_active = toBoolean(
+          isActive !== undefined ? isActive : active,
+          anchorRow.is_active
+        );
+      }
+      if (category !== undefined) {
+        batchUpdateRow.category = category || null;
+      }
+
+      const updatedRows = await runAnnouncementUpdate(
+        batchUpdateRow,
+        (query) => query.eq('display_batch_id', existingBatchId).select('*'),
+        'Error updating announcement batch'
+      );
+
+      for (const row of updatedRows || []) {
+        await appendHistory(row, 'updated', (req.user && req.user.email) || null);
+      }
+
+      io.emit('announcementUpdate', {
+        action: 'batch_update',
+        batchId: existingBatchId,
+        count: (updatedRows || []).length,
+        timestamp: new Date().toISOString()
+      });
+
+      return res.json({
+        scope: 'batch',
+        batchId: existingBatchId,
+        count: (updatedRows || []).length,
+        announcements: (updatedRows || []).map(toAnnouncementDto)
+      });
+    }
+
     if (attachmentInput.hasAttachmentInput && attachmentInput.attachmentPath) {
       const isReady = await waitForStorageAttachmentAvailability(attachmentInput.attachmentPath);
       if (!isReady) {
@@ -2671,6 +2951,51 @@ app.delete('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (re
     if (!existing) {
       return res.status(404).json({ error: 'Announcement not found' });
     }
+    const mutationScope = normalizeAnnouncementMutationScope(req.query && req.query.scope);
+    if (mutationScope === 'batch') {
+      const existingBatchId = normalizeDisplayBatchId(existing.display_batch_id);
+      if (!existingBatchId) {
+        return res.status(400).json({
+          error: 'This announcement is not part of a batch.'
+        });
+      }
+
+      const batchRows = await getAnnouncementsByDisplayBatchId(existingBatchId);
+      if (!batchRows || batchRows.length === 0) {
+        return res.status(404).json({ error: 'Announcement batch not found.' });
+      }
+      if (batchRows.some((row) => isAnnouncementExpired(row))) {
+        return res.status(410).json({
+          error: 'This batch contains expired announcements and can no longer be deleted together.'
+        });
+      }
+
+      for (const row of batchRows) {
+        await removeAttachmentReference(row.image);
+        await appendHistory(row, 'deleted', (req.user && req.user.email) || null);
+      }
+
+      const { error: batchDeleteError } = await supabase
+        .from('announcements')
+        .delete()
+        .eq('display_batch_id', existingBatchId);
+      throwSupabaseError('Error deleting announcement batch', batchDeleteError);
+
+      io.emit('announcementUpdate', {
+        action: 'batch_delete',
+        batchId: existingBatchId,
+        count: batchRows.length,
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`✅ Deleted announcement batch: ${existingBatchId} (${batchRows.length} items)`);
+      return res.json({
+        message: 'Announcement batch deleted successfully',
+        batchId: existingBatchId,
+        count: batchRows.length
+      });
+    }
+
     if (isAnnouncementExpired(existing)) {
       return res.status(410).json({
         error: 'Expired announcements are archived to history and can no longer be deleted.'
@@ -3297,6 +3622,7 @@ app.get('/', (req, res) => {
         public: 'GET /api/announcements/public',
         all: 'GET /api/announcements',
         create: 'POST /api/announcements (with image/document)',
+        createBatch: 'POST /api/announcements/batch (multiple attachments)',
         update: 'PUT /api/announcements/:id',
         delete: 'DELETE /api/announcements/:id'
       },

@@ -5,6 +5,8 @@
 1. Open Supabase SQL Editor and run `digital-notice-board/server/supabase/schema.sql`.
    - For existing deployments upgrading from the old 4-slot batch limit, also run:
    - `digital-notice-board/server/supabase/migration_display_batch_slot_1_to_24.sql`
+   - To enforce display batch integrity checks on older databases, also run:
+   - `digital-notice-board/server/supabase/migration_display_batch_pair_consistency.sql`
 2. Add these variables in the root `.env`:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`
@@ -155,6 +157,7 @@ Deploy as two Vercel projects from the same repo:
 
 Note for Vercel uploads:
 - Admin now uses signed direct upload to Supabase Storage for attachments (large files bypass Vercel request-body limits).
+- Multi-file announcements now use `POST /api/announcements/batch` when all files are directly uploaded, reducing partial-save risk.
 - Direct upload max size is 50MB per file (bucket limit), while legacy multipart fallback remains only for small files.
 
 If you see `404: NOT_FOUND` right after Vercel deploy, confirm you either:

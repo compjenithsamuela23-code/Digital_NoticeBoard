@@ -229,6 +229,17 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     () => mediaFiles.filter((file) => isImageFile(file)).length,
     [mediaFiles]
   );
+  const getBatchAttachmentCount = useCallback(
+    (announcement) => {
+      const batchId = String(announcement?.displayBatchId || '').trim();
+      if (!batchId) return 1;
+      const scoped = announcements.filter(
+        (item) => String(item?.displayBatchId || '').trim() === batchId
+      );
+      return scoped.length > 0 ? scoped.length : 1;
+    },
+    [announcements]
+  );
 
   const handleAuthFailure = useCallback(() => {
     clearWorkspaceSession();
@@ -319,6 +330,18 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const matchedCategory = categories.find((category) => category.id === liveCategory);
     return matchedCategory ? matchedCategory.name : 'Selected category';
   }, [categories, liveCategory]);
+
+  const editingAnnouncementPreview = useMemo(() => {
+    if (!editingId) return null;
+    return announcements.find((announcement) => announcement.id === editingId) || null;
+  }, [announcements, editingId]);
+  const editingBatchCount = useMemo(
+    () => (editingAnnouncementPreview ? getBatchAttachmentCount(editingAnnouncementPreview) : 1),
+    [editingAnnouncementPreview, getBatchAttachmentCount]
+  );
+  const isEditingBatchGroup =
+    Boolean(editingAnnouncementPreview && editingAnnouncementPreview.displayBatchId) &&
+    editingBatchCount > 1;
 
   const fetchAnnouncements = useCallback(async () => {
     try {
@@ -521,6 +544,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       const editingAnnouncement = editingId
         ? announcements.find((announcement) => announcement.id === editingId)
         : null;
+      const editingBatchSize = editingAnnouncement ? getBatchAttachmentCount(editingAnnouncement) : 1;
       const hasExistingAttachment = Boolean(editingAnnouncement && editingAnnouncement.image);
       const selectedMediaFiles = [...mediaFiles];
       const selectedDocumentFiles = [...documentFiles];
@@ -547,6 +571,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
       const startAtIso = toApiDateTime(formData.startAt);
       const endAtIso = toApiDateTime(formData.endAt);
+
       const appendBaseFields = (payload, options = {}) => {
         payload.append('title', normalizedTitle);
         payload.append('content', normalizedContent);
@@ -572,6 +597,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         }
       };
 
+      const appendDirectUploadMetadata = (payload, directUploadPayload) => {
+        if (!directUploadPayload) return;
+        payload.append('attachmentUrl', directUploadPayload.attachmentUrl);
+        payload.append('attachmentFileName', directUploadPayload.attachmentFileName);
+        payload.append('attachmentMimeType', directUploadPayload.attachmentMimeType);
+        payload.append('attachmentFileSizeBytes', String(directUploadPayload.attachmentFileSizeBytes || ''));
+      };
+
       const appendAttachmentPayload = async (payload, file, kind) => {
         if (!file) return;
 
@@ -590,18 +623,38 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         }
 
         if (directUploadPayload) {
-          payload.append('attachmentUrl', directUploadPayload.attachmentUrl);
-          payload.append('attachmentFileName', directUploadPayload.attachmentFileName);
-          payload.append('attachmentMimeType', directUploadPayload.attachmentMimeType);
-          payload.append(
-            'attachmentFileSizeBytes',
-            String(directUploadPayload.attachmentFileSizeBytes || '')
-          );
+          appendDirectUploadMetadata(payload, directUploadPayload);
           return;
         }
 
         if (shouldUseMultipartUpload) {
           payload.append(kind === 'document' ? 'document' : 'image', file);
+        }
+      };
+
+      const submitLegacyMultipartBatch = async (displayBatchId, preparedEntries = []) => {
+        for (let index = 0; index < preparedEntries.length; index += 1) {
+          const entry = preparedEntries[index];
+          const file = entry.file;
+          const selectedKind = entry.kind;
+          const payload = new FormData();
+          appendBaseFields(payload, {
+            mediaWidth: entry.mediaWidth,
+            mediaHeight: entry.mediaHeight,
+            displayBatchId,
+            displayBatchSlot: index + 1
+          });
+          if (entry.directUploadPayload) {
+            appendDirectUploadMetadata(payload, entry.directUploadPayload);
+          } else {
+            await appendAttachmentPayload(payload, file, selectedKind);
+          }
+
+          await apiClient.post(apiUrl('/api/announcements'), payload, {
+            ...applyWorkspaceAuth({
+              headers: { 'Content-Type': 'multipart/form-data' }
+            })
+          });
         }
       };
 
@@ -622,34 +675,77 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           await appendAttachmentPayload(payload, selectedAttachment, selectedKind);
         }
 
+        const shouldUpdateBatchScope =
+          Boolean(editingAnnouncement && editingAnnouncement.displayBatchId) &&
+          editingBatchSize > 1 &&
+          !selectedAttachment;
         await apiClient.put(apiUrl(`/api/announcements/${editingId}`), payload, {
           ...applyWorkspaceAuth({
-            headers: { 'Content-Type': 'multipart/form-data' }
+            headers: { 'Content-Type': 'multipart/form-data' },
+            params: shouldUpdateBatchScope ? { scope: 'batch' } : {}
           })
         });
       } else if (selectedAttachmentEntries.length > 1) {
         const displayBatchId = createDisplayBatchId();
+        const preparedEntries = [];
+        let shouldFallbackToLegacyMultipart = false;
 
-        for (let index = 0; index < selectedAttachmentEntries.length; index += 1) {
-          const entry = selectedAttachmentEntries[index];
-          const file = entry.file;
-          const selectedKind = entry.kind;
-          const payload = new FormData();
+        for (const entry of selectedAttachmentEntries) {
           const selectedDimensions =
-            selectedKind === 'media' ? mediaDimensionsByKey[getDimensionLookupKey(file)] || {} : {};
-          appendBaseFields(payload, {
-            mediaWidth: selectedDimensions.width,
-            mediaHeight: selectedDimensions.height,
-            displayBatchId,
-            displayBatchSlot: index + 1
-          });
-          await appendAttachmentPayload(payload, file, selectedKind);
+            entry.kind === 'media'
+              ? mediaDimensionsByKey[getDimensionLookupKey(entry.file)] || {}
+              : {};
+          try {
+            const directUploadPayload = await uploadAttachmentToStorage(entry.file);
+            preparedEntries.push({
+              ...entry,
+              directUploadPayload,
+              mediaWidth: selectedDimensions.width,
+              mediaHeight: selectedDimensions.height
+            });
+          } catch (uploadError) {
+            const canFallbackToMultipart = entry.file.size <= MULTIPART_FALLBACK_MAX_BYTES;
+            if (!canFallbackToMultipart) {
+              throw uploadError;
+            }
+            shouldFallbackToLegacyMultipart = true;
+            preparedEntries.push({
+              ...entry,
+              directUploadPayload: null,
+              mediaWidth: selectedDimensions.width,
+              mediaHeight: selectedDimensions.height
+            });
+          }
+        }
 
-          await apiClient.post(apiUrl('/api/announcements'), payload, {
-            ...applyWorkspaceAuth({
-              headers: { 'Content-Type': 'multipart/form-data' }
-            })
-          });
+        if (shouldFallbackToLegacyMultipart) {
+          await submitLegacyMultipartBatch(displayBatchId, preparedEntries);
+        } else {
+          const batchPayload = {
+            title: normalizedTitle,
+            content: normalizedContent,
+            priority: Number(formData.priority),
+            duration: Number(formData.duration),
+            active: Boolean(formData.isActive),
+            category: formData.category || '',
+            displayBatchId,
+            attachments: preparedEntries.map((entry) => ({
+              attachmentUrl: entry.directUploadPayload.attachmentUrl,
+              attachmentFileName: entry.directUploadPayload.attachmentFileName,
+              attachmentMimeType: entry.directUploadPayload.attachmentMimeType,
+              attachmentFileSizeBytes: entry.directUploadPayload.attachmentFileSizeBytes,
+              mediaWidth: entry.mediaWidth || null,
+              mediaHeight: entry.mediaHeight || null
+            }))
+          };
+          if (startAtIso) {
+            batchPayload.startAt = startAtIso;
+          }
+          if (endAtIso) {
+            batchPayload.endAt = endAtIso;
+          }
+
+          await apiClient.post(apiUrl('/api/announcements/batch'), batchPayload, applyWorkspaceAuth());
         }
       } else {
         const payload = new FormData();
@@ -689,15 +785,27 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     }
   };
 
-  const handleDelete = async (id) => {
-    const accepted = window.confirm('Delete this announcement?');
+  const handleDelete = async (announcement) => {
+    if (!announcement || !announcement.id) return;
+    const batchItemCount = getBatchAttachmentCount(announcement);
+    const isBatchDelete = batchItemCount > 1 && announcement.displayBatchId;
+    const accepted = window.confirm(
+      isBatchDelete
+        ? `Delete this full announcement batch (${batchItemCount} attachments)?`
+        : 'Delete this announcement?'
+    );
     if (!accepted) return;
 
     try {
       setRequestError('');
-      await apiClient.delete(apiUrl(`/api/announcements/${id}`), applyWorkspaceAuth());
+      await apiClient.delete(
+        apiUrl(`/api/announcements/${announcement.id}`),
+        applyWorkspaceAuth({
+          params: isBatchDelete ? { scope: 'batch' } : {}
+        })
+      );
       await fetchAnnouncements();
-      if (editingId === id) {
+      if (editingId === announcement.id) {
         resetForm();
       }
     } catch (error) {
@@ -1643,6 +1751,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             {editingId ? <span className="pill pill--info">Editing mode</span> : null}
           </div>
 
+          {isEditingBatchGroup ? (
+            <p className="file-help">
+              This item is part of a batch with {editingBatchCount} attachments. Text/schedule updates will apply to
+              the full batch when no replacement file is selected.
+            </p>
+          ) : null}
+
           <form className="stack" onSubmit={handleSubmit}>
             <div className="field">
               <label htmlFor="announcement-category">Category</label>
@@ -1929,6 +2044,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               const noticeContent = String(announcement.content || '').trim();
               const cardTitle = noticeTitle || (announcement.image ? 'Attachment-only post' : 'Untitled notice');
               const cardContent = noticeContent || (announcement.image ? 'No text content.' : 'No content.');
+              const batchItemCount = getBatchAttachmentCount(announcement);
 
               return (
               <article className="notice-card" key={announcement.id} onClick={() => handleEdit(announcement)}>
@@ -1963,6 +2079,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     {categories.find((category) => category.id === announcement.category)?.name ||
                       'All categories'}
                   </div>
+                  {batchItemCount > 1 ? <div>Batch attachments: {batchItemCount}</div> : null}
                   <div>Created: {new Date(announcement.createdAt).toLocaleString()}</div>
                 </div>
 
@@ -1974,9 +2091,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     <button
                       className="btn btn--danger btn--tiny"
                       type="button"
-                      onClick={() => handleDelete(announcement.id)}
+                      onClick={() => handleDelete(announcement)}
                     >
-                      Delete
+                      {batchItemCount > 1 ? 'Delete Batch' : 'Delete'}
                     </button>
                   </div>
 
