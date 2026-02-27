@@ -414,27 +414,19 @@ const DisplayBoard = () => {
     [currentSlide]
   );
   const currentAnnouncementMediaGroupCount = currentAnnouncementMediaGroup.length;
-  const currentAnnouncementMediaPageCount = Math.max(
+  const announcementMediaPageCount = Math.max(
     1,
     Math.ceil(currentAnnouncementMediaGroupCount / MAX_VISIBLE_SPLIT_ITEMS)
   );
-  const activeMediaGroupPage = Math.min(
+  const activeAnnouncementMediaPage = Math.min(
     currentMediaGroupPage,
-    Math.max(0, currentAnnouncementMediaPageCount - 1)
+    Math.max(0, announcementMediaPageCount - 1)
   );
   const currentAnnouncementMediaGroupPageItems = useMemo(() => {
     if (currentAnnouncementMediaGroupCount === 0) return [];
-    const startIndex = activeMediaGroupPage * MAX_VISIBLE_SPLIT_ITEMS;
+    const startIndex = activeAnnouncementMediaPage * MAX_VISIBLE_SPLIT_ITEMS;
     return currentAnnouncementMediaGroup.slice(startIndex, startIndex + MAX_VISIBLE_SPLIT_ITEMS);
-  }, [activeMediaGroupPage, currentAnnouncementMediaGroup, currentAnnouncementMediaGroupCount]);
-
-  useEffect(() => {
-    const maxPageIndex = Math.max(0, currentAnnouncementMediaPageCount - 1);
-    if (currentMediaGroupPage <= maxPageIndex) {
-      return;
-    }
-    setCurrentMediaGroupPage(0);
-  }, [currentAnnouncementMediaPageCount, currentMediaGroupPage]);
+  }, [activeAnnouncementMediaPage, currentAnnouncementMediaGroup, currentAnnouncementMediaGroupCount]);
 
   const currentAnnouncementId = currentAnnouncement ? String(currentAnnouncement.id || '') : '';
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
@@ -509,7 +501,7 @@ const DisplayBoard = () => {
       })
       .slice(0, MAX_VISIBLE_SPLIT_ITEMS);
   }, [announcementLiveLinks, globalLiveLinks, isAudioMuted, isLiveOn]);
-  const combinedLiveTiles = useMemo(() => {
+  const liveSourceTiles = useMemo(() => {
     if (!showLivePanel) return [];
     const tiles = [];
 
@@ -521,7 +513,7 @@ const DisplayBoard = () => {
       });
     });
 
-    currentAnnouncementMediaGroupPageItems.forEach((announcement, index) => {
+    currentAnnouncementMediaGroup.forEach((announcement, index) => {
       if (!announcement || !announcement.image) return;
       tiles.push({
         id: `announcement-${announcement.id || index}`,
@@ -530,19 +522,37 @@ const DisplayBoard = () => {
       });
     });
 
-    return tiles.slice(0, MAX_VISIBLE_SPLIT_ITEMS);
-  }, [activeLiveStreamEmbeds, currentAnnouncementMediaGroupPageItems, showLivePanel]);
+    return tiles;
+  }, [activeLiveStreamEmbeds, currentAnnouncementMediaGroup, showLivePanel]);
+  const livePageCount = Math.max(1, Math.ceil(liveSourceTiles.length / MAX_VISIBLE_SPLIT_ITEMS));
+  const activeLivePage = Math.min(currentMediaGroupPage, Math.max(0, livePageCount - 1));
+  const combinedLiveTiles = useMemo(() => {
+    if (!showLivePanel || liveSourceTiles.length === 0) return [];
+    const startIndex = activeLivePage * MAX_VISIBLE_SPLIT_ITEMS;
+    return liveSourceTiles.slice(startIndex, startIndex + MAX_VISIBLE_SPLIT_ITEMS);
+  }, [activeLivePage, liveSourceTiles, showLivePanel]);
   const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementMediaGroupCount > 0;
   const isAnnouncementMediaShownInLivePanel = showLivePanel && combinedLiveTiles.some(
     (tile) => tile.kind === 'announcement'
   );
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
   const isSingleColumnLayout = !showSecondaryPanel;
+  const activePanelPageCount = showLivePanel ? livePageCount : announcementMediaPageCount;
+  const activePanelPageIndex = showLivePanel ? activeLivePage : activeAnnouncementMediaPage;
+
+  useEffect(() => {
+    const maxPageIndex = Math.max(0, activePanelPageCount - 1);
+    if (currentMediaGroupPage <= maxPageIndex) {
+      return;
+    }
+    setCurrentMediaGroupPage(maxPageIndex);
+  }, [activePanelPageCount, currentMediaGroupPage]);
+
   const announcementMediaStatusLabel =
     currentAnnouncementMediaGroupCount > 1
       ? `Posted ${currentAnnouncementMediaGroupCount} attachments${
-          currentAnnouncementMediaPageCount > 1
-            ? ` • Panel ${activeMediaGroupPage + 1} of ${currentAnnouncementMediaPageCount}`
+          announcementMediaPageCount > 1
+            ? ` • Panel ${activeAnnouncementMediaPage + 1} of ${announcementMediaPageCount}`
             : ''
         }`
       : currentAnnouncementHasVideo
@@ -562,14 +572,17 @@ const DisplayBoard = () => {
     if (!isPlaying || displaySlides.length <= 1 || hasEmergency) return;
 
     const shouldPauseAnnouncementRotation =
-      currentAnnouncementMediaGroupCount <= 1 && currentAnnouncementHasDocument && documentSlideCount > 1;
+      !showLivePanel &&
+      currentAnnouncementMediaGroupCount <= 1 &&
+      currentAnnouncementHasDocument &&
+      documentSlideCount > 1;
     if (shouldPauseAnnouncementRotation) {
       return;
     }
 
     const interval = setInterval(() => {
       setCurrentMediaGroupPage((previousPage) => {
-        if (currentAnnouncementMediaPageCount > 1 && previousPage < currentAnnouncementMediaPageCount - 1) {
+        if (activePanelPageCount > 1 && previousPage < activePanelPageCount - 1) {
           return previousPage + 1;
         }
         setCurrentIndex((previous) => (previous + 1) % displaySlides.length);
@@ -579,13 +592,14 @@ const DisplayBoard = () => {
 
     return () => clearInterval(interval);
   }, [
+    activePanelPageCount,
     currentAnnouncementHasDocument,
     currentAnnouncementMediaGroupCount,
-    currentAnnouncementMediaPageCount,
     displaySlides.length,
     documentSlideCount,
     hasEmergency,
-    isPlaying
+    isPlaying,
+    showLivePanel
   ]);
 
   const categoryLabel = currentAnnouncement
@@ -608,6 +622,7 @@ const DisplayBoard = () => {
     if (
       !isPlaying ||
       hasEmergency ||
+      showLivePanel ||
       displaySlides.length <= 1 ||
       currentAnnouncementMediaGroupCount > 1 ||
       !currentAnnouncementHasDocument ||
@@ -636,40 +651,53 @@ const DisplayBoard = () => {
     documentSlideCount,
     documentSlideIndex,
     hasEmergency,
-    isPlaying
+    isPlaying,
+    showLivePanel
   ]);
 
   const actionHint = useMemo(() => {
     if (!displaySlides.length) return 'No scheduled announcements';
     const announcementLabel = `Slide ${activeSlideIndex + 1} of ${displaySlides.length}`;
+    if (showLivePanel) {
+      if (activePanelPageCount > 1) {
+        return `${announcementLabel} • Live split (${liveSourceTiles.length} items) • Panel ${
+          activePanelPageIndex + 1
+        } of ${activePanelPageCount}`;
+      }
+      return `${announcementLabel} • Live split (${liveSourceTiles.length} items)`;
+    }
     if (currentAnnouncementMediaGroupCount > 1) {
-      if (currentAnnouncementMediaPageCount > 1) {
+      if (announcementMediaPageCount > 1) {
         return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments) • Panel ${
-          activeMediaGroupPage + 1
-        } of ${currentAnnouncementMediaPageCount}`;
+          activeAnnouncementMediaPage + 1
+        } of ${announcementMediaPageCount}`;
       }
       return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments)`;
     }
-    if (currentAnnouncementHasDocument && documentSlideCount > 1) {
+    if (!showLivePanel && currentAnnouncementHasDocument && documentSlideCount > 1) {
       return `${announcementLabel} • Page ${documentSlideIndex} of ${documentSlideCount}`;
     }
     return announcementLabel;
   }, [
+    activeAnnouncementMediaPage,
     activeSlideIndex,
-    activeMediaGroupPage,
+    activePanelPageCount,
+    activePanelPageIndex,
+    announcementMediaPageCount,
     currentAnnouncementMediaGroupCount,
-    currentAnnouncementMediaPageCount,
     currentAnnouncementHasDocument,
     displaySlides.length,
     documentSlideCount,
-    documentSlideIndex
+    documentSlideIndex,
+    liveSourceTiles.length,
+    showLivePanel
   ]);
 
   const handleNext = () => {
     if (!displaySlides.length || hasEmergency) return;
 
-    if (currentAnnouncementMediaPageCount > 1 && activeMediaGroupPage < currentAnnouncementMediaPageCount - 1) {
-      setCurrentMediaGroupPage((previous) => Math.min(previous + 1, currentAnnouncementMediaPageCount - 1));
+    if (activePanelPageCount > 1 && activePanelPageIndex < activePanelPageCount - 1) {
+      setCurrentMediaGroupPage((previous) => Math.min(previous + 1, activePanelPageCount - 1));
       return;
     }
 
@@ -680,23 +708,14 @@ const DisplayBoard = () => {
   const handlePrev = () => {
     if (!displaySlides.length || hasEmergency) return;
 
-    if (currentAnnouncementMediaPageCount > 1 && activeMediaGroupPage > 0) {
+    if (activePanelPageCount > 1 && activePanelPageIndex > 0) {
       setCurrentMediaGroupPage((previous) => Math.max(previous - 1, 0));
       return;
     }
 
     const previousSlideIndex = (activeSlideIndex - 1 + displaySlides.length) % displaySlides.length;
-    const previousSlideMediaCount = Number.parseInt(
-      displaySlides[previousSlideIndex]?.mediaItems?.length || 0,
-      10
-    );
-    const previousSlidePageCount = Math.max(
-      1,
-      Math.ceil(previousSlideMediaCount / MAX_VISIBLE_SPLIT_ITEMS)
-    );
-
     setCurrentIndex(previousSlideIndex);
-    setCurrentMediaGroupPage(previousSlidePageCount > 1 ? previousSlidePageCount - 1 : 0);
+    setCurrentMediaGroupPage(0);
   };
 
   const handleLogout = async () => {
@@ -919,9 +938,13 @@ const DisplayBoard = () => {
               <h2>Live Broadcast</h2>
               <div className="inline-actions live-panel-actions">
                 <p className="topbar__subtitle">
-                  {liveTileCount > 1
-                    ? `${liveTileCount} items in split view`
-                    : liveTileCount === 1
+                  {liveSourceTiles.length > 1
+                    ? `${liveSourceTiles.length} items in split view${
+                        activePanelPageCount > 1
+                          ? ` • Panel ${activePanelPageIndex + 1} of ${activePanelPageCount}`
+                          : ''
+                      }`
+                    : liveSourceTiles.length === 1
                       ? '1 live item active'
                       : 'No active stream or attachment'}
                 </p>
