@@ -86,8 +86,11 @@ const detectMediaDimensions = (file) =>
   });
 
 const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
-const MEDIA_ACCEPT =
-  'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
+const IMAGE_ACCEPT =
+  'image/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2';
+const VIDEO_ACCEPT =
+  'video/*,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
+const MEDIA_ACCEPT = `${IMAGE_ACCEPT},${VIDEO_ACCEPT}`;
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 const MAX_BATCH_ATTACHMENTS = 24;
 const MAX_LIVE_LINKS = 4;
@@ -104,6 +107,30 @@ const isLikelyMediaFile = (file) => {
   const mime = String(file?.type || '').toLowerCase();
   if (!mime) return true;
   return mime.startsWith('image/') || mime.startsWith('video/');
+};
+
+const isVideoFile = (file) => {
+  const mime = String(file?.type || '').toLowerCase();
+  if (mime.startsWith('video/')) return true;
+  const name = String(file?.name || '').toLowerCase();
+  return /\.(mp4|m4v|m4p|mov|avi|mkv|webm|ogg|ogv|flv|f4v|wmv|asf|ts|m2ts|mts|3gp|3g2|mpg|mpeg|mpe|vob|mxf|rm|rmvb|qt|hevc|h265|h264|r3d|braw|cdng|prores|dnxhd|dnxhr|dv|mjpeg)$/.test(
+    name
+  );
+};
+
+const isImageFile = (file) => {
+  const mime = String(file?.type || '').toLowerCase();
+  if (mime.startsWith('image/')) return true;
+  const name = String(file?.name || '').toLowerCase();
+  return /\.(jpg|jpeg|png|gif|bmp|tif|tiff|webp|avif|heif|heic|apng|svg|ai|eps|psd|raw|dng|cr2|cr3|nef|arw|orf|rw2)$/.test(
+    name
+  );
+};
+
+const getMediaKindLabel = (file) => {
+  if (isVideoFile(file)) return 'Video';
+  if (isImageFile(file)) return 'Image';
+  return 'Media';
 };
 
 const createDisplayBatchId = () => {
@@ -168,6 +195,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [staffAccessSaving, setStaffAccessSaving] = useState(false);
   const [requestError, setRequestError] = useState('');
   const mediaInputRef = useRef(null);
+  const videoInputRef = useRef(null);
   const mediaReplaceInputRef = useRef(null);
   const documentInputRef = useRef(null);
   const documentReplaceInputRef = useRef(null);
@@ -193,6 +221,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   const workspaceLoginRoute = isStaffWorkspace ? '/staff/login' : '/admin/login';
   const workspaceHistoryRoute = isStaffWorkspace ? '/staff/history' : '/admin/history';
+  const selectedVideoCount = useMemo(
+    () => mediaFiles.filter((file) => isVideoFile(file)).length,
+    [mediaFiles]
+  );
+  const selectedImageCount = useMemo(
+    () => mediaFiles.filter((file) => isImageFile(file)).length,
+    [mediaFiles]
+  );
 
   const handleAuthFailure = useCallback(() => {
     clearWorkspaceSession();
@@ -468,6 +504,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setMediaReplaceIndex(-1);
     setDocumentReplaceIndex(-1);
     if (mediaInputRef.current) mediaInputRef.current.value = '';
+    if (videoInputRef.current) videoInputRef.current.value = '';
     if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
     if (documentInputRef.current) documentInputRef.current.value = '';
     if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
@@ -691,29 +728,58 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setMediaReplaceIndex(-1);
     setDocumentReplaceIndex(-1);
     if (mediaInputRef.current) mediaInputRef.current.value = '';
+    if (videoInputRef.current) videoInputRef.current.value = '';
     if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
     if (documentInputRef.current) documentInputRef.current.value = '';
     if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleImageChange = (event) => {
-    const incomingFiles = Array.from(event.target.files || []);
-    if (mediaInputRef.current) {
-      mediaInputRef.current.value = '';
+  const appendMediaFiles = (incomingFiles, mode = 'all') => {
+    if (!Array.isArray(incomingFiles) || incomingFiles.length === 0) {
+      return;
     }
-    if (incomingFiles.length === 0) return;
+
+    const filteredFiles = incomingFiles.filter((file) => {
+      if (!file) return false;
+      if (mode === 'image') return isImageFile(file);
+      if (mode === 'video') return isVideoFile(file);
+      return isLikelyMediaFile(file);
+    });
+
+    if (filteredFiles.length === 0) {
+      setRequestError(
+        mode === 'video'
+          ? 'Please select video files only in Video Upload.'
+          : mode === 'image'
+            ? 'Please select image files only in Image Upload.'
+            : 'Please select image or video files in Media Upload.'
+      );
+      return;
+    }
+
+    if (filteredFiles.length !== incomingFiles.length) {
+      setRequestError(
+        mode === 'video'
+          ? 'Some non-video files were ignored. Only video files were added.'
+          : mode === 'image'
+            ? 'Some non-image files were ignored. Only image files were added.'
+            : 'Some non-media files were ignored. Only image/video files were added.'
+      );
+    } else {
+      setRequestError('');
+    }
 
     if (editingId) {
-      const selectedFile = incomingFiles[0] || null;
+      const selectedFile = filteredFiles[0] || null;
       if (!selectedFile) return;
 
       revokeObjectUrls(mediaPreviewUrls);
       setMediaFiles([selectedFile]);
       setMediaPreviewUrls([URL.createObjectURL(selectedFile)]);
-      setRequestError(
-        incomingFiles.length > 1 ? 'Editing mode supports only one replacement attachment.' : ''
-      );
+      if (filteredFiles.length > 1 || incomingFiles.length > 1) {
+        setRequestError('Editing mode supports only one replacement attachment.');
+      }
       return;
     }
 
@@ -725,22 +791,34 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    const boundedFiles = incomingFiles.slice(0, remainingSlotCount);
-    if (incomingFiles.length > remainingSlotCount) {
+    const boundedFiles = filteredFiles.slice(0, remainingSlotCount);
+    if (filteredFiles.length > remainingSlotCount) {
       setRequestError(
         `Only ${remainingSlotCount} more attachment${remainingSlotCount === 1 ? '' : 's'} can be added.`
       );
-    } else {
-      setRequestError('');
     }
 
-    if (boundedFiles.length === 0) {
-      return;
-    }
+    if (boundedFiles.length === 0) return;
 
     const nextPreviewUrls = boundedFiles.map((file) => URL.createObjectURL(file));
     setMediaFiles((previous) => [...previous, ...boundedFiles]);
     setMediaPreviewUrls((previous) => [...previous, ...nextPreviewUrls]);
+  };
+
+  const handleImageChange = (event) => {
+    const incomingFiles = Array.from(event.target.files || []);
+    if (mediaInputRef.current) {
+      mediaInputRef.current.value = '';
+    }
+    appendMediaFiles(incomingFiles, 'image');
+  };
+
+  const handleVideoChange = (event) => {
+    const incomingFiles = Array.from(event.target.files || []);
+    if (videoInputRef.current) {
+      videoInputRef.current.value = '';
+    }
+    appendMediaFiles(incomingFiles, 'video');
   };
 
   const handleDocumentChange = (event) => {
@@ -755,7 +833,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return mime.startsWith('image/') || mime.startsWith('video/');
     });
     if (invalidMediaFile) {
-      setRequestError('Please use the Media Upload field for image or video files.');
+      setRequestError('Please use the Image Upload or Video Upload field for image/video files.');
       return;
     }
 
@@ -857,7 +935,21 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    if (!isLikelyMediaFile(selectedFile)) {
+    const existingFile = mediaFiles[targetIndex];
+    const existingIsVideo = isVideoFile(existingFile);
+    const existingIsImage = isImageFile(existingFile);
+    const selectedIsVideo = isVideoFile(selectedFile);
+    const selectedIsImage = isImageFile(selectedFile);
+
+    if (existingIsVideo && !selectedIsVideo) {
+      setRequestError('Please choose a video file to replace this video item.');
+      return;
+    }
+    if (existingIsImage && !selectedIsImage) {
+      setRequestError('Please choose an image file to replace this image item.');
+      return;
+    }
+    if (!selectedIsVideo && !selectedIsImage && !isLikelyMediaFile(selectedFile)) {
       setRequestError('Please choose an image or video file for media replacement.');
       return;
     }
@@ -889,7 +981,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     const mime = String(selectedFile.type || '').toLowerCase();
     if (mime.startsWith('image/') || mime.startsWith('video/')) {
-      setRequestError('Please use the Media Upload field for image or video files.');
+      setRequestError('Please use the Image Upload or Video Upload field for image/video files.');
       return;
     }
 
@@ -1593,14 +1685,29 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             </div>
 
             <div className="field">
-              <label htmlFor="announcement-media">Media Upload (Image/Video)</label>
+              <label htmlFor="announcement-image">Image Upload</label>
               <input
-                id="announcement-media"
+                id="announcement-image"
                 type="file"
-                accept={MEDIA_ACCEPT}
+                accept={IMAGE_ACCEPT}
                 multiple
                 onChange={handleImageChange}
                 ref={mediaInputRef}
+              />
+              <p className="file-help">
+                Add one or more images. You can keep adding images in multiple rounds.
+              </p>
+            </div>
+
+            <div className="field">
+              <label htmlFor="announcement-video">Video Upload</label>
+              <input
+                id="announcement-video"
+                type="file"
+                accept={VIDEO_ACCEPT}
+                multiple
+                onChange={handleVideoChange}
+                ref={videoInputRef}
               />
               <input
                 type="file"
@@ -1612,10 +1719,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 aria-hidden="true"
               />
               <p className="file-help">
-                Supported video: mp4, webm, ogg, mov, m4v, avi, mkv. Select up to {MAX_BATCH_ATTACHMENTS} media files.
+                Add one or more videos. You can change/remove the 2nd, 3rd, 4th, 5th, etc video before publishing.
               </p>
               <p className="file-help">
-                You can add files in multiple rounds and change/remove each selected item before publishing.
+                Total selected media limit: {MAX_BATCH_ATTACHMENTS} (current: {selectedImageCount} images,{' '}
+                {selectedVideoCount} videos).
               </p>
             </div>
 
@@ -1647,6 +1755,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               <div className="batch-preview-grid">
                 {mediaPreviewUrls.map((previewUrl, index) => {
                   const file = mediaFiles[index];
+                  const mediaKindLabel = getMediaKindLabel(file);
                   return (
                     <div className="batch-preview-card" key={`${file?.name || 'media'}-${index}`}>
                       <AttachmentPreview
@@ -1658,7 +1767,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                       />
                       <div className="batch-preview-card__actions">
                         <span className="batch-preview-card__label">
-                          Media {index + 1}
+                          {mediaKindLabel} {index + 1}
                           {file?.name ? ` • ${file.name}` : ''}
                         </span>
                         <div className="inline-actions">
@@ -1667,14 +1776,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                             type="button"
                             onClick={() => openMediaReplacePicker(index)}
                           >
-                            Change
+                            {`Change ${mediaKindLabel}`}
                           </button>
                           <button
                             className="btn btn--danger btn--tiny"
                             type="button"
                             onClick={() => removeMediaAt(index)}
                           >
-                            Remove
+                            {`Remove ${mediaKindLabel}`}
                           </button>
                         </div>
                       </div>
