@@ -3,6 +3,8 @@
 ## Supabase Setup
 
 1. Open Supabase SQL Editor and run `digital-notice-board/server/supabase/schema.sql`.
+   - For existing deployments upgrading from the old 4-slot batch limit, also run:
+   - `digital-notice-board/server/supabase/migration_display_batch_slot_1_to_24.sql`
 2. Add these variables in the root `.env`:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`

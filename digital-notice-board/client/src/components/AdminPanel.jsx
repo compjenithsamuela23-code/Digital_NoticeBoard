@@ -89,12 +89,13 @@ const DOCUMENT_ACCEPT = 'application/*,text/*,*/*';
 const MEDIA_ACCEPT =
   'image/*,video/*,.jpg,.jpeg,.png,.gif,.bmp,.tif,.tiff,.webp,.avif,.heif,.heic,.apng,.svg,.ai,.eps,.psd,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
-const MAX_BATCH_ATTACHMENTS = 4;
+const MAX_BATCH_ATTACHMENTS = 24;
+const MAX_LIVE_LINKS = 4;
 
 const parseLiveLinkList = (rawValue) =>
   [...new Set(String(rawValue || '').split(/[\n,]+/).map((item) => item.trim()).filter(Boolean))].slice(
     0,
-    MAX_BATCH_ATTACHMENTS
+    MAX_LIVE_LINKS
   );
 
 const getDimensionLookupKey = (file) => getFileIdentity(file);
@@ -1309,9 +1310,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               id="live-link"
               value={liveLinkInput}
               onChange={(event) => setLiveLinkInput(event.target.value)}
-              placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\n(Use newline or comma to add up to 4 links)"
+              placeholder={`https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\n(Use newline or comma to add up to ${MAX_LIVE_LINKS} links)`}
             />
-            <p className="file-help">You can start 1 to 4 streams at the same time.</p>
+            <p className="file-help">You can start 1 to {MAX_LIVE_LINKS} streams at the same time.</p>
           </div>
 
           <div className="field">
@@ -1438,7 +1439,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 ref={mediaInputRef}
               />
               <p className="file-help">
-                Supported video: mp4, webm, ogg, mov, m4v, avi, mkv. Select up to 4 media files.
+                Supported video: mp4, webm, ogg, mov, m4v, avi, mkv. Select up to {MAX_BATCH_ATTACHMENTS} media files.
               </p>
             </div>
 
@@ -1453,7 +1454,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 ref={documentInputRef}
               />
               <p className="file-help">
-                All document formats are accepted. Select up to 4 files total (media + document).
+                All document formats are accepted. Select up to {MAX_BATCH_ATTACHMENTS} files total (media + document).
               </p>
             </div>
 

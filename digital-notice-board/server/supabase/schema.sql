@@ -147,11 +147,11 @@ alter table history add column if not exists display_batch_slot integer null;
 alter table announcements drop constraint if exists announcements_display_batch_slot_chk;
 alter table announcements
   add constraint announcements_display_batch_slot_chk
-  check (display_batch_slot is null or display_batch_slot between 1 and 4)
+  check (display_batch_slot is null or display_batch_slot between 1 and 24)
   not valid;
 
 alter table history drop constraint if exists history_display_batch_slot_chk;
 alter table history
   add constraint history_display_batch_slot_chk
-  check (display_batch_slot is null or display_batch_slot between 1 and 4)
+  check (display_batch_slot is null or display_batch_slot between 1 and 24)
   not valid;

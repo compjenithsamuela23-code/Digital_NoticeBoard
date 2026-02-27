@@ -42,6 +42,7 @@ if (!process.env.JWT_SECRET) {
   console.log('⚠️ JWT_SECRET is not set. Falling back to SUPABASE_SERVICE_KEY.');
 }
 const LIVE_STATUS_ID = 1;
+const MAX_DISPLAY_BATCH_SLOT = 24;
 const ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS = 60 * 1000;
 const REQUIRED_SUPABASE_TABLES = ['users', 'categories', 'announcements', 'history'];
 const OPTIONAL_SUPABASE_TABLES = ['live_state'];
@@ -472,9 +473,9 @@ function normalizeDisplayBatchId(value, { strict = false } = {}) {
 function parseDisplayBatchSlot(value, { strict = false } = {}) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed)) return null;
-  if (parsed < 1 || parsed > 4) {
+  if (parsed < 1 || parsed > MAX_DISPLAY_BATCH_SLOT) {
     if (strict) {
-      throw createBadRequestError('displayBatchSlot must be between 1 and 4.');
+      throw createBadRequestError(`displayBatchSlot must be between 1 and ${MAX_DISPLAY_BATCH_SLOT}.`);
     }
     return null;
   }

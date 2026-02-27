@@ -28,9 +28,80 @@ const getYouTubeID = (url) => {
   return match ? match[1] : null;
 };
 
+const MAX_VISIBLE_SPLIT_ITEMS = 4;
+
+const getSplitColumnCount = (count) => {
+  if (count <= 1) return 1;
+  if (count === 2) return 2;
+  if (count === 3) return 3;
+  return 2;
+};
+
+const sortBatchMediaItems = (left, right) => {
+  const leftSlot = Number.parseInt(left && left.displayBatchSlot, 10);
+  const rightSlot = Number.parseInt(right && right.displayBatchSlot, 10);
+  const hasLeftSlot = Number.isFinite(leftSlot) && leftSlot > 0;
+  const hasRightSlot = Number.isFinite(rightSlot) && rightSlot > 0;
+  if (hasLeftSlot && hasRightSlot && leftSlot !== rightSlot) {
+    return leftSlot - rightSlot;
+  }
+  if (hasLeftSlot !== hasRightSlot) {
+    return hasLeftSlot ? -1 : 1;
+  }
+
+  const leftCreatedAt = left && left.createdAt ? new Date(left.createdAt).getTime() : 0;
+  const rightCreatedAt = right && right.createdAt ? new Date(right.createdAt).getTime() : 0;
+  if (leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt - rightCreatedAt;
+  }
+
+  return String((left && left.id) || '').localeCompare(String((right && right.id) || ''));
+};
+
+const toDisplaySlides = (rows = []) => {
+  const slideOrder = [];
+  const bySlideId = new Map();
+
+  rows.forEach((row, index) => {
+    if (!row) return;
+
+    const batchId = String(row.displayBatchId || '').trim();
+    const slideId = batchId ? `batch:${batchId}` : `announcement:${String(row.id || index)}`;
+    const existing = bySlideId.get(slideId);
+
+    if (existing) {
+      existing.items.push(row);
+      return;
+    }
+
+    const nextSlide = {
+      id: slideId,
+      batchId: batchId || null,
+      items: [row]
+    };
+    bySlideId.set(slideId, nextSlide);
+    slideOrder.push(nextSlide);
+  });
+
+  return slideOrder.map((slide) => {
+    const mediaItems = slide.items
+      .filter((item) => item && item.image)
+      .sort(sortBatchMediaItems);
+    const primaryAnnouncement = mediaItems[0] || slide.items[0] || null;
+
+    return {
+      id: slide.id,
+      batchId: slide.batchId,
+      announcement: primaryAnnouncement,
+      mediaItems
+    };
+  });
+};
+
 const DisplayBoard = () => {
   const [announcements, setAnnouncements] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentMediaGroupPage, setCurrentMediaGroupPage] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLink, setLiveLink] = useState(null);
@@ -204,59 +275,65 @@ const DisplayBoard = () => {
     };
   }, [fetchAnnouncements, fetchLiveStatus, socket]);
 
+  const displaySlides = useMemo(() => toDisplaySlides(announcements), [announcements]);
+
+  useEffect(() => {
+    if (!displaySlides.length) {
+      setCurrentIndex(0);
+      return;
+    }
+    setCurrentIndex((previous) => Math.min(previous, displaySlides.length - 1));
+  }, [displaySlides.length]);
+
   const emergencyIndex = useMemo(
     () =>
-      announcements.findIndex(
-        (item) => item && (item.isEmergency === true || Number(item.priority) === 0)
-      ),
-    [announcements]
+      displaySlides.findIndex((slide) => {
+        const item = slide && slide.announcement;
+        return item && (item.isEmergency === true || Number(item.priority) === 0);
+      }),
+    [displaySlides]
   );
   const hasEmergency = emergencyIndex !== -1;
 
   const activeSlideIndex = useMemo(() => {
-    if (!announcements.length) return 0;
+    if (!displaySlides.length) return 0;
     if (hasEmergency) return emergencyIndex;
-    return Math.min(currentIndex, announcements.length - 1);
-  }, [announcements.length, currentIndex, emergencyIndex, hasEmergency]);
+    return Math.min(currentIndex, displaySlides.length - 1);
+  }, [currentIndex, displaySlides.length, emergencyIndex, hasEmergency]);
+
+  const currentSlide = displaySlides[activeSlideIndex] || null;
+  const currentAnnouncement = currentSlide ? currentSlide.announcement : null;
+  const currentAnnouncementMediaGroup = useMemo(
+    () => (currentSlide && Array.isArray(currentSlide.mediaItems) ? currentSlide.mediaItems : []),
+    [currentSlide]
+  );
+  const currentAnnouncementMediaGroupCount = currentAnnouncementMediaGroup.length;
+  const currentAnnouncementMediaPageCount = Math.max(
+    1,
+    Math.ceil(currentAnnouncementMediaGroupCount / MAX_VISIBLE_SPLIT_ITEMS)
+  );
+  const activeMediaGroupPage = Math.min(
+    currentMediaGroupPage,
+    Math.max(0, currentAnnouncementMediaPageCount - 1)
+  );
+  const currentAnnouncementMediaGroupPageItems = useMemo(() => {
+    if (currentAnnouncementMediaGroupCount === 0) return [];
+    const startIndex = activeMediaGroupPage * MAX_VISIBLE_SPLIT_ITEMS;
+    return currentAnnouncementMediaGroup.slice(startIndex, startIndex + MAX_VISIBLE_SPLIT_ITEMS);
+  }, [activeMediaGroupPage, currentAnnouncementMediaGroup, currentAnnouncementMediaGroupCount]);
 
   useEffect(() => {
-    if (!isPlaying || announcements.length <= 1 || hasEmergency) return;
-
-    const activeAnnouncement = announcements[activeSlideIndex] || null;
-    const activeType = String((activeAnnouncement && activeAnnouncement.type) || '').toLowerCase();
-    const activeImagePath = String((activeAnnouncement && activeAnnouncement.image) || '');
-    const activeIsVideo =
-      activeType.includes('video') ||
-      /\.(mp4|m4v|m4p|mov|avi|mkv|webm|ogg|ogv|flv|f4v|wmv|asf|ts|m2ts|mts|3gp|3g2|mpg|mpeg|mpe|vob|mxf|rm|rmvb|qt|hevc|h265|h264|r3d|braw|cdng|prores|dnxhd|dnxhr|dv|mjpeg)$/i.test(
-        activeImagePath
-      );
-    const activeIsImage =
-      activeType.includes('image') ||
-      /\.(jpg|jpeg|png|gif|bmp|tif|tiff|webp|avif|heif|heic|apng|svg|ai|eps|psd|raw|dng|cr2|cr3|nef|arw|orf|rw2)$/i.test(
-        activeImagePath
-      );
-    const activeHasDocument =
-      Boolean(activeAnnouncement && activeAnnouncement.image) &&
-      (activeType.includes('document') || (!activeIsVideo && !activeIsImage));
-    const shouldPauseAnnouncementRotation =
-      Boolean(activeAnnouncement) && activeHasDocument && documentSlideCount > 1;
-
-    if (shouldPauseAnnouncementRotation) {
+    const maxPageIndex = Math.max(0, currentAnnouncementMediaPageCount - 1);
+    if (currentMediaGroupPage <= maxPageIndex) {
       return;
     }
+    setCurrentMediaGroupPage(0);
+  }, [currentAnnouncementMediaPageCount, currentMediaGroupPage]);
 
-    const interval = setInterval(() => {
-      setCurrentIndex((previous) => (previous + 1) % announcements.length);
-    }, 8000);
-
-    return () => clearInterval(interval);
-  }, [activeSlideIndex, announcements, documentSlideCount, hasEmergency, isPlaying]);
-
-  const currentAnnouncement = announcements[activeSlideIndex] || null;
   const currentAnnouncementId = currentAnnouncement ? String(currentAnnouncement.id || '') : '';
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
   const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
-  const currentAnnouncementHasAnyMedia = Boolean(currentAnnouncement && currentAnnouncement.image);
+  const currentAnnouncementHasAnyMedia = currentAnnouncementMediaGroupCount > 0;
   const currentAnnouncementTitle = String((currentAnnouncement && currentAnnouncement.title) || '').trim();
   const currentAnnouncementContent = String((currentAnnouncement && currentAnnouncement.content) || '').trim();
   const currentAnnouncementHasText = Boolean(currentAnnouncementTitle || currentAnnouncementContent);
@@ -289,86 +366,11 @@ const DisplayBoard = () => {
   const activeYouTubeIds = useMemo(() => {
     const sourceLinks =
       Array.isArray(liveLinks) && liveLinks.length > 0 ? liveLinks : liveLink ? [liveLink] : [];
-    return [...new Set(sourceLinks.map((item) => getYouTubeID(item)).filter(Boolean))].slice(0, 4);
+    return [...new Set(sourceLinks.map((item) => getYouTubeID(item)).filter(Boolean))].slice(
+      0,
+      MAX_VISIBLE_SPLIT_ITEMS
+    );
   }, [liveLink, liveLinks]);
-  const currentAnnouncementMediaGroup = useMemo(() => {
-    if (!currentAnnouncement || !currentAnnouncement.image) {
-      return [];
-    }
-
-    const currentBatchId = String(currentAnnouncement.displayBatchId || '').trim();
-    const normalizeForGroup = (value) => String(value || '').trim().toLowerCase();
-
-    const groupedItems = announcements.filter((item) => {
-      if (!item || !item.image) return false;
-      if (String(item.id || '') === String(currentAnnouncement.id || '')) return true;
-
-      const itemBatchId = String(item.displayBatchId || '').trim();
-      if (currentBatchId) {
-        return itemBatchId === currentBatchId;
-      }
-
-      if (itemBatchId) {
-        return false;
-      }
-
-      const sameCategory =
-        normalizeForGroup(item.category || 'all') ===
-        normalizeForGroup(currentAnnouncement.category || 'all');
-      const itemPriority = Number.parseInt(item.priority, 10);
-      const currentPriority = Number.parseInt(currentAnnouncement.priority, 10);
-      const samePriority =
-        (Number.isNaN(itemPriority) ? 1 : itemPriority) ===
-        (Number.isNaN(currentPriority) ? 1 : currentPriority);
-      const sameStartAt = normalizeForGroup(item.startAt) === normalizeForGroup(currentAnnouncement.startAt);
-      const sameEndAt = normalizeForGroup(item.endAt) === normalizeForGroup(currentAnnouncement.endAt);
-      const sameTitle = normalizeForGroup(item.title) === normalizeForGroup(currentAnnouncement.title);
-      const sameContent = normalizeForGroup(item.content) === normalizeForGroup(currentAnnouncement.content);
-
-      const itemCreatedAt = item.createdAt ? new Date(item.createdAt).getTime() : 0;
-      const currentCreatedAt = currentAnnouncement.createdAt
-        ? new Date(currentAnnouncement.createdAt).getTime()
-        : 0;
-      const isNearCreatedTime =
-        itemCreatedAt > 0 &&
-        currentCreatedAt > 0 &&
-        Math.abs(itemCreatedAt - currentCreatedAt) <= 60 * 1000;
-
-      return (
-        sameCategory &&
-        samePriority &&
-        sameStartAt &&
-        sameEndAt &&
-        sameTitle &&
-        sameContent &&
-        isNearCreatedTime
-      );
-    });
-
-    const uniqueById = Array.from(new Map(groupedItems.map((item) => [String(item.id || ''), item])).values())
-      .filter((item) => item && item.image);
-
-    const sorted = uniqueById.sort((left, right) => {
-      const leftSlot = Number.parseInt(left.displayBatchSlot, 10);
-      const rightSlot = Number.parseInt(right.displayBatchSlot, 10);
-      const hasLeftSlot = Number.isFinite(leftSlot) && leftSlot > 0;
-      const hasRightSlot = Number.isFinite(rightSlot) && rightSlot > 0;
-      if (hasLeftSlot && hasRightSlot && leftSlot !== rightSlot) {
-        return leftSlot - rightSlot;
-      }
-
-      const leftCreatedAt = left.createdAt ? new Date(left.createdAt).getTime() : 0;
-      const rightCreatedAt = right.createdAt ? new Date(right.createdAt).getTime() : 0;
-      if (leftCreatedAt !== rightCreatedAt) {
-        return leftCreatedAt - rightCreatedAt;
-      }
-
-      return String(left.id || '').localeCompare(String(right.id || ''));
-    });
-
-    return sorted.slice(0, 4);
-  }, [announcements, currentAnnouncement]);
-  const currentAnnouncementMediaGroupCount = currentAnnouncementMediaGroup.length;
   const normalizedDisplayCategory = String(displayCategoryId || 'all').trim() || 'all';
   const normalizedLiveCategory = normalizeLiveCategory(liveCategory);
   const isLiveVisibleForDisplay =
@@ -389,7 +391,7 @@ const DisplayBoard = () => {
       });
     });
 
-    currentAnnouncementMediaGroup.forEach((announcement, index) => {
+    currentAnnouncementMediaGroupPageItems.forEach((announcement, index) => {
       if (!announcement || !announcement.image) return;
       tiles.push({
         id: `announcement-${announcement.id || index}`,
@@ -398,33 +400,63 @@ const DisplayBoard = () => {
       });
     });
 
-    return tiles.slice(0, 4);
-  }, [activeYouTubeIds, currentAnnouncementMediaGroup, showLivePanel]);
-  const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementHasAnyMedia;
+    return tiles.slice(0, MAX_VISIBLE_SPLIT_ITEMS);
+  }, [activeYouTubeIds, currentAnnouncementMediaGroupPageItems, showLivePanel]);
+  const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementMediaGroupCount > 0;
   const isAnnouncementMediaShownInLivePanel = showLivePanel && combinedLiveTiles.some(
     (tile) => tile.kind === 'announcement'
   );
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
   const isSingleColumnLayout = !showSecondaryPanel;
-  const announcementMediaStatusLabel = currentAnnouncementMediaGroupCount > 1
-    ? `Posted ${currentAnnouncementMediaGroupCount} attachments`
-    : currentAnnouncementHasVideo
-      ? 'Posted video'
-      : currentAnnouncementHasDocument
-        ? 'Posted document'
-        : 'Posted image';
+  const announcementMediaStatusLabel =
+    currentAnnouncementMediaGroupCount > 1
+      ? `Posted ${currentAnnouncementMediaGroupCount} attachments${
+          currentAnnouncementMediaPageCount > 1
+            ? ` • Panel ${activeMediaGroupPage + 1} of ${currentAnnouncementMediaPageCount}`
+            : ''
+        }`
+      : currentAnnouncementHasVideo
+        ? 'Posted video'
+        : currentAnnouncementHasDocument
+          ? 'Posted document'
+          : 'Posted image';
   const liveTileCount = combinedLiveTiles.length;
-  const liveSplitColumns = liveTileCount >= 4 ? 2 : liveTileCount === 3 ? 3 : Math.max(1, liveTileCount);
-  const mediaSplitColumns =
-    currentAnnouncementMediaGroupCount >= 4
-      ? 2
-      : currentAnnouncementMediaGroupCount === 3
-        ? 3
-        : Math.max(1, currentAnnouncementMediaGroupCount);
+  const liveSplitColumns = getSplitColumnCount(liveTileCount);
+  const mediaSplitColumns = getSplitColumnCount(currentAnnouncementMediaGroupPageItems.length);
   const showAnnouncementFallbackText = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
   const announcementPanelTitle = currentAnnouncementTitle || 'Notice Attachment';
   const announcementPanelContent =
     currentAnnouncementContent || 'Media has been posted without additional text content.';
+
+  useEffect(() => {
+    if (!isPlaying || displaySlides.length <= 1 || hasEmergency) return;
+
+    const shouldPauseAnnouncementRotation =
+      currentAnnouncementMediaGroupCount <= 1 && currentAnnouncementHasDocument && documentSlideCount > 1;
+    if (shouldPauseAnnouncementRotation) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setCurrentMediaGroupPage((previousPage) => {
+        if (currentAnnouncementMediaPageCount > 1 && previousPage < currentAnnouncementMediaPageCount - 1) {
+          return previousPage + 1;
+        }
+        setCurrentIndex((previous) => (previous + 1) % displaySlides.length);
+        return 0;
+      });
+    }, 8000);
+
+    return () => clearInterval(interval);
+  }, [
+    currentAnnouncementHasDocument,
+    currentAnnouncementMediaGroupCount,
+    currentAnnouncementMediaPageCount,
+    displaySlides.length,
+    documentSlideCount,
+    hasEmergency,
+    isPlaying
+  ]);
 
   const categoryLabel = currentAnnouncement
     ? getCategoryName(currentAnnouncement.category)
@@ -434,6 +466,7 @@ const DisplayBoard = () => {
   const isEmergency = hasEmergency;
 
   useEffect(() => {
+    setCurrentMediaGroupPage(0);
     setDocumentSlideCount(1);
     setDocumentSlideIndex(1);
     previousDocumentSlideIndexRef.current = 1;
@@ -444,7 +477,8 @@ const DisplayBoard = () => {
     if (
       !isPlaying ||
       hasEmergency ||
-      announcements.length <= 1 ||
+      displaySlides.length <= 1 ||
+      currentAnnouncementMediaGroupCount > 1 ||
       !currentAnnouncementHasDocument ||
       documentSlideCount <= 1
     ) {
@@ -458,15 +492,16 @@ const DisplayBoard = () => {
 
       // Let each document complete at least one full loop and restart from page 1.
       if (documentCycleCountRef.current >= 2) {
-        setCurrentIndex((previous) => (previous + 1) % announcements.length);
+        setCurrentIndex((previous) => (previous + 1) % displaySlides.length);
         documentCycleCountRef.current = 0;
       }
     }
 
     previousDocumentSlideIndexRef.current = documentSlideIndex;
   }, [
-    announcements.length,
+    currentAnnouncementMediaGroupCount,
     currentAnnouncementHasDocument,
+    displaySlides.length,
     documentSlideCount,
     documentSlideIndex,
     hasEmergency,
@@ -474,9 +509,14 @@ const DisplayBoard = () => {
   ]);
 
   const actionHint = useMemo(() => {
-    if (!announcements.length) return 'No scheduled announcements';
-    const announcementLabel = `Slide ${activeSlideIndex + 1} of ${announcements.length}`;
+    if (!displaySlides.length) return 'No scheduled announcements';
+    const announcementLabel = `Slide ${activeSlideIndex + 1} of ${displaySlides.length}`;
     if (currentAnnouncementMediaGroupCount > 1) {
+      if (currentAnnouncementMediaPageCount > 1) {
+        return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments) • Panel ${
+          activeMediaGroupPage + 1
+        } of ${currentAnnouncementMediaPageCount}`;
+      }
       return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments)`;
     }
     if (currentAnnouncementHasDocument && documentSlideCount > 1) {
@@ -485,21 +525,47 @@ const DisplayBoard = () => {
     return announcementLabel;
   }, [
     activeSlideIndex,
-    announcements.length,
+    activeMediaGroupPage,
     currentAnnouncementMediaGroupCount,
+    currentAnnouncementMediaPageCount,
     currentAnnouncementHasDocument,
+    displaySlides.length,
     documentSlideCount,
     documentSlideIndex
   ]);
 
   const handleNext = () => {
-    if (!announcements.length || hasEmergency) return;
-    setCurrentIndex((previous) => (previous + 1) % announcements.length);
+    if (!displaySlides.length || hasEmergency) return;
+
+    if (currentAnnouncementMediaPageCount > 1 && activeMediaGroupPage < currentAnnouncementMediaPageCount - 1) {
+      setCurrentMediaGroupPage((previous) => Math.min(previous + 1, currentAnnouncementMediaPageCount - 1));
+      return;
+    }
+
+    setCurrentMediaGroupPage(0);
+    setCurrentIndex((previous) => (previous + 1) % displaySlides.length);
   };
 
   const handlePrev = () => {
-    if (!announcements.length || hasEmergency) return;
-    setCurrentIndex((previous) => (previous - 1 + announcements.length) % announcements.length);
+    if (!displaySlides.length || hasEmergency) return;
+
+    if (currentAnnouncementMediaPageCount > 1 && activeMediaGroupPage > 0) {
+      setCurrentMediaGroupPage((previous) => Math.max(previous - 1, 0));
+      return;
+    }
+
+    const previousSlideIndex = (activeSlideIndex - 1 + displaySlides.length) % displaySlides.length;
+    const previousSlideMediaCount = Number.parseInt(
+      displaySlides[previousSlideIndex]?.mediaItems?.length || 0,
+      10
+    );
+    const previousSlidePageCount = Math.max(
+      1,
+      Math.ceil(previousSlideMediaCount / MAX_VISIBLE_SPLIT_ITEMS)
+    );
+
+    setCurrentIndex(previousSlideIndex);
+    setCurrentMediaGroupPage(previousSlidePageCount > 1 ? previousSlidePageCount - 1 : 0);
   };
 
   const handleLogout = async () => {
@@ -824,7 +890,7 @@ const DisplayBoard = () => {
                       className="announcement-media-split-grid"
                       style={{ gridTemplateColumns: `repeat(${mediaSplitColumns}, minmax(0, 1fr))` }}
                     >
-                      {currentAnnouncementMediaGroup.map((item, index) => (
+                      {currentAnnouncementMediaGroupPageItems.map((item, index) => (
                         <div className="announcement-media-split-grid__item" key={item.id || `split-${index}`}>
                           <AttachmentPreview
                             filePath={item.image}
@@ -847,15 +913,29 @@ const DisplayBoard = () => {
                     </div>
                   ) : (
                     <AttachmentPreview
-                      filePath={currentAnnouncementMediaGroup[0]?.image || currentAnnouncement.image}
-                      fileName={currentAnnouncementMediaGroup[0]?.fileName || currentAnnouncement.fileName}
+                      filePath={
+                        currentAnnouncementMediaGroupPageItems[0]?.image ||
+                        currentAnnouncementMediaGroup[0]?.image ||
+                        currentAnnouncement.image
+                      }
+                      fileName={
+                        currentAnnouncementMediaGroupPageItems[0]?.fileName ||
+                        currentAnnouncementMediaGroup[0]?.fileName ||
+                        currentAnnouncement.fileName
+                      }
                       typeHint={
+                        currentAnnouncementMediaGroupPageItems[0]?.fileMimeType ||
+                        currentAnnouncementMediaGroupPageItems[0]?.type ||
                         currentAnnouncementMediaGroup[0]?.fileMimeType ||
                         currentAnnouncementMediaGroup[0]?.type ||
                         currentAnnouncement.fileMimeType ||
                         currentAnnouncement.type
                       }
-                      fileSizeBytes={currentAnnouncementMediaGroup[0]?.fileSizeBytes || currentAnnouncement.fileSizeBytes}
+                      fileSizeBytes={
+                        currentAnnouncementMediaGroupPageItems[0]?.fileSizeBytes ||
+                        currentAnnouncementMediaGroup[0]?.fileSizeBytes ||
+                        currentAnnouncement.fileSizeBytes
+                      }
                       className="media-preview--full media-preview--display media-preview--display-panel"
                       documentPreview
                       documentHideHeader
@@ -957,7 +1037,7 @@ const DisplayBoard = () => {
           </div>
 
           <div className="dot-pager">
-            {announcements.slice(0, 12).map((item, index) => (
+            {displaySlides.slice(0, 12).map((item, index) => (
               <span key={`${item.id}-${index}`} className={index === activeSlideIndex ? 'is-active' : ''} />
             ))}
           </div>
