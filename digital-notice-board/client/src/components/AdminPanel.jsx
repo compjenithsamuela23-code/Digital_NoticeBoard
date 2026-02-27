@@ -95,13 +95,28 @@ const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 const MAX_BATCH_ATTACHMENTS = 24;
 const MAX_LIVE_LINKS = 24;
 
-const isHttpUrl = (value) => {
+const parseUrl = (value) => {
   try {
-    const parsed = new URL(String(value || '').trim());
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    return new URL(String(value || '').trim());
   } catch {
-    return false;
+    return null;
   }
+};
+
+const isSupportedLiveProviderUrl = (value) => {
+  const parsed = parseUrl(value);
+  if (!parsed) return false;
+  const protocol = String(parsed.protocol || '').toLowerCase();
+  if (protocol !== 'http:' && protocol !== 'https:') return false;
+  const host = String(parsed.hostname || '')
+    .replace(/^www\./i, '')
+    .toLowerCase();
+  return (
+    host === 'youtu.be' ||
+    host.endsWith('youtube.com') ||
+    host.endsWith('vimeo.com') ||
+    host.endsWith('twitch.tv')
+  );
 };
 
 const parseLiveLinkList = (rawValue) =>
@@ -110,7 +125,7 @@ const parseLiveLinkList = (rawValue) =>
       String(rawValue || '')
         .split(/[\n,]+/)
         .map((item) => item.trim())
-        .filter((item) => item && isHttpUrl(item))
+        .filter((item) => item && isSupportedLiveProviderUrl(item))
     )
   ].slice(
     0,
@@ -122,7 +137,7 @@ const normalizeLiveLinkArray = (rawValues = []) =>
     ...new Set(
       (Array.isArray(rawValues) ? rawValues : [])
         .map((item) => String(item || '').trim())
-        .filter((item) => item && isHttpUrl(item))
+        .filter((item) => item && isSupportedLiveProviderUrl(item))
     )
   ].slice(
     0,
@@ -202,6 +217,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [liveLinks, setLiveLinks] = useState([]);
   const [liveDraftLinks, setLiveDraftLinks] = useState([]);
   const [liveCategory, setLiveCategory] = useState('all');
+  const [liveActionPending, setLiveActionPending] = useState('');
   const [announcementLiveLinkInput, setAnnouncementLiveLinkInput] = useState('');
   const [announcementLiveLinks, setAnnouncementLiveLinks] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -575,7 +591,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const addAnnouncementLiveLinksFromInput = () => {
     const parsedLinks = parseLiveLinkList(announcementLiveLinkInput);
     if (parsedLinks.length === 0) {
-      setRequestError('Paste at least one announcement live stream link.');
+      setRequestError(
+        'Paste at least one supported announcement live stream link (YouTube, Vimeo, or Twitch).'
+      );
       return;
     }
 
@@ -1195,7 +1213,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const addLiveDraftLinks = () => {
     const parsedLinks = parseLiveLinkList(liveLinkInput);
     if (parsedLinks.length === 0) {
-      setRequestError('Paste at least one valid live stream URL (https://...).');
+      setRequestError('Paste at least one supported live stream URL (YouTube, Vimeo, or Twitch).');
       return;
     }
 
@@ -1241,13 +1259,17 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   };
 
   const startLive = async () => {
+    if (liveActionPending) {
+      return;
+    }
     const parsedLinks =
       liveDraftLinks.length > 0 ? normalizeLiveLinkArray(liveDraftLinks) : parseLiveLinkList(liveLinkInput);
     if (parsedLinks.length === 0) {
-      setRequestError('Add at least one valid live stream URL before starting.');
+      setRequestError('Add at least one supported live stream URL before starting.');
       return;
     }
 
+    setLiveActionPending('start');
     try {
       setRequestError('');
       const response = await apiClient.post(
@@ -1267,13 +1289,23 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       setLiveDraftLinks(normalizeLiveLinkArray(nextLinks));
       setLiveCategory(normalizeLiveCategory(statusPayload.category || liveCategory));
       setLiveLinkInput('');
+      if (statusPayload.warning) {
+        setRequestError(String(statusPayload.warning));
+      }
     } catch (error) {
       if (handleRequestError(error, 'Failed to start live feed.')) return;
       console.error('Error starting live:', error);
+    } finally {
+      setLiveActionPending('');
+      await fetchLiveStatus();
     }
   };
 
   const stopLive = async () => {
+    if (liveActionPending) {
+      return;
+    }
+    setLiveActionPending('stop');
     try {
       setRequestError('');
       const response = await apiClient.post(apiUrl('/api/stop'), {}, applyWorkspaceAuth());
@@ -1281,9 +1313,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       setLiveLinks([]);
       setLiveDraftLinks([]);
       setLiveCategory(normalizeLiveCategory(response.data?.category || 'all'));
+      if (response.data?.warning) {
+        setRequestError(String(response.data.warning));
+      }
     } catch (error) {
       if (handleRequestError(error, 'Failed to stop live feed.')) return;
       console.error('Error stopping live:', error);
+    } finally {
+      setLiveActionPending('');
+      await fetchLiveStatus();
     }
   };
 
@@ -1877,11 +1915,21 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           </div>
 
           <div className="inline-actions">
-            <button className="btn btn--success" type="button" onClick={startLive}>
-              Start Live
+            <button
+              className="btn btn--success"
+              type="button"
+              onClick={startLive}
+              disabled={Boolean(liveActionPending)}
+            >
+              {liveActionPending === 'start' ? 'Starting...' : 'Start Live'}
             </button>
-            <button className="btn btn--danger" type="button" onClick={stopLive}>
-              Stop Live
+            <button
+              className="btn btn--danger"
+              type="button"
+              onClick={stopLive}
+              disabled={Boolean(liveActionPending) || (liveStatus !== 'ON' && liveLinks.length === 0)}
+            >
+              {liveActionPending === 'stop' ? 'Stopping...' : 'Stop Live'}
             </button>
           </div>
 

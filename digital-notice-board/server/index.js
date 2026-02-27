@@ -1264,6 +1264,28 @@ function isValidHttpUrl(value) {
   }
 }
 
+function isSupportedLiveStreamUrl(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    const protocol = String(parsed.protocol || '').toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      return false;
+    }
+
+    const host = String(parsed.hostname || '')
+      .replace(/^www\./i, '')
+      .toLowerCase();
+    return (
+      host === 'youtu.be' ||
+      host.endsWith('youtube.com') ||
+      host.endsWith('vimeo.com') ||
+      host.endsWith('twitch.tv')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function tryParseJsonArrayInput(rawValue) {
   if (rawValue === null || rawValue === undefined) {
     return { matched: false, values: [] };
@@ -1289,7 +1311,10 @@ function tryParseJsonArrayInput(rawValue) {
   }
 }
 
-function normalizeLiveLinks(rawLinks, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {}) {
+function normalizeLiveLinks(
+  rawLinks,
+  { maxLinks = MAX_GLOBAL_LIVE_LINKS, requireSupportedProvider = false } = {}
+) {
   const values = Array.isArray(rawLinks) ? rawLinks : [];
   const normalized = [];
 
@@ -1301,6 +1326,7 @@ function normalizeLiveLinks(rawLinks, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {})
     const cleaned = String(rawValue || '').trim();
     if (!cleaned) return;
     if (!isValidHttpUrl(cleaned)) return;
+    if (requireSupportedProvider && !isSupportedLiveStreamUrl(cleaned)) return;
     if (normalized.includes(cleaned)) return;
     normalized.push(cleaned);
   });
@@ -1309,7 +1335,10 @@ function normalizeLiveLinks(rawLinks, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {})
 }
 
 function normalizeAnnouncementLiveStreamLinks(rawLinks) {
-  return normalizeLiveLinks(rawLinks, { maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS });
+  return normalizeLiveLinks(rawLinks, {
+    maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS,
+    requireSupportedProvider: true
+  });
 }
 
 function parseAnnouncementLiveStreamsInput(value) {
@@ -1377,7 +1406,7 @@ function parseLiveLinksInput(linkValue, linksValue) {
     }
   }
 
-  return normalizeLiveLinks(candidates);
+  return normalizeLiveLinks(candidates, { requireSupportedProvider: true });
 }
 
 function encodeLiveLinkMetadata(linkValue, categoryValue, linksValue) {
@@ -3595,7 +3624,11 @@ app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
     const liveLinks = parseLiveLinksInput(req.body && req.body.link, req.body && req.body.links);
     const link = liveLinks[0] || null;
     const categoryInput = String((req.body && req.body.category) || '').trim();
-    if (!link) return res.status(400).json({ error: 'At least one live link is required.' });
+    if (!link) {
+      return res
+        .status(400)
+        .json({ error: 'At least one supported live link is required (YouTube, Vimeo, or Twitch).' });
+    }
 
     const isGlobalLive = !categoryInput || categoryInput.toLowerCase() === 'all';
     let liveCategoryId = null;
@@ -3633,14 +3666,23 @@ app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
       liveLinks.length > 1
         ? `links: ${liveLinks.join(', ')}`
         : `link: ${link}`;
-    await appendSystemHistory('live_started', (req.user && req.user.email) || null, {
-      title: 'Live Broadcast Started',
-      content: `Live stream started for ${liveCategoryLabel} with ${streamLabel}`,
-      type: 'system_live',
-      actionAt: now
-    });
+    let warning = '';
+    try {
+      await appendSystemHistory('live_started', (req.user && req.user.email) || null, {
+        title: 'Live Broadcast Started',
+        content: `Live stream started for ${liveCategoryLabel} with ${streamLabel}`,
+        type: 'system_live',
+        actionAt: now
+      });
+    } catch (historyError) {
+      warning = 'Live stream started, but activity log could not be saved.';
+      console.error('⚠️ Live start history logging failed:', historyError.message);
+    }
 
     const payload = data ? toLiveDto(data) : getFallbackLiveDto();
+    if (warning) {
+      payload.warning = warning;
+    }
     io.emit('liveUpdate', payload);
     res.json(payload);
   } catch (error) {
@@ -3667,14 +3709,23 @@ app.post('/api/stop', simpleAuth, requireWorkspaceRole, async (req, res) => {
     liveStateFallback.category = null;
     liveStateFallback.stoppedAt = now;
 
-    await appendSystemHistory('live_stopped', (req.user && req.user.email) || null, {
-      title: 'Live Broadcast Stopped',
-      content: 'Live stream was stopped.',
-      type: 'system_live',
-      actionAt: now
-    });
+    let warning = '';
+    try {
+      await appendSystemHistory('live_stopped', (req.user && req.user.email) || null, {
+        title: 'Live Broadcast Stopped',
+        content: 'Live stream was stopped.',
+        type: 'system_live',
+        actionAt: now
+      });
+    } catch (historyError) {
+      warning = 'Live stream stopped, but activity log could not be saved.';
+      console.error('⚠️ Live stop history logging failed:', historyError.message);
+    }
 
     const payload = data ? toLiveDto(data) : getFallbackLiveDto();
+    if (warning) {
+      payload.warning = warning;
+    }
     io.emit('liveUpdate', payload);
     res.json(payload);
   } catch (error) {
