@@ -11,6 +11,9 @@ import {
   withDisplayAuthConfig
 } from '../config/displayAuth';
 import { useTheme } from '../hooks/useTheme';
+import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
+import { usePageVisibility } from '../hooks/usePageVisibility';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
 
@@ -246,10 +249,14 @@ const DisplayBoard = () => {
   const navigate = useNavigate();
   const { socket } = useSocket();
   const { isDark, toggleTheme } = useTheme();
+  const { isOnline } = useNetworkStatus();
+  const isPageVisible = usePageVisibility();
+  const [socketConnected, setSocketConnected] = useState(Boolean(socket?.connected));
 
   const isAdmin = hasAdminSession();
   const displayCategoryId = getDisplayCategoryId();
   const displayCategoryLabel = getDisplayCategoryLabel();
+  const preferSocket = Boolean(socket) && socketConnected;
 
   const isVideoMedia = useCallback((announcement) => {
     if (!announcement || !announcement.image) return false;
@@ -295,6 +302,11 @@ const DisplayBoard = () => {
   };
 
   const fetchAnnouncements = useCallback(async () => {
+    if (!isOnline) {
+      setRequestError('Network appears offline. Waiting to reconnect...');
+      return;
+    }
+
     try {
       const categoryFilter = String(displayCategoryId || 'all').trim();
       const response = await apiClient.get(apiUrl('/api/announcements/public'), {
@@ -306,9 +318,13 @@ const DisplayBoard = () => {
       console.error('Error fetching announcements:', error);
       setRequestError(extractApiError(error, 'Unable to load announcements.'));
     }
-  }, [displayCategoryId]);
+  }, [displayCategoryId, isOnline]);
 
   const fetchCategories = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
     try {
       const response = await apiClient.get(apiUrl('/api/categories'));
       setCategories(response.data || []);
@@ -317,9 +333,13 @@ const DisplayBoard = () => {
       console.error('Error fetching categories:', error);
       setRequestError(extractApiError(error, 'Unable to load categories.'));
     }
-  }, []);
+  }, [isOnline]);
 
   const fetchLiveStatus = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
     try {
       const response = await apiClient.get(apiUrl('/api/status'));
       const statusPayload = response.data || {};
@@ -338,52 +358,84 @@ const DisplayBoard = () => {
       console.error('Error fetching live status:', error);
       setRequestError(extractApiError(error, 'Unable to load live status.'));
     }
-  }, []);
+  }, [isOnline]);
 
   useEffect(() => {
-    const initialFetch = setTimeout(() => {
+    fetchAnnouncements();
+    fetchCategories();
+    fetchLiveStatus();
+  }, [fetchAnnouncements, fetchCategories, fetchLiveStatus]);
+
+  useAdaptivePolling(fetchLiveStatus, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: preferSocket ? 25000 : 6000,
+    hiddenIntervalMs: 45000,
+    offlineIntervalMs: 90000
+  });
+
+  useAdaptivePolling(fetchAnnouncements, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: preferSocket ? 30000 : 15000,
+    hiddenIntervalMs: 50000,
+    offlineIntervalMs: 90000
+  });
+
+  useAdaptivePolling(fetchCategories, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: 180000,
+    hiddenIntervalMs: 300000,
+    offlineIntervalMs: 300000,
+    jitterRatio: 0.08
+  });
+
+  useEffect(() => {
+    const syncVisibleDisplay = () => {
+      if (!isOnline) return;
+      fetchAnnouncements();
+      fetchLiveStatus();
+    };
+    const handleOnline = () => {
+      setRequestError('');
       fetchAnnouncements();
       fetchCategories();
       fetchLiveStatus();
-    }, 0);
-
-    const livePoll = setInterval(fetchLiveStatus, 5000);
-    const announcementsPoll = setInterval(fetchAnnouncements, 15000);
-
-    const syncVisibleDisplay = () => {
-      fetchAnnouncements();
-      fetchLiveStatus();
-    };
-
-    const handleVisibilityChange = () => {
-      if (!document.hidden) {
-        syncVisibleDisplay();
-      }
     };
 
     window.addEventListener('focus', syncVisibleDisplay);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
 
     return () => {
-      clearTimeout(initialFetch);
-      clearInterval(livePoll);
-      clearInterval(announcementsPoll);
       window.removeEventListener('focus', syncVisibleDisplay);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
     };
-  }, [fetchAnnouncements, fetchCategories, fetchLiveStatus]);
+  }, [fetchAnnouncements, fetchCategories, fetchLiveStatus, isOnline]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!socket) {
+      setSocketConnected(false);
+      return;
+    }
+
+    setSocketConnected(Boolean(socket.connected));
 
     const syncOnConnect = () => {
+      setSocketConnected(true);
       fetchAnnouncements();
       fetchLiveStatus();
     };
-
-    socket.on('connect', syncOnConnect);
-    socket.on('announcementUpdate', fetchAnnouncements);
-    socket.on('liveUpdate', (data) => {
+    const handleDisconnect = () => {
+      setSocketConnected(false);
+    };
+    const handleLiveUpdate = (data) => {
       const nextLinks =
         Array.isArray(data?.links) && data.links.length > 0
           ? data.links
@@ -394,12 +446,18 @@ const DisplayBoard = () => {
       setLiveLink(data?.link || null);
       setLiveLinks(nextLinks);
       setLiveCategory(normalizeLiveCategory(data?.category));
-    });
+    };
+
+    socket.on('connect', syncOnConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('announcementUpdate', fetchAnnouncements);
+    socket.on('liveUpdate', handleLiveUpdate);
 
     return () => {
       socket.off('connect', syncOnConnect);
+      socket.off('disconnect', handleDisconnect);
       socket.off('announcementUpdate', fetchAnnouncements);
-      socket.off('liveUpdate');
+      socket.off('liveUpdate', handleLiveUpdate);
     };
   }, [fetchAnnouncements, fetchLiveStatus, socket]);
 

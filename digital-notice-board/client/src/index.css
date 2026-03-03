@@ -293,6 +293,37 @@ textarea {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(8px);
+  position: relative;
+  overflow: hidden;
+  transform: translateZ(0);
+  transition:
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.3s ease;
+}
+
+.card::after {
+  content: '';
+  position: absolute;
+  inset: -120% auto auto -35%;
+  width: 44%;
+  height: 320%;
+  background: linear-gradient(112deg, transparent 0%, rgba(255, 255, 255, 0.2) 46%, transparent 100%);
+  transform: rotate(12deg) translateX(-130%);
+  transition: transform 0.7s ease;
+  pointer-events: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--line-strong);
+  }
+
+  .card:hover::after {
+    transform: rotate(12deg) translateX(290%);
+  }
 }
 
 .card--soft {
@@ -715,6 +746,22 @@ textarea {
   font-size: 0.82rem;
   color: var(--status-weather);
   font-weight: 700;
+}
+
+.topbar-status__network {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-top: 2px;
+}
+
+.topbar-status__network.is-online {
+  color: var(--success);
+}
+
+.topbar-status__network.is-offline {
+  color: var(--danger);
+  animation: status-offline-pulse 1.2s ease-in-out infinite;
 }
 
 .topbar-status--display {
@@ -1456,6 +1503,71 @@ textarea {
   padding: 30px 20px;
   display: grid;
   place-items: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.auth-page::before,
+.auth-page::after,
+.display-page::before,
+.display-page::after {
+  content: '';
+  position: absolute;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(2px);
+}
+
+.auth-page::before,
+.display-page::before {
+  width: min(38vw, 420px);
+  height: min(38vw, 420px);
+  top: -16%;
+  left: -12%;
+  background: radial-gradient(circle at 30% 30%, rgba(47, 125, 215, 0.16), rgba(47, 125, 215, 0));
+  animation: floating-aura 9s ease-in-out infinite;
+}
+
+.auth-page::after,
+.display-page::after {
+  width: min(34vw, 360px);
+  height: min(34vw, 360px);
+  right: -12%;
+  bottom: -16%;
+  background: radial-gradient(circle at 40% 40%, rgba(217, 152, 74, 0.16), rgba(217, 152, 74, 0));
+  animation: floating-aura 11s ease-in-out infinite reverse;
+}
+
+.auth-shell,
+.display-shell,
+.app-shell {
+  position: relative;
+  z-index: 1;
+}
+
+.route-loader {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: var(--display-bg);
+}
+
+.route-loader__pulse {
+  width: clamp(160px, 28vw, 280px);
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(47, 125, 215, 0.14), rgba(47, 125, 215, 0.58), rgba(47, 125, 215, 0.14));
+  background-size: 210% 100%;
+  animation: loading-shimmer 1.45s linear infinite;
+}
+
+.route-loader__message {
+  margin-top: 14px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-soft);
 }
 
 .auth-shell {
@@ -1566,6 +1678,8 @@ textarea {
   width: 100%;
   padding: 16px;
   background: var(--display-bg);
+  position: relative;
+  overflow: hidden;
 }
 
 .display-page--emergency {
@@ -2300,6 +2414,58 @@ textarea {
   }
   50% {
     transform: scale(1.03);
+  }
+}
+
+@keyframes loading-shimmer {
+  from {
+    background-position: 220% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes floating-aura {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -14px, 0) scale(1.06);
+  }
+}
+
+@keyframes status-offline-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-up,
+  .fade-up-delay,
+  .emergency-banner,
+  .route-loader__pulse,
+  .auth-page::before,
+  .auth-page::after,
+  .display-page::before,
+  .display-page::after,
+  .topbar-status__network.is-offline {
+    animation: none !important;
+  }
+
+  .card,
+  .btn {
+    transition: none !important;
+  }
+
+  .card::after {
+    display: none;
   }
 }
 

@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const path = require('path');
 const dotenv = require('dotenv');
 const http = require('http');
@@ -46,9 +47,14 @@ const MAX_DISPLAY_BATCH_SLOT = 24;
 const MAX_GLOBAL_LIVE_LINKS = 24;
 const MAX_ANNOUNCEMENT_LIVE_LINKS = 24;
 const ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS = 60 * 1000;
+const ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(
+  10 * 1000,
+  Number.parseInt(process.env.ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS, 10) || 30 * 1000
+);
 const REQUIRED_SUPABASE_TABLES = ['users', 'categories', 'announcements', 'history'];
 const OPTIONAL_SUPABASE_TABLES = ['live_state'];
 let maintenanceInFlight = null;
+let lastMaintenanceRunAtMs = 0;
 let historyTableMode = 'unknown';
 let runtimeInitPromise = null;
 let maintenanceIntervalHandle = null;
@@ -99,6 +105,13 @@ const MAX_UPLOAD_SIZE_BYTES = IS_SERVERLESS_RUNTIME
 const MAX_UPLOAD_SIZE_MB = Math.floor(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024));
 const DIRECT_UPLOAD_MAX_SIZE_BYTES = 50 * 1024 * 1024;
 const DIRECT_UPLOAD_MAX_SIZE_MB = Math.floor(DIRECT_UPLOAD_MAX_SIZE_BYTES / (1024 * 1024));
+const CACHE_CONTROL_SHORT_PUBLIC = 'public, max-age=8, stale-while-revalidate=40';
+const CACHE_CONTROL_CATEGORIES_PUBLIC = 'public, max-age=30, stale-while-revalidate=120';
+const CACHE_CONTROL_UPLOAD_ASSETS = 'public, max-age=3600, stale-while-revalidate=86400';
+const CACHE_CONTROL_STATIC_IMMUTABLE = 'public, max-age=31536000, immutable';
+const CACHE_CONTROL_STATIC_FALLBACK = 'public, max-age=600';
+const CACHEABLE_PUBLIC_API_PATHS = new Set(['/announcements/public', '/status', '/categories']);
+const HASHED_ASSET_FILE_PATTERN = /\.[a-f0-9]{8,}\./i;
 
 const corsOrigin = configuredOrigins.length > 0 ? configuredOrigins : '*';
 const UPLOAD_DOWNLOAD_ONLY_EXTENSIONS = new Set([
@@ -134,20 +147,28 @@ app.use(
     origin: corsOrigin
   })
 );
+app.use(
+  compression({
+    threshold: 1024
+  })
+);
 app.disable('x-powered-by');
 app.set('trust proxy', TRUST_PROXY);
 app.use('/api', (req, res, next) => {
-  if (API_NO_STORE) {
+  const canUseCacheHeaders =
+    req.method === 'GET' && CACHEABLE_PUBLIC_API_PATHS.has(String(req.path || '').toLowerCase());
+  if (API_NO_STORE && !canUseCacheHeaders) {
     res.setHeader('Cache-Control', 'no-store');
   }
   next();
 });
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(
   '/uploads',
   express.static(path.join(__dirname, 'uploads'), {
     setHeaders: (res, filePath) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', CACHE_CONTROL_UPLOAD_ASSETS);
       const extension = path.extname(filePath).toLowerCase();
       if (UPLOAD_DOWNLOAD_ONLY_EXTENSIONS.has(extension)) {
         res.setHeader('Content-Disposition', 'attachment');
@@ -159,7 +180,26 @@ app.use(
 const clientDistPath = path.resolve(__dirname, '../client/dist');
 const hasClientBuild = fsSync.existsSync(clientDistPath);
 if (hasClientBuild) {
-  app.use(express.static(clientDistPath));
+  app.use(
+    express.static(clientDistPath, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        const normalized = String(filePath || '').toLowerCase();
+        if (normalized.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache');
+          return;
+        }
+
+        const baseName = path.basename(filePath);
+        if (HASHED_ASSET_FILE_PATTERN.test(baseName)) {
+          res.setHeader('Cache-Control', CACHE_CONTROL_STATIC_IMMUTABLE);
+          return;
+        }
+
+        res.setHeader('Cache-Control', CACHE_CONTROL_STATIC_FALLBACK);
+      }
+    })
+  );
 }
 
 const storage = IS_SERVERLESS_RUNTIME
@@ -2038,7 +2078,14 @@ async function archiveExpiredAnnouncements() {
   return { archived: archivedCount, deactivated: idsToDeactivate.length };
 }
 
-async function runAnnouncementMaintenance() {
+async function runAnnouncementMaintenance(options = {}) {
+  const forceRun = Boolean(options && options.force);
+  const nowMs = Date.now();
+
+  if (!forceRun && nowMs - lastMaintenanceRunAtMs < ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS) {
+    return;
+  }
+
   if (maintenanceInFlight) {
     return maintenanceInFlight;
   }
@@ -2053,6 +2100,7 @@ async function runAnnouncementMaintenance() {
           `🧾 Announcement maintenance: backfilled=${backfilled}, archivedExpired=${expired.archived}, deactivatedExpired=${expired.deactivated}`
         );
       }
+      lastMaintenanceRunAtMs = Date.now();
     } catch (error) {
       console.error('⚠️ Announcement maintenance failed:', error.message);
     } finally {
@@ -2114,7 +2162,7 @@ async function initializeSupabase() {
     console.log('⚠️ live_state table not found. Run server/supabase/schema.sql to enable persisted live status.');
   }
 
-  await runAnnouncementMaintenance();
+  await runAnnouncementMaintenance({ force: true });
   console.log('✅ Supabase initialized');
 }
 
@@ -2511,19 +2559,27 @@ app.get('/api/announcements/public', async (req, res) => {
   try {
     await runAnnouncementMaintenance();
     const requestedCategory = normalizeCategoryFilter(req.query.category);
-    const { data, error } = await supabase
+    const nowIso = new Date().toISOString();
+    let query = supabase
       .from('announcements')
       .select('*')
-      .neq('is_active', false)
-      .order('created_at', { ascending: false });
+      .eq('is_active', true)
+      .lte('start_at', nowIso)
+      .gt('end_at', nowIso);
+
+    if (requestedCategory !== 'all') {
+      query = query.or(`category.is.null,category.eq.${requestedCategory},priority.eq.0`);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
 
     throwSupabaseError('Error fetching public announcements', error);
-    const nowMs = Date.now();
-    const visibleRows = (data || []).filter((row) => isAnnouncementVisiblePublicly(row, nowMs));
-    const scopedRows = visibleRows.filter((row) =>
-      isAnnouncementVisibleForDisplayCategory(row, requestedCategory)
-    );
+    const scopedRows =
+      requestedCategory === 'all'
+        ? data || []
+        : (data || []).filter((row) => isAnnouncementVisibleForDisplayCategory(row, requestedCategory));
     const sortedRows = [...scopedRows].sort(comparePublicAnnouncements);
+    res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
     res.json(sortedRows.map(toAnnouncementDto));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2533,15 +2589,15 @@ app.get('/api/announcements/public', async (req, res) => {
 app.get('/api/announcements', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
     await runAnnouncementMaintenance();
+    const nowIso = new Date().toISOString();
     const { data, error } = await supabase
       .from('announcements')
       .select('*')
+      .gt('end_at', nowIso)
       .order('created_at', { ascending: false });
 
     throwSupabaseError('Error fetching announcements', error);
-    const nowMs = Date.now();
-    const activeRows = (data || []).filter((row) => !isAnnouncementExpired(row, nowMs));
-    res.json(activeRows.map(toAnnouncementDto));
+    res.json((data || []).map(toAnnouncementDto));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3282,6 +3338,7 @@ app.get('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (req, 
 app.get('/api/status', async (req, res) => {
   try {
     const live = await getLiveState();
+    res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
     if (!live) {
       return res.json(getFallbackLiveDto());
     }
@@ -3299,6 +3356,7 @@ app.get('/api/categories', async (req, res) => {
       .order('created_at', { ascending: true });
 
     throwSupabaseError('Error fetching categories', error);
+    res.setHeader('Cache-Control', CACHE_CONTROL_CATEGORIES_PUBLIC);
     res.json((data || []).map(toCategoryDto));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -3810,6 +3868,7 @@ app.use('/api', (req, res) => {
 
 app.get('/', (req, res) => {
   if (hasClientBuild) {
+    res.setHeader('Cache-Control', 'no-cache');
     return res.sendFile(path.join(clientDistPath, 'index.html'));
   }
 
@@ -3861,6 +3920,7 @@ app.get('/', (req, res) => {
 
 app.get(/^(?!\/api|\/uploads).*/, (req, res) => {
   if (hasClientBuild) {
+    res.setHeader('Cache-Control', 'no-cache');
     return res.sendFile(path.join(clientDistPath, 'index.html'));
   }
 
@@ -3883,7 +3943,7 @@ function ensureMaintenanceScheduler() {
   }
 
   maintenanceIntervalHandle = setInterval(() => {
-    runAnnouncementMaintenance();
+    runAnnouncementMaintenance({ force: true });
   }, ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS);
 }
 

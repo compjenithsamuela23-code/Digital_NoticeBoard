@@ -49,6 +49,17 @@ create index if not exists announcements_emergency_sort_idx
 create index if not exists announcements_category_idx
   on announcements (category);
 
+create index if not exists announcements_end_at_idx
+  on announcements (end_at);
+
+create index if not exists announcements_public_active_window_idx
+  on announcements (start_at, end_at, created_at desc)
+  where is_active = true;
+
+create index if not exists announcements_public_category_window_idx
+  on announcements (category, start_at, end_at, created_at desc)
+  where is_active = true;
+
 create table if not exists categories (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -94,6 +105,9 @@ alter table history add column if not exists row_id bigint;
 
 create index if not exists history_action_at_idx
   on history (action_at desc, row_id desc);
+
+create index if not exists history_action_action_at_idx
+  on history (action, action_at desc, row_id desc);
 
 create table if not exists live_state (
   id integer primary key,

@@ -6,6 +6,9 @@ import { clearAdminSession, hasAdminSession, withAuthConfig } from '../config/au
 import { clearStaffSession, hasStaffSession, withStaffAuthConfig } from '../config/staffAuth';
 import { apiClient, extractApiError } from '../config/http';
 import { useTheme } from '../hooks/useTheme';
+import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
+import { useNetworkStatus } from '../hooks/useNetworkStatus';
+import { usePageVisibility } from '../hooks/usePageVisibility';
 import DocumentAttachment from './DocumentAttachment';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
@@ -252,6 +255,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const navigate = useNavigate();
   const { socket } = useSocket();
   const { isDark, toggleTheme } = useTheme();
+  const { isOnline } = useNetworkStatus();
+  const isPageVisible = usePageVisibility();
+  const [socketConnected, setSocketConnected] = useState(Boolean(socket?.connected));
+  const preferSocket = Boolean(socket) && socketConnected;
 
   const applyWorkspaceAuth = useCallback(
     (config = {}) => (isStaffWorkspace ? withStaffAuthConfig(config) : withAuthConfig(config)),
@@ -391,6 +398,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     editingBatchCount > 1;
 
   const fetchAnnouncements = useCallback(async () => {
+    if (!isOnline) {
+      setRequestError('Network appears offline. Waiting to reconnect...');
+      return;
+    }
+
     try {
       const response = await apiClient.get(apiUrl('/api/announcements'), applyWorkspaceAuth());
       setAnnouncements(response.data || []);
@@ -399,9 +411,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       if (handleRequestError(error, 'Unable to load announcements.')) return;
       console.error('Error fetching announcements:', error);
     }
-  }, [applyWorkspaceAuth, handleRequestError]);
+  }, [applyWorkspaceAuth, handleRequestError, isOnline]);
 
   const fetchLiveStatus = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
     try {
       const response = await apiClient.get(apiUrl('/api/status'));
       const statusPayload = response.data || {};
@@ -420,9 +436,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     } catch (error) {
       console.error('Error fetching live status:', error);
     }
-  }, []);
+  }, [isOnline]);
 
   const fetchCategories = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
     try {
       const response = await apiClient.get(apiUrl('/api/categories'), applyWorkspaceAuth());
       setCategories(response.data || []);
@@ -431,11 +451,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       if (handleRequestError(error, 'Unable to load categories.')) return;
       console.error('Error fetching categories:', error);
     }
-  }, [applyWorkspaceAuth, handleRequestError]);
+  }, [applyWorkspaceAuth, handleRequestError, isOnline]);
 
   const fetchDisplayUsers = useCallback(async () => {
     if (!isAdminWorkspace) {
       setDisplayUsers([]);
+      return;
+    }
+    if (!isOnline) {
       return;
     }
     try {
@@ -446,11 +469,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       if (handleRequestError(error, 'Unable to load display users.')) return;
       console.error('Error fetching display users:', error);
     }
-  }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace]);
+  }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace, isOnline]);
 
   const fetchStaffUsers = useCallback(async () => {
     if (!isAdminWorkspace) {
       setStaffUsers([]);
+      return;
+    }
+    if (!isOnline) {
       return;
     }
     try {
@@ -461,7 +487,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       if (handleRequestError(error, 'Unable to load staff users.')) return;
       console.error('Error fetching staff users:', error);
     }
-  }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace]);
+  }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace, isOnline]);
 
   useEffect(() => {
     const hasWorkspaceSession = isStaffWorkspace ? hasStaffSession() : hasAdminSession();
@@ -489,20 +515,77 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     workspaceLoginRoute
   ]);
 
+  useAdaptivePolling(fetchLiveStatus, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: preferSocket ? 25000 : 6000,
+    hiddenIntervalMs: 45000,
+    offlineIntervalMs: 90000
+  });
+
+  useAdaptivePolling(fetchAnnouncements, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: preferSocket ? 30000 : 8000,
+    hiddenIntervalMs: 50000,
+    offlineIntervalMs: 90000
+  });
+
   useEffect(() => {
-    const livePoll = setInterval(fetchLiveStatus, 5000);
-    const announcementsPoll = setInterval(fetchAnnouncements, 5000);
+    const syncVisibleWorkspace = () => {
+      if (!isOnline) return;
+      fetchAnnouncements();
+      fetchLiveStatus();
+    };
+    const handleOnline = () => {
+      setRequestError('');
+      fetchAnnouncements();
+      fetchLiveStatus();
+      fetchCategories();
+      if (isAdminWorkspace) {
+        fetchDisplayUsers();
+        fetchStaffUsers();
+      }
+    };
+
+    window.addEventListener('focus', syncVisibleWorkspace);
+    window.addEventListener('online', handleOnline);
 
     return () => {
-      clearInterval(livePoll);
-      clearInterval(announcementsPoll);
+      window.removeEventListener('focus', syncVisibleWorkspace);
+      window.removeEventListener('online', handleOnline);
     };
-  }, [fetchAnnouncements, fetchLiveStatus]);
+  }, [
+    fetchAnnouncements,
+    fetchCategories,
+    fetchDisplayUsers,
+    fetchLiveStatus,
+    fetchStaffUsers,
+    isAdminWorkspace,
+    isOnline
+  ]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!socket) {
+      setSocketConnected(false);
+      return;
+    }
 
-    socket.on('liveUpdate', (payload) => {
+    setSocketConnected(Boolean(socket.connected));
+
+    const handleConnect = () => {
+      setSocketConnected(true);
+      fetchAnnouncements();
+      fetchLiveStatus();
+    };
+    const handleDisconnect = () => {
+      setSocketConnected(false);
+    };
+    const handleLiveUpdate = (payload) => {
       const nextLinks =
         Array.isArray(payload?.links) && payload.links.length > 0
           ? payload.links
@@ -515,15 +598,20 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)
       );
       setLiveCategory(normalizeLiveCategory(payload?.category));
-    });
+    };
 
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('liveUpdate', handleLiveUpdate);
     socket.on('announcementUpdate', fetchAnnouncements);
 
     return () => {
-      socket.off('liveUpdate');
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('liveUpdate', handleLiveUpdate);
       socket.off('announcementUpdate', fetchAnnouncements);
     };
-  }, [fetchAnnouncements, socket]);
+  }, [fetchAnnouncements, fetchLiveStatus, socket]);
 
   useEffect(() => {
     return () => {

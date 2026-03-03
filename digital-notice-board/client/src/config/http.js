@@ -4,6 +4,9 @@ import { API_BASE_URL } from './api';
 const REQUEST_TIMEOUT_MS = Number.parseInt(import.meta.env.VITE_API_TIMEOUT_MS, 10) || 20000;
 const MAX_RETRY_ATTEMPTS =
   Number.parseInt(import.meta.env.VITE_API_RETRY_ATTEMPTS, 10) || 2;
+const MAX_RETRY_DELAY_MS =
+  Number.parseInt(import.meta.env.VITE_API_MAX_RETRY_DELAY_MS, 10) || 12000;
+const RETRY_JITTER_RATIO = 0.18;
 
 const RETRYABLE_METHODS = new Set(['get', 'head', 'options']);
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -43,9 +46,36 @@ function shouldRetry(error) {
   return isNetworkError(error);
 }
 
-function getRetryDelayMs(config) {
+function parseRetryAfterMs(error) {
+  const headerValue = error?.response?.headers?.['retry-after'];
+  if (headerValue === undefined || headerValue === null) return null;
+
+  const raw = String(headerValue).trim();
+  if (!raw) return null;
+
+  const seconds = Number.parseInt(raw, 10);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const dateMs = Date.parse(raw);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return null;
+}
+
+function getRetryDelayMs(config, error) {
   const retryCount = Number(config.__retryCount || 0);
-  return Math.min(450 * 2 ** retryCount, 3500);
+  const retryAfterMs = parseRetryAfterMs(error);
+  const exponentialBackoffMs = Math.min(450 * 2 ** retryCount, MAX_RETRY_DELAY_MS);
+  const baseDelayMs =
+    Number.isFinite(retryAfterMs) && retryAfterMs !== null
+      ? Math.min(Math.max(retryAfterMs, 450), MAX_RETRY_DELAY_MS)
+      : exponentialBackoffMs;
+  const jitterMs = Math.round(baseDelayMs * RETRY_JITTER_RATIO * Math.random());
+  return baseDelayMs + jitterMs;
 }
 
 export function getNetworkErrorMessage() {
@@ -92,8 +122,7 @@ apiClient.interceptors.response.use(
 
     const config = error.config;
     config.__retryCount = Number(config.__retryCount || 0) + 1;
-    await sleep(getRetryDelayMs(config));
+    await sleep(getRetryDelayMs(config, error));
     return apiClient(config);
   }
 );
-

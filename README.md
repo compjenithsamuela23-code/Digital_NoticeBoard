@@ -11,6 +11,8 @@
    - `digital-notice-board/server/supabase/migration_announcement_live_stream_links.sql`
    - To enable persisted global live multi-stream links in `live_state`, also run:
    - `digital-notice-board/server/supabase/migration_live_state_links.sql`
+   - To add performance indexes for faster public/history reads on existing databases, also run:
+   - `digital-notice-board/server/supabase/migration_performance_indexes.sql`
 2. Add these variables in the root `.env`:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`

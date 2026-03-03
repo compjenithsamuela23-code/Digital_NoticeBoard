@@ -21,15 +21,20 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.96.0",
     "bcryptjs": "^3.0.3",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
-    "multer": "^2.0.2",
+    "multer": "^2.1.0",
     "socket.io": "^4.8.3",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"
+  },
+  "overrides": {
+    "minimatch": "^3.1.4",
+    "qs": "^6.15.0"
   }
 }

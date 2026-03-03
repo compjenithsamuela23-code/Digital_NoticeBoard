@@ -1,15 +1,17 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { SocketProvider } from './contexts/SocketContext';
-import DisplayBoard from './components/DisplayBoard';
-import DisplayLogin from './components/DisplayLogin';
-import AdminPanel from './components/AdminPanel';
-import AdminLogin from './components/AdminLogin';
-import AdminHistory from './components/AdminHistory';
-import StaffLogin from './components/StaffLogin';
+import RouteLoader from './components/RouteLoader';
 import { hasAdminSession } from './config/auth';
 import { hasDisplaySession } from './config/displayAuth';
 import { hasStaffSession } from './config/staffAuth';
+
+const DisplayBoard = lazy(() => import('./components/DisplayBoard'));
+const DisplayLogin = lazy(() => import('./components/DisplayLogin'));
+const AdminPanel = lazy(() => import('./components/AdminPanel'));
+const AdminLogin = lazy(() => import('./components/AdminLogin'));
+const AdminHistory = lazy(() => import('./components/AdminHistory'));
+const StaffLogin = lazy(() => import('./components/StaffLogin'));
 
 const ProtectedAdminRoute = ({ children }) => {
   if (!hasAdminSession()) {
@@ -36,26 +38,41 @@ const ProtectedStaffRoute = ({ children }) => {
 };
 
 function App() {
+  const withRouteSuspense = (node, message) => (
+    <Suspense fallback={<RouteLoader message={message} />}>
+      {node}
+    </Suspense>
+  );
+
   return (
     <SocketProvider>
       <Router>
         <Routes>
-          <Route path="/display/login" element={<DisplayLogin />} />
+          <Route
+            path="/display/login"
+            element={withRouteSuspense(<DisplayLogin />, 'Loading display access...')}
+          />
           <Route
             path="/"
             element={
               <ProtectedDisplayRoute>
-                <DisplayBoard />
+                {withRouteSuspense(<DisplayBoard />, 'Loading notice display...')}
               </ProtectedDisplayRoute>
             }
           />
-          <Route path="/admin/login" element={<AdminLogin />} />
-          <Route path="/staff/login" element={<StaffLogin />} />
+          <Route
+            path="/admin/login"
+            element={withRouteSuspense(<AdminLogin />, 'Loading admin login...')}
+          />
+          <Route
+            path="/staff/login"
+            element={withRouteSuspense(<StaffLogin />, 'Loading staff login...')}
+          />
           <Route
             path="/admin"
             element={
               <ProtectedAdminRoute>
-                <AdminPanel workspaceRole="admin" />
+                {withRouteSuspense(<AdminPanel workspaceRole="admin" />, 'Loading admin workspace...')}
               </ProtectedAdminRoute>
             }
           />
@@ -63,7 +80,7 @@ function App() {
             path="/staff"
             element={
               <ProtectedStaffRoute>
-                <AdminPanel workspaceRole="staff" />
+                {withRouteSuspense(<AdminPanel workspaceRole="staff" />, 'Loading staff workspace...')}
               </ProtectedStaffRoute>
             }
           />
@@ -71,7 +88,7 @@ function App() {
             path="/admin/history"
             element={
               <ProtectedAdminRoute>
-                <AdminHistory workspaceRole="admin" />
+                {withRouteSuspense(<AdminHistory workspaceRole="admin" />, 'Loading history...')}
               </ProtectedAdminRoute>
             }
           />
@@ -79,7 +96,7 @@ function App() {
             path="/staff/history"
             element={
               <ProtectedStaffRoute>
-                <AdminHistory workspaceRole="staff" />
+                {withRouteSuspense(<AdminHistory workspaceRole="staff" />, 'Loading history...')}
               </ProtectedStaffRoute>
             }
           />
