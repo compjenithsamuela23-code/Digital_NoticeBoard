@@ -97,6 +97,8 @@ const MEDIA_ACCEPT = `${IMAGE_ACCEPT},${VIDEO_ACCEPT}`;
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 const MAX_BATCH_ATTACHMENTS = 24;
 const MAX_LIVE_LINKS = 24;
+const LIVE_LINK_SPLIT_PATTERN = /[\n,;]+/;
+const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 
 const parseUrl = (value) => {
   try {
@@ -122,12 +124,30 @@ const isSupportedLiveProviderUrl = (value) => {
   );
 };
 
+const cleanupLiveLinkCandidate = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/[\s)\],.;]+$/g, '');
+
+const extractLiveLinkCandidates = (rawValue) => {
+  const normalizedRaw = String(rawValue || '').trim();
+  if (!normalizedRaw) return [];
+
+  const urlMatches = normalizedRaw.match(LIVE_LINK_URL_PATTERN);
+  if (urlMatches && urlMatches.length > 0) {
+    return urlMatches.map(cleanupLiveLinkCandidate).filter(Boolean);
+  }
+
+  return normalizedRaw
+    .split(LIVE_LINK_SPLIT_PATTERN)
+    .map(cleanupLiveLinkCandidate)
+    .filter(Boolean);
+};
+
 const parseLiveLinkList = (rawValue) =>
   [
     ...new Set(
-      String(rawValue || '')
-        .split(/[\n,]+/)
-        .map((item) => item.trim())
+      extractLiveLinkCandidates(rawValue)
         .filter((item) => item && isSupportedLiveProviderUrl(item))
     )
   ].slice(
@@ -139,7 +159,7 @@ const normalizeLiveLinkArray = (rawValues = []) =>
   [
     ...new Set(
       (Array.isArray(rawValues) ? rawValues : [])
-        .map((item) => String(item || '').trim())
+        .map((item) => cleanupLiveLinkCandidate(item))
         .filter((item) => item && isSupportedLiveProviderUrl(item))
     )
   ].slice(
@@ -216,6 +236,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   });
   const [loading, setLoading] = useState(false);
   const [liveLinkInput, setLiveLinkInput] = useState('');
+  const [liveLinkInputError, setLiveLinkInputError] = useState('');
   const [liveStatus, setLiveStatus] = useState('OFF');
   const [liveLinks, setLiveLinks] = useState([]);
   const [liveDraftLinks, setLiveDraftLinks] = useState([]);
@@ -244,6 +265,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   });
   const [staffAccessSaving, setStaffAccessSaving] = useState(false);
   const [requestError, setRequestError] = useState('');
+  const [announcementLiveInputError, setAnnouncementLiveInputError] = useState('');
   const mediaInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const mediaReplaceInputRef = useRef(null);
@@ -669,6 +691,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setDocumentReplaceIndex(-1);
     setAnnouncementLiveLinkInput('');
     setAnnouncementLiveLinks([]);
+    setAnnouncementLiveInputError('');
     if (mediaInputRef.current) mediaInputRef.current.value = '';
     if (videoInputRef.current) videoInputRef.current.value = '';
     if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
@@ -679,18 +702,21 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const addAnnouncementLiveLinksFromInput = () => {
     const parsedLinks = parseLiveLinkList(announcementLiveLinkInput);
     if (parsedLinks.length === 0) {
-      setRequestError(
-        'Paste at least one supported announcement live stream link (YouTube, Vimeo, or Twitch).'
+      setAnnouncementLiveInputError(
+        'Enter at least one valid YouTube, Vimeo, or Twitch link.'
       );
+      setRequestError('');
       return;
     }
 
     const mergedLinks = normalizeLiveLinkArray([...announcementLiveLinks, ...parsedLinks]);
     setAnnouncementLiveLinks(mergedLinks);
     setAnnouncementLiveLinkInput('');
+    setAnnouncementLiveInputError('');
 
     if (mergedLinks.length < announcementLiveLinks.length + parsedLinks.length) {
-      setRequestError(`Announcement stream links are limited to ${MAX_LIVE_LINKS} unique links.`);
+      setAnnouncementLiveInputError(`Announcement stream links are limited to ${MAX_LIVE_LINKS} unique links.`);
+      setRequestError('');
       return;
     }
     setRequestError('');
@@ -700,17 +726,26 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setAnnouncementLiveLinks((previous) =>
       previous.map((item, itemIndex) => (itemIndex === index ? String(value || '') : item))
     );
+    setAnnouncementLiveInputError('');
   };
 
   const removeAnnouncementLiveLinkAt = (index) => {
     setAnnouncementLiveLinks((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
     setRequestError('');
+    setAnnouncementLiveInputError('');
   };
 
   const clearAnnouncementLiveLinks = () => {
     setAnnouncementLiveLinks([]);
     setAnnouncementLiveLinkInput('');
     setRequestError('');
+    setAnnouncementLiveInputError('');
+  };
+
+  const handleAnnouncementLiveInputKeyDown = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addAnnouncementLiveLinksFromInput();
   };
 
   const handleSubmit = async (event) => {
@@ -721,12 +756,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     try {
       const normalizedTitle = String(formData.title || '').trim();
       const normalizedContent = String(formData.content || '').trim();
+      const pendingAnnouncementLinks = parseLiveLinkList(announcementLiveLinkInput);
       const editingAnnouncement = editingId
         ? announcements.find((announcement) => announcement.id === editingId)
         : null;
       const editingBatchSize = editingAnnouncement ? getBatchAttachmentCount(editingAnnouncement) : 1;
       const hasExistingAttachment = Boolean(editingAnnouncement && editingAnnouncement.image);
-      const normalizedAnnouncementLiveLinks = normalizeLiveLinkArray(announcementLiveLinks);
+      const normalizedAnnouncementLiveLinks = normalizeLiveLinkArray([
+        ...announcementLiveLinks,
+        ...pendingAnnouncementLinks
+      ]);
       const selectedMediaFiles = [...mediaFiles];
       const selectedDocumentFiles = [...documentFiles];
       const selectedAttachmentEntries = [
@@ -734,6 +773,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         ...selectedDocumentFiles.map((file) => ({ file, kind: 'document' }))
       ];
       const hasNewAttachment = selectedAttachmentEntries.length > 0;
+
+      if (announcementLiveLinkInput.trim() && pendingAnnouncementLinks.length === 0) {
+        setAnnouncementLiveInputError(
+          'The pending stream input is not a valid YouTube, Vimeo, or Twitch link.'
+        );
+        return;
+      }
+      setAnnouncementLiveInputError('');
 
       if (selectedAttachmentEntries.length > MAX_BATCH_ATTACHMENTS) {
         setRequestError(`You can upload up to ${MAX_BATCH_ATTACHMENTS} files at a time.`);
@@ -1026,6 +1073,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setDocumentReplaceIndex(-1);
     setAnnouncementLiveLinkInput('');
     setAnnouncementLiveLinks(normalizeLiveLinkArray(announcement.liveStreamLinks || []));
+    setAnnouncementLiveInputError('');
     if (mediaInputRef.current) mediaInputRef.current.value = '';
     if (videoInputRef.current) videoInputRef.current.value = '';
     if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
@@ -1301,20 +1349,29 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const addLiveDraftLinks = () => {
     const parsedLinks = parseLiveLinkList(liveLinkInput);
     if (parsedLinks.length === 0) {
-      setRequestError('Paste at least one supported live stream URL (YouTube, Vimeo, or Twitch).');
+      setLiveLinkInputError('Enter at least one valid YouTube, Vimeo, or Twitch link.');
+      setRequestError('');
       return;
     }
 
     const merged = normalizeLiveLinkArray([...liveDraftLinks, ...parsedLinks]);
     setLiveDraftLinks(merged);
     setLiveLinkInput('');
+    setLiveLinkInputError('');
 
     if (merged.length < liveDraftLinks.length + parsedLinks.length) {
-      setRequestError(`Live stream list is limited to ${MAX_LIVE_LINKS} unique links.`);
+      setLiveLinkInputError(`Live stream list is limited to ${MAX_LIVE_LINKS} unique links.`);
+      setRequestError('');
       return;
     }
 
     setRequestError('');
+  };
+
+  const handleLiveInputKeyDown = (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addLiveDraftLinks();
   };
 
   const updateLiveDraftLinkAt = (index, value) => {
@@ -1322,17 +1379,20 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       previous.map((item, itemIndex) => (itemIndex === index ? String(value || '') : item))
     );
     setRequestError('');
+    setLiveLinkInputError('');
   };
 
   const removeLiveDraftLinkAt = (index) => {
     setLiveDraftLinks((previous) => previous.filter((_, itemIndex) => itemIndex !== index));
     setRequestError('');
+    setLiveLinkInputError('');
   };
 
   const clearLiveDraftLinks = () => {
     setLiveDraftLinks([]);
     setLiveLinkInput('');
     setRequestError('');
+    setLiveLinkInputError('');
   };
 
   const useCurrentLiveLinks = () => {
@@ -1344,6 +1404,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setLiveDraftLinks(normalizeLiveLinkArray(liveLinks));
     setLiveLinkInput('');
     setRequestError('');
+    setLiveLinkInputError('');
   };
 
   const startLive = async () => {
@@ -1353,10 +1414,12 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const parsedLinks =
       liveDraftLinks.length > 0 ? normalizeLiveLinkArray(liveDraftLinks) : parseLiveLinkList(liveLinkInput);
     if (parsedLinks.length === 0) {
-      setRequestError('Add at least one supported live stream URL before starting.');
+      setLiveLinkInputError('Add at least one supported live stream URL before starting.');
+      setRequestError('');
       return;
     }
 
+    setLiveLinkInputError('');
     setLiveActionPending('start');
     try {
       setRequestError('');
@@ -1935,10 +1998,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             <div className="announcement-live-input-row">
               <input
                 id="live-link"
-                type="url"
+                type="text"
                 value={liveLinkInput}
-                onChange={(event) => setLiveLinkInput(event.target.value)}
+                onChange={(event) => {
+                  setLiveLinkInput(event.target.value);
+                  setLiveLinkInputError('');
+                }}
+                onKeyDown={handleLiveInputKeyDown}
                 placeholder="https://www.youtube.com/watch?v=... (comma/newline supports bulk add)"
+                autoComplete="off"
               />
               <button className="btn btn--ghost btn--tiny" type="button" onClick={addLiveDraftLinks}>
                 Add
@@ -1947,6 +2015,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             <p className="file-help">
               Supports YouTube, Vimeo, and Twitch URLs. Add up to {MAX_LIVE_LINKS} stream sources.
             </p>
+            {liveLinkInputError ? <p className="field-error">{liveLinkInputError}</p> : null}
           </div>
 
           {liveDraftLinks.length > 0 ? (
@@ -2121,10 +2190,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               <div className="announcement-live-input-row">
                 <input
                   id="announcement-live-link"
-                  type="url"
+                  type="text"
                   value={announcementLiveLinkInput}
-                  onChange={(event) => setAnnouncementLiveLinkInput(event.target.value)}
+                  onChange={(event) => {
+                    setAnnouncementLiveLinkInput(event.target.value);
+                    setAnnouncementLiveInputError('');
+                  }}
+                  onKeyDown={handleAnnouncementLiveInputKeyDown}
                   placeholder="https://www.youtube.com/watch?v=... (use comma/newline for multiple)"
+                  autoComplete="off"
                 />
                 <button
                   className="btn btn--ghost btn--tiny"
@@ -2138,6 +2212,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 Add up to {MAX_LIVE_LINKS} live stream links for this announcement. You can change/remove any stream
                 before publishing.
               </p>
+              {announcementLiveInputError ? <p className="field-error">{announcementLiveInputError}</p> : null}
               {announcementLiveLinks.length > 0 ? (
                 <div className="announcement-live-list">
                   {announcementLiveLinks.map((link, index) => (

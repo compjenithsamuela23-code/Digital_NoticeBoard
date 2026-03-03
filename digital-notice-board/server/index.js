@@ -46,6 +46,8 @@ const LIVE_STATUS_ID = 1;
 const MAX_DISPLAY_BATCH_SLOT = 24;
 const MAX_GLOBAL_LIVE_LINKS = 24;
 const MAX_ANNOUNCEMENT_LIVE_LINKS = 24;
+const LIVE_LINK_SPLIT_PATTERN = /[\n,;]+/;
+const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 const ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS = 60 * 1000;
 const ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(
   10 * 1000,
@@ -1351,6 +1353,29 @@ function tryParseJsonArrayInput(rawValue) {
   }
 }
 
+function cleanupLiveLinkCandidate(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[\s)\],.;]+$/g, '');
+}
+
+function extractLiveLinkCandidates(rawValue) {
+  const normalizedRaw = String(rawValue || '').trim();
+  if (!normalizedRaw) {
+    return [];
+  }
+
+  const urlMatches = normalizedRaw.match(LIVE_LINK_URL_PATTERN);
+  if (Array.isArray(urlMatches) && urlMatches.length > 0) {
+    return urlMatches.map(cleanupLiveLinkCandidate).filter(Boolean);
+  }
+
+  return normalizedRaw
+    .split(LIVE_LINK_SPLIT_PATTERN)
+    .map(cleanupLiveLinkCandidate)
+    .filter(Boolean);
+}
+
 function normalizeLiveLinks(
   rawLinks,
   { maxLinks = MAX_GLOBAL_LIVE_LINKS, requireSupportedProvider = false } = {}
@@ -1396,11 +1421,7 @@ function parseAnnouncementLiveStreamsInput(value) {
     return [];
   }
 
-  if (normalized.includes('\n') || normalized.includes(',')) {
-    return normalizeAnnouncementLiveStreamLinks(normalized.split(/[\n,]+/));
-  }
-
-  return normalizeAnnouncementLiveStreamLinks([normalized]);
+  return normalizeAnnouncementLiveStreamLinks(extractLiveLinkCandidates(normalized));
 }
 
 function parseStoredLiveLinks(value, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {}) {
@@ -1418,32 +1439,34 @@ function parseStoredLiveLinks(value, { maxLinks = MAX_GLOBAL_LIVE_LINKS } = {}) 
     return [];
   }
 
-  if (normalized.includes('\n') || normalized.includes(',')) {
-    return normalizeLiveLinks(normalized.split(/[\n,]+/), { maxLinks });
-  }
-
-  return normalizeLiveLinks([normalized], { maxLinks });
+  return normalizeLiveLinks(extractLiveLinkCandidates(normalized), { maxLinks });
 }
 
 function parseLiveLinksInput(linkValue, linksValue) {
   let candidates = [];
 
   if (Array.isArray(linksValue)) {
-    candidates = linksValue;
+    candidates = linksValue.flatMap((item) => {
+      if (item && typeof item === 'object') {
+        return [item];
+      }
+      return extractLiveLinkCandidates(item);
+    });
   } else if (typeof linksValue === 'string') {
     const parsedJsonLinks = tryParseJsonArrayInput(linksValue);
     if (parsedJsonLinks.matched) {
-      candidates = parsedJsonLinks.values;
+      candidates = parsedJsonLinks.values.flatMap((item) => {
+        if (item && typeof item === 'object') {
+          return [item];
+        }
+        return extractLiveLinkCandidates(item);
+      });
     } else {
-      candidates = linksValue.split(/[\n,]+/);
+      candidates = extractLiveLinkCandidates(linksValue);
     }
   } else {
     const normalizedLinkValue = String(linkValue || '').trim();
-    if (normalizedLinkValue.includes('\n') || normalizedLinkValue.includes(',')) {
-      candidates = normalizedLinkValue.split(/[\n,]+/);
-    } else if (normalizedLinkValue) {
-      candidates = [normalizedLinkValue];
-    }
+    candidates = extractLiveLinkCandidates(normalizedLinkValue);
   }
 
   return normalizeLiveLinks(candidates, { requireSupportedProvider: true });

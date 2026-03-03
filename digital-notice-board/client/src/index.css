@@ -987,6 +987,12 @@ textarea {
   font-size: 0.84rem;
 }
 
+.field-error {
+  color: var(--danger);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
 .announcement-live-input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
