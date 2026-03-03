@@ -100,6 +100,19 @@ const MAX_LIVE_LINKS = 24;
 const LIVE_LINK_SPLIT_PATTERN = /[\s\n,;]+/;
 const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 const LIVE_LINK_DOMAIN_PATTERN = /^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#].*)?$/i;
+const LIVE_LINK_QUERY_KEYS = ['url', 'u', 'link', 'target', 'redirect', 'redirect_url', 'text', 'body', 'message'];
+const LIVE_LINK_WRAPPER_HOSTS = [
+  'facebook.com',
+  'whatsapp.com',
+  'wa.me',
+  'telegram.me',
+  't.me',
+  'x.com',
+  'twitter.com',
+  'linkedin.com',
+  'reddit.com',
+  'instagram.com'
+];
 
 const parseUrl = (value) => {
   try {
@@ -116,39 +129,46 @@ const cleanupLiveLinkCandidate = (value) =>
 
 const hasUrlScheme = (value) => /^[a-z][a-z0-9+.-]*:\/\//i.test(String(value || '').trim());
 
-const normalizeShareableLiveLink = (value) => {
-  const cleaned = cleanupLiveLinkCandidate(value);
-  if (!cleaned) return null;
+const normalizeLiveHost = (host) => String(host || '').replace(/^www\./i, '').toLowerCase();
 
-  const withProtocol =
-    hasUrlScheme(cleaned) || !LIVE_LINK_DOMAIN_PATTERN.test(cleaned)
-      ? cleaned
-      : `https://${cleaned}`;
-
-  const parsed = parseUrl(withProtocol);
-  if (!parsed) return null;
-  const protocol = String(parsed.protocol || '').toLowerCase();
-  if (protocol !== 'http:' && protocol !== 'https:') return null;
-
-  if (protocol === 'http:') {
-    parsed.protocol = 'https:';
-  }
-
-  const host = String(parsed.hostname || '')
-    .replace(/^www\./i, '')
-    .toLowerCase();
-  const supported = (
-    host === 'youtu.be' ||
-    host.endsWith('youtube.com') ||
-    host.endsWith('vimeo.com') ||
-    host.endsWith('twitch.tv')
+const isSupportedLiveHost = (host) => {
+  const normalizedHost = normalizeLiveHost(host);
+  return (
+    normalizedHost === 'youtu.be' ||
+    normalizedHost.endsWith('youtube.com') ||
+    normalizedHost.endsWith('vimeo.com') ||
+    normalizedHost.endsWith('twitch.tv')
   );
-
-  if (!supported) return null;
-  return parsed.toString();
 };
 
-const extractLiveLinkCandidates = (rawValue) => {
+const isLikelyWrapperHost = (host) => {
+  const normalizedHost = normalizeLiveHost(host);
+  return LIVE_LINK_WRAPPER_HOSTS.some(
+    (candidate) => normalizedHost === candidate || normalizedHost.endsWith(`.${candidate}`)
+  );
+};
+
+const decodeLinkValueVariants = (value) => {
+  const variants = new Set();
+  const initial = String(value || '').trim();
+  if (!initial) return [];
+  variants.add(initial);
+
+  let current = initial;
+  for (let step = 0; step < 2; step += 1) {
+    if (!current.includes('%')) break;
+    try {
+      current = decodeURIComponent(current);
+      if (current.trim()) variants.add(current.trim());
+    } catch {
+      break;
+    }
+  }
+
+  return [...variants];
+};
+
+const extractRawLinkCandidates = (rawValue) => {
   const normalizedRaw = String(rawValue || '').trim();
   if (!normalizedRaw) return [];
 
@@ -167,11 +187,72 @@ const extractLiveLinkCandidates = (rawValue) => {
   return [...tokenSet];
 };
 
+const extractNestedLiveLinkCandidates = (parsedUrl) => {
+  const candidateValues = [];
+  const host = normalizeLiveHost(parsedUrl?.hostname);
+  const includeAllParams = isLikelyWrapperHost(host);
+
+  LIVE_LINK_QUERY_KEYS.forEach((key) => {
+    parsedUrl.searchParams.getAll(key).forEach((value) => candidateValues.push(value));
+  });
+
+  if (includeAllParams) {
+    parsedUrl.searchParams.forEach((value) => candidateValues.push(value));
+  }
+
+  const nested = new Set();
+  candidateValues.forEach((value) => {
+    decodeLinkValueVariants(value).forEach((decoded) => {
+      extractRawLinkCandidates(decoded).forEach((candidate) => nested.add(candidate));
+    });
+  });
+
+  return [...nested];
+};
+
+const resolveShareableLiveLink = (value, depth = 0) => {
+  if (depth > 2) return null;
+  const cleaned = cleanupLiveLinkCandidate(value);
+  if (!cleaned) return null;
+
+  const withProtocol =
+    hasUrlScheme(cleaned) || !LIVE_LINK_DOMAIN_PATTERN.test(cleaned)
+      ? cleaned
+      : `https://${cleaned}`;
+
+  const parsed = parseUrl(withProtocol);
+  if (!parsed) return null;
+  const protocol = String(parsed.protocol || '').toLowerCase();
+  if (protocol !== 'http:' && protocol !== 'https:') return null;
+
+  if (protocol === 'http:') {
+    parsed.protocol = 'https:';
+  }
+
+  if (isSupportedLiveHost(parsed.hostname)) {
+    return parsed.toString();
+  }
+
+  const nestedCandidates = extractNestedLiveLinkCandidates(parsed);
+  for (const candidate of nestedCandidates) {
+    const resolved = resolveShareableLiveLink(candidate, depth + 1);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return null;
+};
+
+const extractLiveLinkCandidates = (rawValue) => {
+  return extractRawLinkCandidates(rawValue);
+};
+
 const parseLiveLinkList = (rawValue) =>
   [
     ...new Set(
       extractLiveLinkCandidates(rawValue)
-        .map((item) => normalizeShareableLiveLink(item))
+        .map((item) => resolveShareableLiveLink(item))
         .filter(Boolean)
     )
   ].slice(
@@ -183,7 +264,7 @@ const normalizeLiveLinkArray = (rawValues = []) =>
   [
     ...new Set(
       (Array.isArray(rawValues) ? rawValues : [])
-        .map((item) => normalizeShareableLiveLink(item))
+        .map((item) => resolveShareableLiveLink(item))
         .filter(Boolean)
     )
   ].slice(

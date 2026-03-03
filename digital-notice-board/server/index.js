@@ -49,6 +49,19 @@ const MAX_ANNOUNCEMENT_LIVE_LINKS = 24;
 const LIVE_LINK_SPLIT_PATTERN = /[\s\n,;]+/;
 const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
 const LIVE_LINK_DOMAIN_PATTERN = /^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#].*)?$/i;
+const LIVE_LINK_QUERY_KEYS = ['url', 'u', 'link', 'target', 'redirect', 'redirect_url', 'text', 'body', 'message'];
+const LIVE_LINK_WRAPPER_HOSTS = [
+  'facebook.com',
+  'whatsapp.com',
+  'wa.me',
+  'telegram.me',
+  't.me',
+  'x.com',
+  'twitter.com',
+  'linkedin.com',
+  'reddit.com',
+  'instagram.com'
+];
 const ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS = 60 * 1000;
 const ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(
   10 * 1000,
@@ -1333,53 +1346,58 @@ function hasUrlScheme(value) {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(String(value || '').trim());
 }
 
-function normalizeShareableLiveLink(value, { requireSupportedProvider = false } = {}) {
-  const cleaned = cleanupLiveLinkCandidate(value);
-  if (!cleaned) {
-    return null;
-  }
-
-  const withProtocol =
-    hasUrlScheme(cleaned) || !LIVE_LINK_DOMAIN_PATTERN.test(cleaned)
-      ? cleaned
-      : `https://${cleaned}`;
-
-  let parsed = null;
+function parseUrl(value) {
   try {
-    parsed = new URL(withProtocol);
+    return new URL(String(value || '').trim());
   } catch {
     return null;
   }
-
-  const protocol = String(parsed.protocol || '').toLowerCase();
-  if (protocol !== 'http:' && protocol !== 'https:') {
-    return null;
-  }
-
-  if (protocol === 'http:') {
-    parsed.protocol = 'https:';
-  }
-
-  if (!requireSupportedProvider) {
-    return parsed.toString();
-  }
-
-  const host = String(parsed.hostname || '')
-    .replace(/^www\./i, '')
-    .toLowerCase();
-  const isSupported =
-    host === 'youtu.be' ||
-    host.endsWith('youtube.com') ||
-    host.endsWith('vimeo.com') ||
-    host.endsWith('twitch.tv');
-  if (!isSupported) {
-    return null;
-  }
-
-  return parsed.toString();
 }
 
-function extractLiveLinkCandidates(rawValue) {
+function normalizeLiveHost(host) {
+  return String(host || '')
+    .replace(/^www\./i, '')
+    .toLowerCase();
+}
+
+function isSupportedLiveHost(host) {
+  const normalizedHost = normalizeLiveHost(host);
+  return (
+    normalizedHost === 'youtu.be' ||
+    normalizedHost.endsWith('youtube.com') ||
+    normalizedHost.endsWith('vimeo.com') ||
+    normalizedHost.endsWith('twitch.tv')
+  );
+}
+
+function isLikelyWrapperHost(host) {
+  const normalizedHost = normalizeLiveHost(host);
+  return LIVE_LINK_WRAPPER_HOSTS.some(
+    (candidate) => normalizedHost === candidate || normalizedHost.endsWith(`.${candidate}`)
+  );
+}
+
+function decodeLinkValueVariants(value) {
+  const variants = new Set();
+  const initial = String(value || '').trim();
+  if (!initial) return [];
+  variants.add(initial);
+
+  let current = initial;
+  for (let step = 0; step < 2; step += 1) {
+    if (!current.includes('%')) break;
+    try {
+      current = decodeURIComponent(current);
+      if (current.trim()) variants.add(current.trim());
+    } catch {
+      break;
+    }
+  }
+
+  return [...variants];
+}
+
+function extractRawLiveLinkCandidates(rawValue) {
   const normalizedRaw = String(rawValue || '').trim();
   if (!normalizedRaw) {
     return [];
@@ -1398,6 +1416,91 @@ function extractLiveLinkCandidates(rawValue) {
     .forEach((item) => tokenSet.add(item));
 
   return [...tokenSet];
+}
+
+function extractNestedLiveLinkCandidates(parsedUrl) {
+  const candidateValues = [];
+  const host = normalizeLiveHost(parsedUrl && parsedUrl.hostname);
+  const includeAllParams = isLikelyWrapperHost(host);
+
+  LIVE_LINK_QUERY_KEYS.forEach((key) => {
+    parsedUrl.searchParams.getAll(key).forEach((value) => candidateValues.push(value));
+  });
+
+  if (includeAllParams) {
+    parsedUrl.searchParams.forEach((value) => candidateValues.push(value));
+  }
+
+  const nested = new Set();
+  candidateValues.forEach((value) => {
+    decodeLinkValueVariants(value).forEach((decoded) => {
+      extractRawLiveLinkCandidates(decoded).forEach((candidate) => nested.add(candidate));
+    });
+  });
+
+  return [...nested];
+}
+
+function normalizeShareableLiveLink(value, { requireSupportedProvider = false } = {}) {
+  return resolveShareableLiveLink(value, { requireSupportedProvider });
+}
+
+function resolveShareableLiveLink(
+  value,
+  { requireSupportedProvider = false, depth = 0 } = {}
+) {
+  if (depth > 2) {
+    return null;
+  }
+
+  const cleaned = cleanupLiveLinkCandidate(value);
+  if (!cleaned) {
+    return null;
+  }
+
+  const withProtocol =
+    hasUrlScheme(cleaned) || !LIVE_LINK_DOMAIN_PATTERN.test(cleaned)
+      ? cleaned
+      : `https://${cleaned}`;
+
+  const parsed = parseUrl(withProtocol);
+  if (!parsed) {
+    return null;
+  }
+
+  const protocol = String(parsed.protocol || '').toLowerCase();
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    return null;
+  }
+
+  if (protocol === 'http:') {
+    parsed.protocol = 'https:';
+  }
+
+  if (isSupportedLiveHost(parsed.hostname)) {
+    return parsed.toString();
+  }
+
+  const nestedCandidates = extractNestedLiveLinkCandidates(parsed);
+  for (const candidate of nestedCandidates) {
+    const resolved = resolveShareableLiveLink(candidate, {
+      requireSupportedProvider,
+      depth: depth + 1
+    });
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  if (requireSupportedProvider) {
+    return null;
+  }
+
+  return parsed.toString();
+}
+
+function extractLiveLinkCandidates(rawValue) {
+  return extractRawLiveLinkCandidates(rawValue);
 }
 
 function normalizeLiveLinks(
