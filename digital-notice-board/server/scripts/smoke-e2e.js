@@ -7,6 +7,7 @@ const ADMIN_USERNAME = String(process.env.SMOKE_ADMIN_USERNAME || 'admin@noticeb
 const ADMIN_PASSWORD = String(process.env.SMOKE_ADMIN_PASSWORD || 'admin123').trim();
 
 const ANNOUNCEMENT_ACTIONS = new Set(['created', 'updated', 'deleted', 'expired']);
+const SUPPORTED_LIVE_HOST_SUFFIXES = ['youtube.com', 'youtu.be', 'vimeo.com', 'twitch.tv'];
 
 function buildUrl(pathname) {
   const path = String(pathname || '').startsWith('/') ? pathname : `/${pathname}`;
@@ -100,6 +101,20 @@ async function safeRequest(pathname, options = {}) {
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function isSupportedLiveLink(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    const host = String(parsed.hostname || '')
+      .replace(/^www\./i, '')
+      .toLowerCase();
+    return SUPPORTED_LIVE_HOST_SUFFIXES.some(
+      (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -266,6 +281,13 @@ async function run() {
     const startAt = new Date().toISOString();
     const endAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
+    const announcementShareLiveInput = `https://wa.me/?text=${encodeURIComponent(
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+    )}`;
+    const liveStartShareInput = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(
+      'https://youtu.be/dQw4w9WgXcQ'
+    )}`;
+
     logStep('Creating text announcement');
     const textAnnouncement = await request('/api/announcements', {
       method: 'POST',
@@ -278,11 +300,25 @@ async function run() {
         active: true,
         category: createdCategoryId,
         startAt,
-        endAt
+        endAt,
+        liveStreamLinks: announcementShareLiveInput
       }
     });
     const textAnnouncementId = String(textAnnouncement?.id || '');
     assert(textAnnouncementId, 'Text announcement creation failed.');
+    const announcementLiveLinks = Array.isArray(textAnnouncement?.liveStreamLinks)
+      ? textAnnouncement.liveStreamLinks
+      : [];
+    if (announcementLiveLinks.length > 0) {
+      assert(
+        isSupportedLiveLink(announcementLiveLinks[0]),
+        `Announcement share link was not normalized to a supported live provider: ${String(announcementLiveLinks[0] || '')}`
+      );
+    } else {
+      console.log(
+        'ℹ️ Announcement live stream links were not returned. If this is unexpected, run server/supabase/migration_announcement_live_stream_links.sql.'
+      );
+    }
     createdAnnouncementIds.push(textAnnouncementId);
 
     logStep('Creating document announcement');
@@ -333,10 +369,14 @@ async function run() {
     await request('/api/start', {
       method: 'POST',
       token: adminToken,
-      jsonBody: { link: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }
+      jsonBody: { link: liveStartShareInput }
     });
     const liveOn = await request('/api/status');
     assert(String(liveOn?.status || '').toUpperCase() === 'ON', 'Live status did not turn ON.');
+    assert(
+      isSupportedLiveLink(liveOn?.link),
+      `Live share link was not normalized to a supported provider: ${String(liveOn?.link || '')}`
+    );
 
     await request('/api/stop', {
       method: 'POST',
