@@ -97,8 +97,9 @@ const MEDIA_ACCEPT = `${IMAGE_ACCEPT},${VIDEO_ACCEPT}`;
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 const MAX_BATCH_ATTACHMENTS = 24;
 const MAX_LIVE_LINKS = 24;
-const LIVE_LINK_SPLIT_PATTERN = /[\n,;]+/;
+const LIVE_LINK_SPLIT_PATTERN = /[\s\n,;]+/;
 const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
+const LIVE_LINK_DOMAIN_PATTERN = /^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#].*)?$/i;
 
 const parseUrl = (value) => {
   try {
@@ -108,47 +109,70 @@ const parseUrl = (value) => {
   }
 };
 
-const isSupportedLiveProviderUrl = (value) => {
-  const parsed = parseUrl(value);
-  if (!parsed) return false;
-  const protocol = String(parsed.protocol || '').toLowerCase();
-  if (protocol !== 'http:' && protocol !== 'https:') return false;
-  const host = String(parsed.hostname || '')
-    .replace(/^www\./i, '')
-    .toLowerCase();
-  return (
-    host === 'youtu.be' ||
-    host.endsWith('youtube.com') ||
-    host.endsWith('vimeo.com') ||
-    host.endsWith('twitch.tv')
-  );
-};
-
 const cleanupLiveLinkCandidate = (value) =>
   String(value || '')
     .trim()
     .replace(/[\s)\],.;]+$/g, '');
 
+const hasUrlScheme = (value) => /^[a-z][a-z0-9+.-]*:\/\//i.test(String(value || '').trim());
+
+const normalizeShareableLiveLink = (value) => {
+  const cleaned = cleanupLiveLinkCandidate(value);
+  if (!cleaned) return null;
+
+  const withProtocol =
+    hasUrlScheme(cleaned) || !LIVE_LINK_DOMAIN_PATTERN.test(cleaned)
+      ? cleaned
+      : `https://${cleaned}`;
+
+  const parsed = parseUrl(withProtocol);
+  if (!parsed) return null;
+  const protocol = String(parsed.protocol || '').toLowerCase();
+  if (protocol !== 'http:' && protocol !== 'https:') return null;
+
+  if (protocol === 'http:') {
+    parsed.protocol = 'https:';
+  }
+
+  const host = String(parsed.hostname || '')
+    .replace(/^www\./i, '')
+    .toLowerCase();
+  const supported = (
+    host === 'youtu.be' ||
+    host.endsWith('youtube.com') ||
+    host.endsWith('vimeo.com') ||
+    host.endsWith('twitch.tv')
+  );
+
+  if (!supported) return null;
+  return parsed.toString();
+};
+
 const extractLiveLinkCandidates = (rawValue) => {
   const normalizedRaw = String(rawValue || '').trim();
   if (!normalizedRaw) return [];
 
+  const tokenSet = new Set();
   const urlMatches = normalizedRaw.match(LIVE_LINK_URL_PATTERN);
   if (urlMatches && urlMatches.length > 0) {
-    return urlMatches.map(cleanupLiveLinkCandidate).filter(Boolean);
+    urlMatches.forEach((item) => tokenSet.add(cleanupLiveLinkCandidate(item)));
   }
 
-  return normalizedRaw
+  normalizedRaw
     .split(LIVE_LINK_SPLIT_PATTERN)
     .map(cleanupLiveLinkCandidate)
-    .filter(Boolean);
+    .filter(Boolean)
+    .forEach((item) => tokenSet.add(item));
+
+  return [...tokenSet];
 };
 
 const parseLiveLinkList = (rawValue) =>
   [
     ...new Set(
       extractLiveLinkCandidates(rawValue)
-        .filter((item) => item && isSupportedLiveProviderUrl(item))
+        .map((item) => normalizeShareableLiveLink(item))
+        .filter(Boolean)
     )
   ].slice(
     0,
@@ -159,8 +183,8 @@ const normalizeLiveLinkArray = (rawValues = []) =>
   [
     ...new Set(
       (Array.isArray(rawValues) ? rawValues : [])
-        .map((item) => cleanupLiveLinkCandidate(item))
-        .filter((item) => item && isSupportedLiveProviderUrl(item))
+        .map((item) => normalizeShareableLiveLink(item))
+        .filter(Boolean)
     )
   ].slice(
     0,
@@ -2013,7 +2037,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               </button>
             </div>
             <p className="file-help">
-              Supports YouTube, Vimeo, and Twitch URLs. Add up to {MAX_LIVE_LINKS} stream sources.
+              Supports YouTube, Vimeo, and Twitch share links. You can paste with or without https://. Add up to{' '}
+              {MAX_LIVE_LINKS} stream sources.
             </p>
             {liveLinkInputError ? <p className="field-error">{liveLinkInputError}</p> : null}
           </div>
@@ -2209,8 +2234,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 </button>
               </div>
               <p className="file-help">
-                Add up to {MAX_LIVE_LINKS} live stream links for this announcement. You can change/remove any stream
-                before publishing.
+                Add up to {MAX_LIVE_LINKS} live stream links for this announcement. Supports normal share links (with
+                or without https://). You can change/remove any stream before publishing.
               </p>
               {announcementLiveInputError ? <p className="field-error">{announcementLiveInputError}</p> : null}
               {announcementLiveLinks.length > 0 ? (

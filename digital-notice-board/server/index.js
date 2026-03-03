@@ -46,8 +46,9 @@ const LIVE_STATUS_ID = 1;
 const MAX_DISPLAY_BATCH_SLOT = 24;
 const MAX_GLOBAL_LIVE_LINKS = 24;
 const MAX_ANNOUNCEMENT_LIVE_LINKS = 24;
-const LIVE_LINK_SPLIT_PATTERN = /[\n,;]+/;
+const LIVE_LINK_SPLIT_PATTERN = /[\s\n,;]+/;
 const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
+const LIVE_LINK_DOMAIN_PATTERN = /^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#].*)?$/i;
 const ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS = 60 * 1000;
 const ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(
   10 * 1000,
@@ -1297,37 +1298,6 @@ async function findCategoryByInput(categoryInput, errorContext = 'Error validati
 
 const LIVE_LINK_META_PREFIX = 'dnb_live:';
 
-function isValidHttpUrl(value) {
-  try {
-    const parsed = new URL(String(value || '').trim());
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function isSupportedLiveStreamUrl(value) {
-  try {
-    const parsed = new URL(String(value || '').trim());
-    const protocol = String(parsed.protocol || '').toLowerCase();
-    if (protocol !== 'http:' && protocol !== 'https:') {
-      return false;
-    }
-
-    const host = String(parsed.hostname || '')
-      .replace(/^www\./i, '')
-      .toLowerCase();
-    return (
-      host === 'youtu.be' ||
-      host.endsWith('youtube.com') ||
-      host.endsWith('vimeo.com') ||
-      host.endsWith('twitch.tv')
-    );
-  } catch {
-    return false;
-  }
-}
-
 function tryParseJsonArrayInput(rawValue) {
   if (rawValue === null || rawValue === undefined) {
     return { matched: false, values: [] };
@@ -1359,21 +1329,75 @@ function cleanupLiveLinkCandidate(value) {
     .replace(/[\s)\],.;]+$/g, '');
 }
 
+function hasUrlScheme(value) {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(String(value || '').trim());
+}
+
+function normalizeShareableLiveLink(value, { requireSupportedProvider = false } = {}) {
+  const cleaned = cleanupLiveLinkCandidate(value);
+  if (!cleaned) {
+    return null;
+  }
+
+  const withProtocol =
+    hasUrlScheme(cleaned) || !LIVE_LINK_DOMAIN_PATTERN.test(cleaned)
+      ? cleaned
+      : `https://${cleaned}`;
+
+  let parsed = null;
+  try {
+    parsed = new URL(withProtocol);
+  } catch {
+    return null;
+  }
+
+  const protocol = String(parsed.protocol || '').toLowerCase();
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    return null;
+  }
+
+  if (protocol === 'http:') {
+    parsed.protocol = 'https:';
+  }
+
+  if (!requireSupportedProvider) {
+    return parsed.toString();
+  }
+
+  const host = String(parsed.hostname || '')
+    .replace(/^www\./i, '')
+    .toLowerCase();
+  const isSupported =
+    host === 'youtu.be' ||
+    host.endsWith('youtube.com') ||
+    host.endsWith('vimeo.com') ||
+    host.endsWith('twitch.tv');
+  if (!isSupported) {
+    return null;
+  }
+
+  return parsed.toString();
+}
+
 function extractLiveLinkCandidates(rawValue) {
   const normalizedRaw = String(rawValue || '').trim();
   if (!normalizedRaw) {
     return [];
   }
 
+  const tokenSet = new Set();
   const urlMatches = normalizedRaw.match(LIVE_LINK_URL_PATTERN);
   if (Array.isArray(urlMatches) && urlMatches.length > 0) {
-    return urlMatches.map(cleanupLiveLinkCandidate).filter(Boolean);
+    urlMatches.forEach((item) => tokenSet.add(cleanupLiveLinkCandidate(item)));
   }
 
-  return normalizedRaw
+  normalizedRaw
     .split(LIVE_LINK_SPLIT_PATTERN)
     .map(cleanupLiveLinkCandidate)
-    .filter(Boolean);
+    .filter(Boolean)
+    .forEach((item) => tokenSet.add(item));
+
+  return [...tokenSet];
 }
 
 function normalizeLiveLinks(
@@ -1388,12 +1412,10 @@ function normalizeLiveLinks(
       item && typeof item === 'object'
         ? item.url || item.link || ''
         : item;
-    const cleaned = String(rawValue || '').trim();
-    if (!cleaned) return;
-    if (!isValidHttpUrl(cleaned)) return;
-    if (requireSupportedProvider && !isSupportedLiveStreamUrl(cleaned)) return;
-    if (normalized.includes(cleaned)) return;
-    normalized.push(cleaned);
+    const normalizedLink = normalizeShareableLiveLink(rawValue, { requireSupportedProvider });
+    if (!normalizedLink) return;
+    if (normalized.includes(normalizedLink)) return;
+    normalized.push(normalizedLink);
   });
 
   return normalized.slice(0, Math.max(1, Number.parseInt(maxLinks, 10) || 1));
