@@ -162,6 +162,14 @@ async function run() {
     adminToken = String(adminLogin?.token || '');
     assert(adminToken, 'Admin token not received.');
 
+    logStep('Checking maintenance agent status endpoint');
+    const maintenanceAgentStatus = await request('/api/system/maintenance-agent', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(maintenanceAgentStatus && typeof maintenanceAgentStatus === 'object', 'Maintenance agent response is invalid.');
+    assert(String(maintenanceAgentStatus?.status || '').trim().length > 0, 'Maintenance agent status is missing.');
+
     logStep('Creating temporary category');
     const category = await request('/api/categories', {
       method: 'POST',

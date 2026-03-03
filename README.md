@@ -61,6 +61,29 @@ Use the built-in process manager from `digital-notice-board/`:
 4. Stop:
    - `npm run serve:down`
 
+### AI Maintenance Agent (Always-On Monitoring + Auto-Recovery)
+
+The workspace now includes an autonomous maintenance daemon:
+- Script: `digital-notice-board/scripts/maintenance-agent.js`
+- Runtime status file: `digital-notice-board/.runtime/maintenance-agent-status.json`
+- Admin/Staff API status endpoint: `GET /api/system/maintenance-agent`
+
+Behavior:
+- Monitors API health (`/api/health`), network latency, and DNS reachability.
+- Detects local process crashes using `.runtime/pids.json`.
+- Runs controlled self-healing for local managed modes:
+- `serve` mode recovery command: `node scripts/local-control.js serve-start`
+- `dev` mode recovery command: `node scripts/local-control.js dev-up`
+
+Commands:
+- `npm run agent:up`
+- `npm run agent:down`
+- `npm run agent:once` (single probe cycle)
+
+Notes:
+- `npm run serve:up` and `npm run dev:up` now start the maintenance agent automatically.
+- `npm run serve:down` and `npm run dev:down` now stop the maintenance agent automatically.
+
 If you specifically want dev mode on `5173`:
 
 1. Start both backend + frontend:

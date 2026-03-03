@@ -46,6 +46,12 @@ const SERVICES = {
     cwd: ROOT,
     port: 5173,
     url: 'http://localhost:5173/admin'
+  },
+  maintenanceAgent: {
+    label: 'Maintenance Agent',
+    cmd: process.execPath,
+    args: [path.join(ROOT, 'scripts', 'maintenance-agent.js')],
+    cwd: ROOT
   }
 };
 
@@ -173,8 +179,10 @@ function runOrThrow(cmd, args) {
 async function cmdDevUp() {
   stopService('serveBackend');
   stopService('serveRedirect');
+  stopService('maintenanceAgent');
   const backend = startService('devBackend');
   const frontend = startService('devFrontend');
+  const agent = startService('maintenanceAgent');
 
   const backendReady = await waitForPort(SERVICES.devBackend.port);
   const frontendReady = await waitForPort(SERVICES.devFrontend.port);
@@ -185,6 +193,9 @@ async function cmdDevUp() {
   console.log(
     `Dev frontend: ${frontend.alreadyRunning ? 'already running' : 'started'} (pid ${frontend.pid})`
   );
+  console.log(
+    `Maintenance agent: ${agent.alreadyRunning ? 'already running' : 'started'} (pid ${agent.pid})`
+  );
   console.log(`Backend ready: ${backendReady ? 'yes' : 'no'} -> ${SERVICES.devBackend.url}`);
   console.log(`Frontend ready: ${frontendReady ? 'yes' : 'no'} -> ${SERVICES.devFrontend.url}`);
   console.log(`Logs: ${LOG_DIR}`);
@@ -193,8 +204,10 @@ async function cmdDevUp() {
 async function cmdDevDown() {
   const backendStopped = stopService('devBackend');
   const frontendStopped = stopService('devFrontend');
+  const agentStopped = stopService('maintenanceAgent');
   console.log(`Dev backend stopped: ${backendStopped ? 'yes' : 'no process'}`);
   console.log(`Dev frontend stopped: ${frontendStopped ? 'yes' : 'no process'}`);
+  console.log(`Maintenance agent stopped: ${agentStopped ? 'yes' : 'no process'}`);
 }
 
 async function cmdServeUp() {
@@ -202,16 +215,21 @@ async function cmdServeUp() {
   stopService('devBackend');
   stopService('serveBackend');
   stopService('serveRedirect');
+  stopService('maintenanceAgent');
 
   runOrThrow(npmSpawner.cmd, withNpmArgs(['--prefix', 'client', 'run', 'build']));
 
   const server = startService('serveBackend');
   const redirect = startService('serveRedirect');
+  const agent = startService('maintenanceAgent');
   const ready = await waitForPort(SERVICES.serveBackend.port);
   const redirectReady = await waitForPort(SERVICES.serveRedirect.port);
   console.log(`Serve backend: ${server.alreadyRunning ? 'already running' : 'started'} (pid ${server.pid})`);
   console.log(
     `Serve redirect: ${redirect.alreadyRunning ? 'already running' : 'started'} (pid ${redirect.pid})`
+  );
+  console.log(
+    `Maintenance agent: ${agent.alreadyRunning ? 'already running' : 'started'} (pid ${agent.pid})`
   );
   console.log(`Ready: ${ready ? 'yes' : 'no'} -> ${SERVICES.serveBackend.url}`);
   console.log(`Redirect ready: ${redirectReady ? 'yes' : 'no'} -> ${SERVICES.serveRedirect.url}`);
@@ -223,14 +241,19 @@ async function cmdServeStart() {
   stopService('devBackend');
   stopService('serveBackend');
   stopService('serveRedirect');
+  stopService('maintenanceAgent');
 
   const server = startService('serveBackend');
   const redirect = startService('serveRedirect');
+  const agent = startService('maintenanceAgent');
   const ready = await waitForPort(SERVICES.serveBackend.port);
   const redirectReady = await waitForPort(SERVICES.serveRedirect.port);
   console.log(`Serve backend: ${server.alreadyRunning ? 'already running' : 'started'} (pid ${server.pid})`);
   console.log(
     `Serve redirect: ${redirect.alreadyRunning ? 'already running' : 'started'} (pid ${redirect.pid})`
+  );
+  console.log(
+    `Maintenance agent: ${agent.alreadyRunning ? 'already running' : 'started'} (pid ${agent.pid})`
   );
   console.log(`Ready: ${ready ? 'yes' : 'no'} -> ${SERVICES.serveBackend.url}`);
   console.log(`Redirect ready: ${redirectReady ? 'yes' : 'no'} -> ${SERVICES.serveRedirect.url}`);
@@ -240,8 +263,23 @@ async function cmdServeStart() {
 async function cmdServeDown() {
   const stopped = stopService('serveBackend');
   const redirectStopped = stopService('serveRedirect');
+  const agentStopped = stopService('maintenanceAgent');
   console.log(`Serve backend stopped: ${stopped ? 'yes' : 'no process'}`);
   console.log(`Serve redirect stopped: ${redirectStopped ? 'yes' : 'no process'}`);
+  console.log(`Maintenance agent stopped: ${agentStopped ? 'yes' : 'no process'}`);
+}
+
+async function cmdAgentUp() {
+  const agent = startService('maintenanceAgent');
+  console.log(
+    `Maintenance agent: ${agent.alreadyRunning ? 'already running' : 'started'} (pid ${agent.pid})`
+  );
+  console.log(`Logs: ${LOG_DIR}`);
+}
+
+async function cmdAgentDown() {
+  const agentStopped = stopService('maintenanceAgent');
+  console.log(`Maintenance agent stopped: ${agentStopped ? 'yes' : 'no process'}`);
 }
 
 async function cmdStatus() {
@@ -251,6 +289,7 @@ async function cmdStatus() {
   const devFrontendRunning = isPidRunning(pids.devFrontend);
   const serveBackendRunning = isPidRunning(pids.serveBackend);
   const serveRedirectRunning = isPidRunning(pids.serveRedirect);
+  const maintenanceAgentRunning = isPidRunning(pids.maintenanceAgent);
 
   const port5001 = await isPortOpen(5001);
   const port5173 = await isPortOpen(5173);
@@ -262,6 +301,9 @@ async function cmdStatus() {
   console.log(
     `serveRedirect pid: ${pids.serveRedirect || '-'} running: ${serveRedirectRunning ? 'yes' : 'no'}`
   );
+  console.log(
+    `maintenanceAgent pid: ${pids.maintenanceAgent || '-'} running: ${maintenanceAgentRunning ? 'yes' : 'no'}`
+  );
   console.log(`port 5001 open: ${port5001 ? 'yes' : 'no'}`);
   console.log(`port 5173 open: ${port5173 ? 'yes' : 'no'}`);
 }
@@ -270,7 +312,7 @@ async function main() {
   const action = String(process.argv[2] || '').trim();
   if (!action) {
     console.error(
-      'Usage: node scripts/local-control.js <dev-up|dev-down|serve-up|serve-start|serve-down|status>'
+      'Usage: node scripts/local-control.js <dev-up|dev-down|serve-up|serve-start|serve-down|agent-up|agent-down|status>'
     );
     process.exit(1);
   }
@@ -281,6 +323,8 @@ async function main() {
     if (action === 'serve-up') return cmdServeUp();
     if (action === 'serve-start') return cmdServeStart();
     if (action === 'serve-down') return cmdServeDown();
+    if (action === 'agent-up') return cmdAgentUp();
+    if (action === 'agent-down') return cmdAgentDown();
     if (action === 'status') return cmdStatus();
 
     console.error(`Unknown action: ${action}`);

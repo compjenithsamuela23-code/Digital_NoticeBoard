@@ -67,6 +67,11 @@ const ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(
   10 * 1000,
   Number.parseInt(process.env.ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS, 10) || 30 * 1000
 );
+const MAINTENANCE_AGENT_STATUS_PATH = path.resolve(__dirname, '../.runtime/maintenance-agent-status.json');
+const MAINTENANCE_AGENT_STALE_MS = Math.max(
+  30 * 1000,
+  Number.parseInt(process.env.MAINTENANCE_AGENT_STALE_MS, 10) || 5 * 60 * 1000
+);
 const REQUIRED_SUPABASE_TABLES = ['users', 'categories', 'announcements', 'history'];
 const OPTIONAL_SUPABASE_TABLES = ['live_state'];
 let maintenanceInFlight = null;
@@ -3950,6 +3955,60 @@ app.post('/api/stop', simpleAuth, requireWorkspaceRole, async (req, res) => {
   }
 });
 
+async function readMaintenanceAgentStatus() {
+  try {
+    const raw = await fs.readFile(MAINTENANCE_AGENT_STATUS_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildMaintenanceAgentSummary(agentStatus) {
+  if (!agentStatus || typeof agentStatus !== 'object') {
+    return {
+      status: 'unavailable',
+      state: 'unavailable',
+      stale: true,
+      updatedAt: null,
+      message: 'Maintenance agent is not running or has not reported status yet.'
+    };
+  }
+
+  const updatedAt = String(agentStatus.updatedAt || '').trim() || null;
+  const updatedAtMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+  const stale = !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > MAINTENANCE_AGENT_STALE_MS;
+  const state = String(agentStatus.summary?.state || 'unknown')
+    .trim()
+    .toLowerCase();
+  const message =
+    String(agentStatus.summary?.message || '').trim() ||
+    (stale ? 'Maintenance agent heartbeat is stale.' : 'Maintenance agent heartbeat is active.');
+
+  return {
+    status: stale ? 'stale' : 'ok',
+    state: stale ? 'stale' : state || 'unknown',
+    stale,
+    updatedAt,
+    message
+  };
+}
+
+app.get('/api/system/maintenance-agent', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const agentStatus = await readMaintenanceAgentStatus();
+    const summary = buildMaintenanceAgentSummary(agentStatus);
+    res.json({
+      status: summary.status,
+      summary,
+      agent: agentStatus
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/test', (req, res) => {
   res.json({
     status: 'Server is running perfectly!',
@@ -3966,6 +4025,7 @@ app.get('/api/test', (req, res) => {
 
 app.get('/api/health', async (req, res) => {
   const startedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+  const maintenanceAgentSummary = buildMaintenanceAgentSummary(await readMaintenanceAgentStatus());
   try {
     const { error } = await supabase.from('users').select('id').limit(1);
     if (error && !isMissingTableError(error, 'users')) {
@@ -3976,13 +4036,15 @@ app.get('/api/health', async (req, res) => {
       status: 'ok',
       uptimeSeconds: Math.round(process.uptime()),
       startedAt,
-      database: error ? 'degraded' : 'ok'
+      database: error ? 'degraded' : 'ok',
+      maintenanceAgent: maintenanceAgentSummary
     });
   } catch (error) {
     res.status(503).json({
       status: 'degraded',
       uptimeSeconds: Math.round(process.uptime()),
       startedAt,
+      maintenanceAgent: maintenanceAgentSummary,
       error: error.message
     });
   }

@@ -7,6 +7,9 @@
     "dev:down": "node scripts/local-control.js dev-down",
     "serve:up": "node scripts/local-control.js serve-up",
     "serve:down": "node scripts/local-control.js serve-down",
+    "agent:up": "node scripts/local-control.js agent-up",
+    "agent:down": "node scripts/local-control.js agent-down",
+    "agent:once": "node scripts/maintenance-agent.js --once",
     "local:status": "node scripts/local-control.js status"
   }
 }

@@ -319,6 +319,27 @@ const revokeObjectUrls = (urls = []) => {
   });
 };
 
+const formatAgentRelativeTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return 'never';
+
+  const parsedMs = Date.parse(raw);
+  if (!Number.isFinite(parsedMs)) return 'unknown';
+
+  const deltaMs = Date.now() - parsedMs;
+  if (deltaMs < 5000) return 'just now';
+  if (deltaMs < 60000) return `${Math.round(deltaMs / 1000)}s ago`;
+  if (deltaMs < 3600000) return `${Math.round(deltaMs / 60000)}m ago`;
+  if (deltaMs < 86400000) return `${Math.round(deltaMs / 3600000)}h ago`;
+  return `${Math.round(deltaMs / 86400000)}d ago`;
+};
+
+const formatLatencyLabel = (value) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 'n/a';
+  return `${parsed}ms`;
+};
+
 const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const isStaffWorkspace = workspaceRole === 'staff';
   const isAdminWorkspace = !isStaffWorkspace;
@@ -371,6 +392,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [staffAccessSaving, setStaffAccessSaving] = useState(false);
   const [requestError, setRequestError] = useState('');
   const [announcementLiveInputError, setAnnouncementLiveInputError] = useState('');
+  const [maintenanceAgentPayload, setMaintenanceAgentPayload] = useState(null);
+  const [maintenanceAgentError, setMaintenanceAgentError] = useState('');
   const mediaInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const mediaReplaceInputRef = useRef(null);
@@ -511,6 +534,19 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const matchedCategory = categories.find((category) => category.id === liveCategory);
     return matchedCategory ? matchedCategory.name : 'Selected category';
   }, [categories, liveCategory]);
+  const maintenanceAgentSummary = useMemo(
+    () => maintenanceAgentPayload?.summary || null,
+    [maintenanceAgentPayload]
+  );
+  const maintenanceAgentState = String(maintenanceAgentSummary?.state || 'unavailable')
+    .trim()
+    .toLowerCase();
+  const maintenanceAgentPillClass =
+    maintenanceAgentState === 'healthy'
+      ? 'pill pill--success'
+      : maintenanceAgentState === 'recovering'
+        ? 'pill pill--info'
+        : 'pill pill--danger';
 
   const editingAnnouncementPreview = useMemo(() => {
     if (!editingId) return null;
@@ -616,6 +652,27 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     }
   }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace, isOnline]);
 
+  const fetchMaintenanceAgentStatus = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    try {
+      const response = await apiClient.get(
+        apiUrl('/api/system/maintenance-agent'),
+        applyWorkspaceAuth()
+      );
+      setMaintenanceAgentPayload(response.data || null);
+      setMaintenanceAgentError('');
+    } catch (error) {
+      if (error.response?.status === 401) {
+        handleAuthFailure();
+        return;
+      }
+      setMaintenanceAgentError(extractApiError(error, 'Maintenance agent status is unavailable.'));
+    }
+  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
+
   useEffect(() => {
     const hasWorkspaceSession = isStaffWorkspace ? hasStaffSession() : hasAdminSession();
     if (!hasWorkspaceSession) {
@@ -626,6 +683,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchAnnouncements();
     fetchLiveStatus();
     fetchCategories();
+    fetchMaintenanceAgentStatus();
     if (isAdminWorkspace) {
       fetchDisplayUsers();
       fetchStaffUsers();
@@ -635,6 +693,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchCategories,
     fetchDisplayUsers,
     fetchLiveStatus,
+    fetchMaintenanceAgentStatus,
     fetchStaffUsers,
     isAdminWorkspace,
     isStaffWorkspace,
@@ -662,17 +721,29 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     offlineIntervalMs: 90000
   });
 
+  useAdaptivePolling(fetchMaintenanceAgentStatus, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: 45000,
+    hiddenIntervalMs: 90000,
+    offlineIntervalMs: 120000
+  });
+
   useEffect(() => {
     const syncVisibleWorkspace = () => {
       if (!isOnline) return;
       fetchAnnouncements();
       fetchLiveStatus();
+      fetchMaintenanceAgentStatus();
     };
     const handleOnline = () => {
       setRequestError('');
       fetchAnnouncements();
       fetchLiveStatus();
       fetchCategories();
+      fetchMaintenanceAgentStatus();
       if (isAdminWorkspace) {
         fetchDisplayUsers();
         fetchStaffUsers();
@@ -691,6 +762,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchCategories,
     fetchDisplayUsers,
     fetchLiveStatus,
+    fetchMaintenanceAgentStatus,
     fetchStaffUsers,
     isAdminWorkspace,
     isOnline
@@ -708,6 +780,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       setSocketConnected(true);
       fetchAnnouncements();
       fetchLiveStatus();
+      fetchMaintenanceAgentStatus();
     };
     const handleDisconnect = () => {
       setSocketConnected(false);
@@ -738,7 +811,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       socket.off('liveUpdate', handleLiveUpdate);
       socket.off('announcementUpdate', fetchAnnouncements);
     };
-  }, [fetchAnnouncements, fetchLiveStatus, socket]);
+  }, [fetchAnnouncements, fetchLiveStatus, fetchMaintenanceAgentStatus, socket]);
 
   useEffect(() => {
     return () => {
@@ -2096,6 +2169,32 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               <span className="badge-dot" />
               {liveStatus}
             </span>
+          </div>
+
+          <div className={`agent-status-banner agent-status-banner--${maintenanceAgentState}`}>
+            <div className="agent-status-banner__head">
+              <h3>AI Maintenance Agent</h3>
+              <span className={maintenanceAgentPillClass}>
+                {maintenanceAgentState.toUpperCase()}
+              </span>
+            </div>
+            <p className="file-help">
+              {maintenanceAgentSummary?.message || 'Maintenance agent heartbeat is unavailable.'}
+            </p>
+            <div className="agent-status-banner__metrics">
+              <span className="pill">Mode: {String(maintenanceAgentPayload?.agent?.mode || maintenanceAgentPayload?.mode || 'n/a')}</span>
+              <span className="pill">
+                API: {formatLatencyLabel(maintenanceAgentPayload?.agent?.checks?.api?.latencyMs)}
+              </span>
+              <span className="pill">
+                Network: {formatLatencyLabel(maintenanceAgentPayload?.agent?.checks?.network?.latencyMs)}
+              </span>
+              <span className="pill">
+                Failures: {Number.parseInt(maintenanceAgentSummary?.consecutiveFailures, 10) || 0}
+              </span>
+              <span className="pill">Updated: {formatAgentRelativeTime(maintenanceAgentSummary?.updatedAt)}</span>
+            </div>
+            {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
           </div>
 
           <div className="field">

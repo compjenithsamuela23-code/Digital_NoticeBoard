@@ -1018,6 +1018,48 @@ textarea {
   flex-wrap: wrap;
 }
 
+.agent-status-banner {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: var(--surface-strong);
+  display: grid;
+  gap: 8px;
+}
+
+.agent-status-banner__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-status-banner__head h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.agent-status-banner__metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-status-banner--healthy {
+  border-color: var(--pill-success-border);
+}
+
+.agent-status-banner--recovering {
+  border-color: var(--pill-info-border);
+}
+
+.agent-status-banner--degraded,
+.agent-status-banner--stale,
+.agent-status-banner--unavailable {
+  border-color: var(--pill-danger-border);
+}
+
 .inline-actions {
   display: flex;
   gap: 10px;
