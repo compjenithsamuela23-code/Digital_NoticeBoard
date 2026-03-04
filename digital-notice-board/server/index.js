@@ -131,6 +131,14 @@ const CACHE_CONTROL_CATEGORIES_PUBLIC = 'public, max-age=30, stale-while-revalid
 const CACHE_CONTROL_UPLOAD_ASSETS = 'public, max-age=3600, stale-while-revalidate=86400';
 const CACHE_CONTROL_STATIC_IMMUTABLE = 'public, max-age=31536000, immutable';
 const CACHE_CONTROL_STATIC_FALLBACK = 'public, max-age=600';
+const MAX_PUBLIC_ANNOUNCEMENTS = Math.max(
+  48,
+  Number.parseInt(process.env.MAX_PUBLIC_ANNOUNCEMENTS, 10) || 320
+);
+const MAX_WORKSPACE_ANNOUNCEMENTS = Math.max(
+  80,
+  Number.parseInt(process.env.MAX_WORKSPACE_ANNOUNCEMENTS, 10) || 500
+);
 const CACHEABLE_PUBLIC_API_PATHS = new Set(['/announcements/public', '/status', '/categories']);
 const HASHED_ASSET_FILE_PATTERN = /\.[a-f0-9]{8,}\./i;
 
@@ -2724,7 +2732,9 @@ app.get('/api/announcements/public', async (req, res) => {
       query = query.or(`category.is.null,category.eq.${requestedCategory},priority.eq.0`);
     }
 
-    const { data, error } = await query.order('created_at', { ascending: false });
+    const { data, error } = await query
+      .order('created_at', { ascending: false })
+      .limit(MAX_PUBLIC_ANNOUNCEMENTS);
 
     throwSupabaseError('Error fetching public announcements', error);
     const scopedRows =
@@ -2747,7 +2757,8 @@ app.get('/api/announcements', simpleAuth, requireWorkspaceRole, async (req, res)
       .from('announcements')
       .select('*')
       .gt('end_at', nowIso)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(MAX_WORKSPACE_ANNOUNCEMENTS);
 
     throwSupabaseError('Error fetching announcements', error);
     res.json((data || []).map(toAnnouncementDto));

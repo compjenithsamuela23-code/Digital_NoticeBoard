@@ -13,6 +13,8 @@
    - `digital-notice-board/server/supabase/migration_live_state_links.sql`
    - To add performance indexes for faster public/history reads on existing databases, also run:
    - `digital-notice-board/server/supabase/migration_performance_indexes.sql`
+   - To optimize runtime announcement window queries on older databases, also run:
+   - `digital-notice-board/server/supabase/migration_runtime_query_indexes.sql`
 2. Add these variables in the root `.env`:
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`

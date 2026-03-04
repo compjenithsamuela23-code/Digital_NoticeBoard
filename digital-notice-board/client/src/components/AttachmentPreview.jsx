@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { assetUrl } from '../config/api';
-import DocumentAttachment from './DocumentAttachment';
+const DocumentAttachment = lazy(() => import('./DocumentAttachment'));
 
 const IMAGE_EXTENSIONS = new Set([
   'jpg',
@@ -233,23 +233,31 @@ const AttachmentPreview = ({
 
   if (kind === 'document') {
     return (
-      <DocumentAttachment
-        filePath={filePath}
-        fileUrl={fileUrl}
-        fileName={resolvedName}
-        mimeType={typeHint}
-        fileSizeBytes={fileSizeBytes}
-        className={className}
-        preview={documentPreview && preview}
-        hideHeader={documentHideHeader}
-        showActions={documentShowActions && showActions}
-        slideshow={documentSlideshow}
-        slideshowAutoplay={documentSlideshowAutoplay}
-        slideshowIntervalMs={documentSlideshowIntervalMs}
-        onSlideCountChange={onDocumentSlideCountChange}
-        onSlideIndexChange={onDocumentSlideIndexChange}
-        title={title}
-      />
+      <Suspense
+        fallback={
+          <div className={`document-preview ${className}`.trim()}>
+            <p className="document-preview__hint">Loading document tools...</p>
+          </div>
+        }
+      >
+        <DocumentAttachment
+          filePath={filePath}
+          fileUrl={fileUrl}
+          fileName={resolvedName}
+          mimeType={typeHint}
+          fileSizeBytes={fileSizeBytes}
+          className={className}
+          preview={documentPreview && preview}
+          hideHeader={documentHideHeader}
+          showActions={documentShowActions && showActions}
+          slideshow={documentSlideshow}
+          slideshowAutoplay={documentSlideshowAutoplay}
+          slideshowIntervalMs={documentSlideshowIntervalMs}
+          onSlideCountChange={onDocumentSlideCountChange}
+          onSlideIndexChange={onDocumentSlideIndexChange}
+          title={title}
+        />
+      </Suspense>
     );
   }
 

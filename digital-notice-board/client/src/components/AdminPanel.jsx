@@ -340,6 +340,22 @@ const formatLatencyLabel = (value) => {
   return `${parsed}ms`;
 };
 
+const runSingleFlight = async (pendingRef, task) => {
+  if (pendingRef.current) {
+    return pendingRef.current;
+  }
+
+  const nextPromise = (async () => {
+    try {
+      return await task();
+    } finally {
+      pendingRef.current = null;
+    }
+  })();
+  pendingRef.current = nextPromise;
+  return nextPromise;
+};
+
 const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const isStaffWorkspace = workspaceRole === 'staff';
   const isAdminWorkspace = !isStaffWorkspace;
@@ -399,6 +415,12 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const mediaReplaceInputRef = useRef(null);
   const documentInputRef = useRef(null);
   const documentReplaceInputRef = useRef(null);
+  const announcementsRequestRef = useRef(null);
+  const liveStatusRequestRef = useRef(null);
+  const categoriesRequestRef = useRef(null);
+  const displayUsersRequestRef = useRef(null);
+  const staffUsersRequestRef = useRef(null);
+  const maintenanceAgentRequestRef = useRef(null);
   const [mediaReplaceIndex, setMediaReplaceIndex] = useState(-1);
   const [documentReplaceIndex, setDocumentReplaceIndex] = useState(-1);
 
@@ -566,14 +588,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    try {
-      const response = await apiClient.get(apiUrl('/api/announcements'), applyWorkspaceAuth());
-      setAnnouncements(response.data || []);
-      setRequestError('');
-    } catch (error) {
-      if (handleRequestError(error, 'Unable to load announcements.')) return;
-      console.error('Error fetching announcements:', error);
-    }
+    await runSingleFlight(announcementsRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/announcements'), applyWorkspaceAuth());
+        setAnnouncements(response.data || []);
+        setRequestError('');
+      } catch (error) {
+        if (handleRequestError(error, 'Unable to load announcements.')) return;
+        console.error('Error fetching announcements:', error);
+      }
+    });
   }, [applyWorkspaceAuth, handleRequestError, isOnline]);
 
   const fetchLiveStatus = useCallback(async () => {
@@ -581,24 +605,26 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    try {
-      const response = await apiClient.get(apiUrl('/api/status'));
-      const statusPayload = response.data || {};
-      const nextLinks =
-        Array.isArray(statusPayload.links) && statusPayload.links.length > 0
-          ? statusPayload.links
-          : statusPayload.link
-            ? [statusPayload.link]
-            : [];
-      setLiveStatus(statusPayload.status || 'OFF');
-      setLiveLinks(nextLinks);
-      setLiveDraftLinks((previous) =>
-        previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)
-      );
-      setLiveCategory(normalizeLiveCategory(statusPayload.category));
-    } catch (error) {
-      console.error('Error fetching live status:', error);
-    }
+    await runSingleFlight(liveStatusRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/status'));
+        const statusPayload = response.data || {};
+        const nextLinks =
+          Array.isArray(statusPayload.links) && statusPayload.links.length > 0
+            ? statusPayload.links
+            : statusPayload.link
+              ? [statusPayload.link]
+              : [];
+        setLiveStatus(statusPayload.status || 'OFF');
+        setLiveLinks(nextLinks);
+        setLiveDraftLinks((previous) =>
+          previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)
+        );
+        setLiveCategory(normalizeLiveCategory(statusPayload.category));
+      } catch (error) {
+        console.error('Error fetching live status:', error);
+      }
+    });
   }, [isOnline]);
 
   const fetchCategories = useCallback(async () => {
@@ -606,14 +632,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    try {
-      const response = await apiClient.get(apiUrl('/api/categories'), applyWorkspaceAuth());
-      setCategories(response.data || []);
-      setRequestError('');
-    } catch (error) {
-      if (handleRequestError(error, 'Unable to load categories.')) return;
-      console.error('Error fetching categories:', error);
-    }
+    await runSingleFlight(categoriesRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/categories'), applyWorkspaceAuth());
+        setCategories(response.data || []);
+        setRequestError('');
+      } catch (error) {
+        if (handleRequestError(error, 'Unable to load categories.')) return;
+        console.error('Error fetching categories:', error);
+      }
+    });
   }, [applyWorkspaceAuth, handleRequestError, isOnline]);
 
   const fetchDisplayUsers = useCallback(async () => {
@@ -624,14 +652,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     if (!isOnline) {
       return;
     }
-    try {
-      const response = await apiClient.get(apiUrl('/api/display-users'), applyWorkspaceAuth());
-      setDisplayUsers(response.data || []);
-      setRequestError('');
-    } catch (error) {
-      if (handleRequestError(error, 'Unable to load display users.')) return;
-      console.error('Error fetching display users:', error);
-    }
+    await runSingleFlight(displayUsersRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/display-users'), applyWorkspaceAuth());
+        setDisplayUsers(response.data || []);
+        setRequestError('');
+      } catch (error) {
+        if (handleRequestError(error, 'Unable to load display users.')) return;
+        console.error('Error fetching display users:', error);
+      }
+    });
   }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace, isOnline]);
 
   const fetchStaffUsers = useCallback(async () => {
@@ -642,14 +672,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     if (!isOnline) {
       return;
     }
-    try {
-      const response = await apiClient.get(apiUrl('/api/staff-users'), applyWorkspaceAuth());
-      setStaffUsers(response.data || []);
-      setRequestError('');
-    } catch (error) {
-      if (handleRequestError(error, 'Unable to load staff users.')) return;
-      console.error('Error fetching staff users:', error);
-    }
+    await runSingleFlight(staffUsersRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/staff-users'), applyWorkspaceAuth());
+        setStaffUsers(response.data || []);
+        setRequestError('');
+      } catch (error) {
+        if (handleRequestError(error, 'Unable to load staff users.')) return;
+        console.error('Error fetching staff users:', error);
+      }
+    });
   }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace, isOnline]);
 
   const fetchMaintenanceAgentStatus = useCallback(async () => {
@@ -657,20 +689,22 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    try {
-      const response = await apiClient.get(
-        apiUrl('/api/system/maintenance-agent'),
-        applyWorkspaceAuth()
-      );
-      setMaintenanceAgentPayload(response.data || null);
-      setMaintenanceAgentError('');
-    } catch (error) {
-      if (error.response?.status === 401) {
-        handleAuthFailure();
-        return;
+    await runSingleFlight(maintenanceAgentRequestRef, async () => {
+      try {
+        const response = await apiClient.get(
+          apiUrl('/api/system/maintenance-agent'),
+          applyWorkspaceAuth()
+        );
+        setMaintenanceAgentPayload(response.data || null);
+        setMaintenanceAgentError('');
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        setMaintenanceAgentError(extractApiError(error, 'Maintenance agent status is unavailable.'));
       }
-      setMaintenanceAgentError(extractApiError(error, 'Maintenance agent status is unavailable.'));
-    }
+    });
   }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
 
   useEffect(() => {
@@ -2182,7 +2216,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               {maintenanceAgentSummary?.message || 'Maintenance agent heartbeat is unavailable.'}
             </p>
             <div className="agent-status-banner__metrics">
-              <span className="pill">Mode: {String(maintenanceAgentPayload?.agent?.mode || maintenanceAgentPayload?.mode || 'n/a')}</span>
+              <span className="pill">
+                Mode: {String(maintenanceAgentPayload?.agent?.mode || maintenanceAgentPayload?.mode || 'n/a')}
+              </span>
               <span className="pill">
                 API: {formatLatencyLabel(maintenanceAgentPayload?.agent?.checks?.api?.latencyMs)}
               </span>
@@ -2190,7 +2226,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 Network: {formatLatencyLabel(maintenanceAgentPayload?.agent?.checks?.network?.latencyMs)}
               </span>
               <span className="pill">
-                Failures: {Number.parseInt(maintenanceAgentSummary?.consecutiveFailures, 10) || 0}
+                Failures: {Number.parseInt(maintenanceAgentPayload?.agent?.summary?.consecutiveFailures, 10) || 0}
               </span>
               <span className="pill">Updated: {formatAgentRelativeTime(maintenanceAgentSummary?.updatedAt)}</span>
             </div>

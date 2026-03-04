@@ -277,6 +277,7 @@ textarea {
   background: var(--top-glow-brand);
   top: -26px;
   right: 18%;
+  animation: aura-drift 14s ease-in-out infinite;
 }
 
 .app-shell::after {
@@ -285,6 +286,7 @@ textarea {
   background: var(--top-glow-accent);
   top: 26%;
   left: -18px;
+  animation: aura-drift 17s ease-in-out infinite reverse;
 }
 
 .card {
@@ -829,7 +831,23 @@ textarea {
   min-height: 40px;
   white-space: nowrap;
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.btn::after {
+  content: '';
+  position: absolute;
+  inset: -120% auto auto -45%;
+  width: 42%;
+  height: 320%;
+  background: linear-gradient(112deg, transparent 0%, rgba(255, 255, 255, 0.4) 48%, transparent 100%);
+  transform: rotate(14deg) translateX(-180%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.75s ease, opacity 0.3s ease;
 }
 
 .btn:hover {
@@ -840,6 +858,17 @@ textarea {
   opacity: 0.58;
   cursor: not-allowed;
   transform: none;
+}
+
+.btn:disabled::after {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover::after {
+    opacity: 0.72;
+    transform: rotate(14deg) translateX(340%);
+  }
 }
 
 .btn--primary {
@@ -907,6 +936,19 @@ textarea {
 
 .section-title h2 {
   font-size: clamp(1.12rem, 2vw, 1.45rem);
+  position: relative;
+}
+
+.section-title h2::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -6px;
+  width: 52%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand) 0%, var(--accent) 100%);
+  animation: title-underline-shift 8s ease-in-out infinite;
 }
 
 .section-title p {
@@ -1022,9 +1064,13 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 10px 12px;
-  background: var(--surface-strong);
+  background:
+    radial-gradient(220px 120px at 6% -20%, color-mix(in srgb, var(--brand) 22%, transparent), transparent 66%),
+    radial-gradient(240px 130px at 88% 120%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 70%),
+    var(--surface-strong);
   display: grid;
   gap: 8px;
+  animation: surface-breathe 8s ease-in-out infinite;
 }
 
 .agent-status-banner__head {
@@ -1058,6 +1104,7 @@ textarea {
 .agent-status-banner--stale,
 .agent-status-banner--unavailable {
   border-color: var(--pill-danger-border);
+  animation-duration: 5.5s;
 }
 
 .inline-actions {
@@ -1145,6 +1192,9 @@ textarea {
   padding: 12px;
   display: grid;
   gap: 8px;
+  content-visibility: auto;
+  contain-intrinsic-size: 140px;
+  contain: layout paint style;
 }
 
 .access-user-card__name {
@@ -1492,6 +1542,9 @@ textarea {
   cursor: pointer;
   transition: transform 0.22s ease, box-shadow 0.22s ease;
   align-content: start;
+  content-visibility: auto;
+  contain-intrinsic-size: 350px;
+  contain: layout paint style;
 }
 
 .notice-card:hover {
@@ -2369,6 +2422,9 @@ textarea {
   grid-template-rows: auto auto 1fr auto;
   gap: 10px;
   height: 100%;
+  content-visibility: auto;
+  contain-intrinsic-size: 320px;
+  contain: layout paint style;
 }
 
 .history-card__head {
@@ -2455,6 +2511,40 @@ textarea {
   }
 }
 
+@keyframes aura-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: translate3d(0, -12px, 0) scale(1.08);
+    opacity: 0.82;
+  }
+}
+
+@keyframes title-underline-shift {
+  0%,
+  100% {
+    transform: scaleX(0.82);
+    opacity: 0.88;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes surface-breathe {
+  0%,
+  100% {
+    box-shadow: var(--shadow-sm);
+  }
+  50% {
+    box-shadow: 0 18px 42px color-mix(in srgb, var(--brand) 16%, transparent);
+  }
+}
+
 @keyframes emergency-pulse {
   0%,
   100% {
@@ -2499,6 +2589,9 @@ textarea {
   .fade-up-delay,
   .emergency-banner,
   .route-loader__pulse,
+  .app-shell::before,
+  .app-shell::after,
+  .agent-status-banner,
   .auth-page::before,
   .auth-page::after,
   .display-page::before,
@@ -2512,7 +2605,8 @@ textarea {
     transition: none !important;
   }
 
-  .card::after {
+  .card::after,
+  .btn::after {
     display: none;
   }
 }

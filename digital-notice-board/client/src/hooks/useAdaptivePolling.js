@@ -7,6 +7,27 @@ function jitteredInterval(baseMs, jitterRatio = 0.15) {
   return safeBase + Math.round((Math.random() * 2 - 1) * spread);
 }
 
+function getNetworkSlowdownMultiplier() {
+  if (typeof navigator === 'undefined') {
+    return 1;
+  }
+
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!connection) {
+    return 1;
+  }
+
+  if (connection.saveData) {
+    return 2.4;
+  }
+
+  const effectiveType = String(connection.effectiveType || '').toLowerCase();
+  if (effectiveType === 'slow-2g') return 3;
+  if (effectiveType === '2g') return 2.5;
+  if (effectiveType === '3g') return 1.7;
+  return 1;
+}
+
 export function useAdaptivePolling(task, options = {}) {
   const {
     enabled = true,
@@ -35,13 +56,14 @@ export function useAdaptivePolling(task, options = {}) {
     let timerId = null;
 
     const computeNextInterval = () => {
+      const slowdownMultiplier = getNetworkSlowdownMultiplier();
       if (!online) {
-        return offlineIntervalMs;
+        return Math.round(offlineIntervalMs * slowdownMultiplier);
       }
       if (!visible) {
-        return hiddenIntervalMs;
+        return Math.round(hiddenIntervalMs * slowdownMultiplier);
       }
-      return baseIntervalMs;
+      return Math.round(baseIntervalMs * slowdownMultiplier);
     };
 
     const scheduleNext = () => {
