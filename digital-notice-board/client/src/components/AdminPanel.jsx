@@ -2282,7 +2282,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           <div className="section-title">
             <div className="section-title__text">
               <h2>Live Broadcast</h2>
-              <p>Start or stop the external live stream shown on public display.</p>
             </div>
             <span className={liveStatus === 'ON' ? 'pill pill--success' : 'pill pill--danger'}>
               <span className="badge-dot" />
