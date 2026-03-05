@@ -459,14 +459,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   const workspaceLoginRoute = isStaffWorkspace ? '/staff/login' : '/admin/login';
   const workspaceHistoryRoute = isStaffWorkspace ? '/staff/history' : '/admin/history';
-  const selectedVideoCount = useMemo(
-    () => mediaFiles.filter((file) => isVideoFile(file)).length,
-    [mediaFiles]
-  );
-  const selectedImageCount = useMemo(
-    () => mediaFiles.filter((file) => isImageFile(file)).length,
-    [mediaFiles]
-  );
   const getBatchAttachmentCount = useCallback(
     (announcement) => {
       const batchId = String(announcement?.displayBatchId || '').trim();
@@ -599,20 +591,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       .toLowerCase();
     return apiDatabase || 'n/a';
   }, [maintenanceAgentChecks]);
-  const maintenanceAgentCapabilities = useMemo(() => {
-    const capabilities = maintenanceAgentDetails?.capabilities;
-    if (!capabilities || typeof capabilities !== 'object') {
-      return '';
-    }
-    const labels = [];
-    if (capabilities.posts) labels.push('post');
-    if (capabilities.text) labels.push('text');
-    if (capabilities.images) labels.push('image');
-    if (capabilities.videos) labels.push('video');
-    if (capabilities.documents) labels.push('document');
-    if (capabilities.liveStream) labels.push('live stream');
-    return labels.join(', ');
-  }, [maintenanceAgentDetails]);
   const maintenanceAgentState = String(maintenanceAgentSummary?.state || 'unavailable')
     .trim()
     .toLowerCase();
@@ -2319,12 +2297,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 {maintenanceAgentState.toUpperCase()}
               </span>
             </div>
-            <p className="file-help">
-              {maintenanceAgentSummary?.message || 'Maintenance agent heartbeat is unavailable.'}
-            </p>
-            {maintenanceAgentCapabilities ? (
-              <p className="file-help">Managed content: {maintenanceAgentCapabilities}</p>
-            ) : null}
             <div className="agent-status-banner__metrics">
               <span className="pill">Mode: {maintenanceAgentMode}</span>
               <span className="pill">API: {formatLatencyLabel(maintenanceAgentChecks?.api?.latencyMs)}</span>
@@ -2348,7 +2320,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 Supabase: {supabasePlatformState.toUpperCase()}
               </span>
             </div>
-            {platformSummary?.message ? <p className="file-help">{platformSummary.message}</p> : null}
             {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
             {platformStatusError ? <p className="field-error">{platformStatusError}</p> : null}
           </div>
@@ -2372,10 +2343,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 Add
               </button>
             </div>
-            <p className="file-help">
-              Supports YouTube, Vimeo, and Twitch share links. You can paste with or without https://. Add up to{' '}
-              {MAX_LIVE_LINKS} stream sources.
-            </p>
             {liveLinkInputError ? <p className="field-error">{liveLinkInputError}</p> : null}
           </div>
 
@@ -2493,7 +2460,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           <div className="section-title">
             <div className="section-title__text">
               <h2>{editingId ? 'Edit Announcement' : 'Create Announcement'}</h2>
-              <p>Write the message, attach media, and schedule visibility window.</p>
             </div>
             {editingId ? <span className="pill pill--info">Editing mode</span> : null}
           </div>
@@ -2529,7 +2495,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 type="text"
                 value={formData.title}
                 onChange={(event) => setFormData({ ...formData, title: event.target.value })}
-                placeholder="Exam timetable updated for semester 2"
               />
             </div>
 
@@ -2539,11 +2504,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 id="announcement-content"
                 value={formData.content}
                 onChange={(event) => setFormData({ ...formData, content: event.target.value })}
-                placeholder="Add detailed message for students and staff"
               />
-              <p className="file-help">
-                You can leave title and content empty when uploading only media/document.
-              </p>
             </div>
 
             <div className="field">
@@ -2569,10 +2530,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                   Add Stream
                 </button>
               </div>
-              <p className="file-help">
-                Add up to {MAX_LIVE_LINKS} live stream links for this announcement. Supports normal share links (with
-                or without https://). You can change/remove any stream before publishing.
-              </p>
               {announcementLiveInputError ? <p className="field-error">{announcementLiveInputError}</p> : null}
               {announcementLiveLinks.length > 0 ? (
                 <div className="announcement-live-list">
@@ -2612,9 +2569,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 onChange={handleImageChange}
                 ref={mediaInputRef}
               />
-              <p className="file-help">
-                Add one or more images. You can keep adding images in multiple rounds.
-              </p>
             </div>
 
             <div className="field">
@@ -2636,13 +2590,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 tabIndex={-1}
                 aria-hidden="true"
               />
-              <p className="file-help">
-                Add one or more videos. You can change/remove the 2nd, 3rd, 4th, 5th, etc video before publishing.
-              </p>
-              <p className="file-help">
-                Total selected media limit: {MAX_BATCH_ATTACHMENTS} (current: {selectedImageCount} images,{' '}
-                {selectedVideoCount} videos).
-              </p>
             </div>
 
             <div className="field">
@@ -2664,9 +2611,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 tabIndex={-1}
                 aria-hidden="true"
               />
-              <p className="file-help">
-                All document formats are accepted. Select up to {MAX_BATCH_ATTACHMENTS} files total (media + document).
-              </p>
             </div>
 
             {mediaPreviewUrls.length > 0 ? (
@@ -2834,7 +2778,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         <div className="section-title">
           <div className="section-title__text">
             <h2>Published Announcements</h2>
-            <p>Select any card to quickly load it into edit form.</p>
           </div>
           <span className="pill">{announcements.length} records</span>
         </div>
