@@ -7,6 +7,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const fs = require('fs').promises;
 const fsSync = require('fs');
+const dns = require('dns').promises;
 const multer = require('multer');
 const { randomUUID } = require('crypto');
 const bcrypt = require('bcryptjs');
@@ -72,6 +73,20 @@ const MAINTENANCE_AGENT_STALE_MS = Math.max(
   30 * 1000,
   Number.parseInt(process.env.MAINTENANCE_AGENT_STALE_MS, 10) || 5 * 60 * 1000
 );
+const MAINTENANCE_AGENT_NETWORK_URL = String(
+  process.env.MAINTENANCE_AGENT_NETWORK_URL || 'https://www.gstatic.com/generate_204'
+).trim();
+const MAINTENANCE_AGENT_DNS_HOST = String(process.env.MAINTENANCE_AGENT_DNS_HOST || 'google.com').trim();
+const MAINTENANCE_AGENT_PROBE_TIMEOUT_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.MAINTENANCE_AGENT_PROBE_TIMEOUT_MS, 10) || 5000
+);
+const MAINTENANCE_AGENT_RUNTIME_CACHE_MS = Math.max(
+  5000,
+  Number.parseInt(process.env.MAINTENANCE_AGENT_RUNTIME_CACHE_MS, 10) || 20000
+);
+const MAINTENANCE_AGENT_RUNTIME_NAME = 'Digital Notice Board Runtime Agent';
+const MAINTENANCE_AGENT_RUNTIME_VERSION = '2.0.0';
 const REQUIRED_SUPABASE_TABLES = ['users', 'categories', 'announcements', 'history'];
 const OPTIONAL_SUPABASE_TABLES = ['live_state'];
 let maintenanceInFlight = null;
@@ -80,6 +95,19 @@ let historyTableMode = 'unknown';
 let runtimeInitPromise = null;
 let maintenanceIntervalHandle = null;
 let storageBucketReadyPromise = null;
+let runtimeMaintenanceChecksCompleted = 0;
+const runtimeMaintenanceStatusCache = {
+  full: {
+    payload: null,
+    updatedAtMs: 0,
+    inFlight: null
+  },
+  light: {
+    payload: null,
+    updatedAtMs: 0,
+    inFlight: null
+  }
+};
 const LOGIN_HISTORY_ACTIONS = [
   'admin_login',
   'admin_logout',
@@ -3976,6 +4004,295 @@ async function readMaintenanceAgentStatus() {
   }
 }
 
+function cloneJsonValue(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function getMaintenanceAgentUpdatedAt(agentStatus) {
+  const updatedAt = String(agentStatus?.updatedAt || '').trim();
+  return updatedAt || null;
+}
+
+function isMaintenanceAgentStatusStale(agentStatus) {
+  const updatedAt = getMaintenanceAgentUpdatedAt(agentStatus);
+  if (!updatedAt) return true;
+  const updatedAtMs = Date.parse(updatedAt);
+  if (!Number.isFinite(updatedAtMs)) return true;
+  return Date.now() - updatedAtMs > MAINTENANCE_AGENT_STALE_MS;
+}
+
+async function probeUrlWithTimeout(url, timeoutMs) {
+  const startedAtMs = Date.now();
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      latencyMs: Date.now() - startedAtMs,
+      error: null
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: 0,
+      latencyMs: Date.now() - startedAtMs,
+      error: error.message || 'Request failed'
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+async function probeRuntimeNetwork({ enabled = true } = {}) {
+  if (!enabled) {
+    return {
+      ok: true,
+      skipped: true,
+      statusCode: 0,
+      latencyMs: 0,
+      error: null
+    };
+  }
+  return probeUrlWithTimeout(MAINTENANCE_AGENT_NETWORK_URL, MAINTENANCE_AGENT_PROBE_TIMEOUT_MS);
+}
+
+async function probeRuntimeDns({ enabled = true } = {}) {
+  if (!enabled) {
+    return {
+      ok: true,
+      skipped: true,
+      latencyMs: 0,
+      address: null,
+      family: null,
+      error: null
+    };
+  }
+
+  const startedAtMs = Date.now();
+  try {
+    const result = await Promise.race([
+      dns.lookup(MAINTENANCE_AGENT_DNS_HOST),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('DNS probe timed out')), MAINTENANCE_AGENT_PROBE_TIMEOUT_MS)
+      )
+    ]);
+    return {
+      ok: true,
+      skipped: false,
+      latencyMs: Date.now() - startedAtMs,
+      address: result.address,
+      family: result.family,
+      error: null
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      skipped: false,
+      latencyMs: Date.now() - startedAtMs,
+      address: null,
+      family: null,
+      error: error.message || 'DNS probe failed'
+    };
+  }
+}
+
+async function probeRuntimeDatabase() {
+  const startedAtMs = Date.now();
+  try {
+    const { error } = await supabase.from('users').select('id').limit(1);
+    if (error && !isMissingTableError(error, 'users')) {
+      throwSupabaseError('Runtime maintenance database probe failed', error);
+    }
+    return {
+      ok: !error,
+      status: error ? 'degraded' : 'ok',
+      latencyMs: Date.now() - startedAtMs,
+      error: error ? error.message : null
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'degraded',
+      latencyMs: Date.now() - startedAtMs,
+      error: error.message || 'Database probe failed'
+    };
+  }
+}
+
+function buildRuntimeMaintenanceCapabilities() {
+  return {
+    posts: true,
+    text: true,
+    images: true,
+    videos: true,
+    documents: true,
+    liveStream: true,
+    autoRecovery: !IS_SERVERLESS_RUNTIME
+  };
+}
+
+async function buildRuntimeMaintenanceStatus({ includeNetworkProbe = true } = {}) {
+  const startedAtMs = Date.now();
+  const [databaseCheck, networkCheck, dnsCheck] = await Promise.all([
+    probeRuntimeDatabase(),
+    probeRuntimeNetwork({ enabled: includeNetworkProbe }),
+    probeRuntimeDns({ enabled: includeNetworkProbe })
+  ]);
+
+  const apiLatencyMs = Math.max(1, Date.now() - startedAtMs);
+  const hasCriticalIssue = !databaseCheck.ok;
+  const hasNetworkIssue = includeNetworkProbe && (!networkCheck.ok || !dnsCheck.ok);
+
+  let state = 'healthy';
+  let message = 'Runtime diagnostics are healthy. Agent controls are online.';
+  if (hasCriticalIssue && hasNetworkIssue) {
+    state = 'degraded';
+    message = 'Database and network diagnostics detected issues.';
+  } else if (hasCriticalIssue) {
+    state = 'degraded';
+    message = 'Database diagnostic detected an issue.';
+  } else if (hasNetworkIssue) {
+    state = 'degraded';
+    message = 'Network or DNS diagnostic detected an issue.';
+  }
+
+  runtimeMaintenanceChecksCompleted += 1;
+
+  return {
+    source: 'runtime-diagnostics',
+    agent: {
+      name: MAINTENANCE_AGENT_RUNTIME_NAME,
+      version: MAINTENANCE_AGENT_RUNTIME_VERSION,
+      pid: process.pid,
+      startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+      intervalMs: null,
+      healthUrl: '/api/health'
+    },
+    updatedAt: new Date().toISOString(),
+    mode: IS_SERVERLESS_RUNTIME ? 'serverless-runtime' : 'app-runtime',
+    summary: {
+      state,
+      message,
+      consecutiveFailures: hasCriticalIssue ? 1 : 0,
+      checksCompleted: runtimeMaintenanceChecksCompleted
+    },
+    checks: {
+      api: {
+        ok: !hasCriticalIssue,
+        statusCode: hasCriticalIssue ? 503 : 200,
+        latencyMs: apiLatencyMs,
+        status: state,
+        database: databaseCheck.status,
+        error: null
+      },
+      database: databaseCheck,
+      network: networkCheck,
+      dns: dnsCheck
+    },
+    processes: {
+      apiServer: {
+        pid: process.pid,
+        running: true
+      },
+      announcementMaintenance: {
+        pid: null,
+        running: !IS_SERVERLESS_RUNTIME
+      }
+    },
+    recovery: {
+      threshold: null,
+      cooldownMs: null,
+      attempts: 0,
+      failures: 0,
+      last: null,
+      current: {
+        attempted: false,
+        success: true,
+        action: null,
+        reason: 'Runtime diagnostics mode',
+        output: ''
+      }
+    },
+    capabilities: buildRuntimeMaintenanceCapabilities()
+  };
+}
+
+async function getRuntimeMaintenanceStatus({ includeNetworkProbe = true } = {}) {
+  const cacheKey = includeNetworkProbe ? 'full' : 'light';
+  const cacheEntry = runtimeMaintenanceStatusCache[cacheKey];
+  const nowMs = Date.now();
+
+  if (cacheEntry.payload && nowMs - cacheEntry.updatedAtMs <= MAINTENANCE_AGENT_RUNTIME_CACHE_MS) {
+    return cloneJsonValue(cacheEntry.payload);
+  }
+
+  if (cacheEntry.inFlight) {
+    return cacheEntry.inFlight;
+  }
+
+  cacheEntry.inFlight = (async () => {
+    try {
+      const payload = await buildRuntimeMaintenanceStatus({ includeNetworkProbe });
+      cacheEntry.payload = payload;
+      cacheEntry.updatedAtMs = Date.now();
+      return cloneJsonValue(payload);
+    } finally {
+      cacheEntry.inFlight = null;
+    }
+  })();
+
+  return cacheEntry.inFlight;
+}
+
+async function resolveMaintenanceAgentStatus({ includeNetworkProbe = true } = {}) {
+  const heartbeatStatus = await readMaintenanceAgentStatus();
+  if (heartbeatStatus && !isMaintenanceAgentStatusStale(heartbeatStatus)) {
+    return {
+      agentStatus: heartbeatStatus,
+      source: 'heartbeat'
+    };
+  }
+
+  const runtimeStatus = await getRuntimeMaintenanceStatus({ includeNetworkProbe });
+  const resolvedStatus = cloneJsonValue(runtimeStatus) || runtimeStatus;
+
+  if (heartbeatStatus) {
+    const heartbeatUpdatedAt = getMaintenanceAgentUpdatedAt(heartbeatStatus);
+    resolvedStatus.source = 'runtime-fallback';
+    resolvedStatus.summary = {
+      ...(resolvedStatus.summary || {}),
+      message: `Heartbeat is stale${heartbeatUpdatedAt ? ` (${heartbeatUpdatedAt})` : ''}; runtime diagnostics are active.`
+    };
+    resolvedStatus.recovery = {
+      ...(resolvedStatus.recovery || {}),
+      heartbeat: {
+        stale: true,
+        updatedAt: heartbeatUpdatedAt
+      }
+    };
+  } else {
+    resolvedStatus.source = 'runtime';
+  }
+
+  return {
+    agentStatus: resolvedStatus,
+    source: resolvedStatus.source
+  };
+}
+
 function buildMaintenanceAgentSummary(agentStatus) {
   if (!agentStatus || typeof agentStatus !== 'object') {
     return {
@@ -3987,19 +4304,27 @@ function buildMaintenanceAgentSummary(agentStatus) {
     };
   }
 
-  const updatedAt = String(agentStatus.updatedAt || '').trim() || null;
-  const updatedAtMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
-  const stale = !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > MAINTENANCE_AGENT_STALE_MS;
+  const updatedAt = getMaintenanceAgentUpdatedAt(agentStatus);
+  const stale = isMaintenanceAgentStatusStale(agentStatus);
   const state = String(agentStatus.summary?.state || 'unknown')
     .trim()
     .toLowerCase();
   const message =
     String(agentStatus.summary?.message || '').trim() ||
     (stale ? 'Maintenance agent heartbeat is stale.' : 'Maintenance agent heartbeat is active.');
+  const normalizedState = stale ? 'stale' : state || 'unknown';
+  const status =
+    normalizedState === 'stale'
+      ? 'stale'
+      : normalizedState === 'degraded' || normalizedState === 'unavailable' || normalizedState === 'stopped'
+        ? 'degraded'
+        : normalizedState === 'recovering'
+          ? 'recovering'
+          : 'ok';
 
   return {
-    status: stale ? 'stale' : 'ok',
-    state: stale ? 'stale' : state || 'unknown',
+    status,
+    state: normalizedState,
     stale,
     updatedAt,
     message
@@ -4008,11 +4333,12 @@ function buildMaintenanceAgentSummary(agentStatus) {
 
 app.get('/api/system/maintenance-agent', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
-    const agentStatus = await readMaintenanceAgentStatus();
+    const { agentStatus, source } = await resolveMaintenanceAgentStatus({ includeNetworkProbe: true });
     const summary = buildMaintenanceAgentSummary(agentStatus);
     res.json({
       status: summary.status,
       summary,
+      source,
       agent: agentStatus
     });
   } catch (error) {
@@ -4036,7 +4362,8 @@ app.get('/api/test', (req, res) => {
 
 app.get('/api/health', async (req, res) => {
   const startedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
-  const maintenanceAgentSummary = buildMaintenanceAgentSummary(await readMaintenanceAgentStatus());
+  const maintenanceAgentResolution = await resolveMaintenanceAgentStatus({ includeNetworkProbe: false });
+  const maintenanceAgentSummary = buildMaintenanceAgentSummary(maintenanceAgentResolution.agentStatus);
   try {
     const { error } = await supabase.from('users').select('id').limit(1);
     if (error && !isMissingTableError(error, 'users')) {

@@ -556,10 +556,51 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const matchedCategory = categories.find((category) => category.id === liveCategory);
     return matchedCategory ? matchedCategory.name : 'Selected category';
   }, [categories, liveCategory]);
-  const maintenanceAgentSummary = useMemo(
-    () => maintenanceAgentPayload?.summary || null,
+  const maintenanceAgentDetails = useMemo(
+    () => maintenanceAgentPayload?.agent || maintenanceAgentPayload || null,
     [maintenanceAgentPayload]
   );
+  const maintenanceAgentSummary = useMemo(
+    () => maintenanceAgentPayload?.summary || maintenanceAgentDetails?.summary || null,
+    [maintenanceAgentDetails, maintenanceAgentPayload]
+  );
+  const maintenanceAgentChecks = useMemo(
+    () => maintenanceAgentDetails?.checks || maintenanceAgentPayload?.checks || {},
+    [maintenanceAgentDetails, maintenanceAgentPayload]
+  );
+  const maintenanceAgentMode = String(maintenanceAgentDetails?.mode || maintenanceAgentPayload?.mode || 'n/a');
+  const maintenanceAgentFailures =
+    Number.parseInt(
+      maintenanceAgentDetails?.summary?.consecutiveFailures ?? maintenanceAgentSummary?.consecutiveFailures,
+      10
+    ) || 0;
+  const maintenanceAgentSource = String(maintenanceAgentDetails?.source || maintenanceAgentPayload?.source || '').trim();
+  const maintenanceAgentDatabaseStatus = useMemo(() => {
+    if (maintenanceAgentChecks?.database?.ok === true) {
+      return 'ok';
+    }
+    if (maintenanceAgentChecks?.database?.ok === false) {
+      return 'degraded';
+    }
+    const apiDatabase = String(maintenanceAgentChecks?.api?.database || '')
+      .trim()
+      .toLowerCase();
+    return apiDatabase || 'n/a';
+  }, [maintenanceAgentChecks]);
+  const maintenanceAgentCapabilities = useMemo(() => {
+    const capabilities = maintenanceAgentDetails?.capabilities;
+    if (!capabilities || typeof capabilities !== 'object') {
+      return '';
+    }
+    const labels = [];
+    if (capabilities.posts) labels.push('post');
+    if (capabilities.text) labels.push('text');
+    if (capabilities.images) labels.push('image');
+    if (capabilities.videos) labels.push('video');
+    if (capabilities.documents) labels.push('document');
+    if (capabilities.liveStream) labels.push('live stream');
+    return labels.join(', ');
+  }, [maintenanceAgentDetails]);
   const maintenanceAgentState = String(maintenanceAgentSummary?.state || 'unavailable')
     .trim()
     .toLowerCase();
@@ -2215,19 +2256,18 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             <p className="file-help">
               {maintenanceAgentSummary?.message || 'Maintenance agent heartbeat is unavailable.'}
             </p>
+            {maintenanceAgentCapabilities ? (
+              <p className="file-help">Managed content: {maintenanceAgentCapabilities}</p>
+            ) : null}
             <div className="agent-status-banner__metrics">
+              <span className="pill">Mode: {maintenanceAgentMode}</span>
+              <span className="pill">API: {formatLatencyLabel(maintenanceAgentChecks?.api?.latencyMs)}</span>
               <span className="pill">
-                Mode: {String(maintenanceAgentPayload?.agent?.mode || maintenanceAgentPayload?.mode || 'n/a')}
+                Network: {formatLatencyLabel(maintenanceAgentChecks?.network?.latencyMs)}
               </span>
-              <span className="pill">
-                API: {formatLatencyLabel(maintenanceAgentPayload?.agent?.checks?.api?.latencyMs)}
-              </span>
-              <span className="pill">
-                Network: {formatLatencyLabel(maintenanceAgentPayload?.agent?.checks?.network?.latencyMs)}
-              </span>
-              <span className="pill">
-                Failures: {Number.parseInt(maintenanceAgentPayload?.agent?.summary?.consecutiveFailures, 10) || 0}
-              </span>
+              <span className="pill">DB: {maintenanceAgentDatabaseStatus}</span>
+              <span className="pill">Failures: {maintenanceAgentFailures}</span>
+              {maintenanceAgentSource ? <span className="pill">Source: {maintenanceAgentSource}</span> : null}
               <span className="pill">Updated: {formatAgentRelativeTime(maintenanceAgentSummary?.updatedAt)}</span>
             </div>
             {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
