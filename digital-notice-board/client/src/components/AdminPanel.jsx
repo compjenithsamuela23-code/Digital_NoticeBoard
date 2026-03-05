@@ -2439,7 +2439,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           <div className="section-title section-title--spaced">
             <div className="section-title__text">
               <h2>Category Overview</h2>
-              <p>Manage categories from top controls. Active categories are listed here.</p>
             </div>
           </div>
 
