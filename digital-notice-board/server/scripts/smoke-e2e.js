@@ -170,6 +170,14 @@ async function run() {
     assert(maintenanceAgentStatus && typeof maintenanceAgentStatus === 'object', 'Maintenance agent response is invalid.');
     assert(String(maintenanceAgentStatus?.status || '').trim().length > 0, 'Maintenance agent status is missing.');
 
+    logStep('Checking platform diagnostics endpoint');
+    const platformStatus = await request('/api/system/platform-status', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(platformStatus && typeof platformStatus === 'object', 'Platform diagnostics response is invalid.');
+    assert(String(platformStatus?.summary?.state || '').trim().length > 0, 'Platform diagnostics state is missing.');
+
     logStep('Creating temporary category');
     const category = await request('/api/categories', {
       method: 'POST',

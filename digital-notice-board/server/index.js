@@ -96,6 +96,19 @@ let runtimeInitPromise = null;
 let maintenanceIntervalHandle = null;
 let storageBucketReadyPromise = null;
 let runtimeMaintenanceChecksCompleted = 0;
+const runtimeApiResponseCache = new Map();
+const runtimeApiCacheStats = {
+  hits: 0,
+  misses: 0,
+  sets: 0,
+  invalidations: 0,
+  lastInvalidateAt: null
+};
+const platformStatusCacheState = {
+  payload: null,
+  updatedAtMs: 0,
+  inFlight: null
+};
 const runtimeMaintenanceStatusCache = {
   full: {
     payload: null,
@@ -169,6 +182,34 @@ const MAX_WORKSPACE_ANNOUNCEMENTS = Math.max(
 );
 const CACHEABLE_PUBLIC_API_PATHS = new Set(['/announcements/public', '/status', '/categories']);
 const HASHED_ASSET_FILE_PATTERN = /\.[a-f0-9]{8,}\./i;
+const API_RUNTIME_CACHE_ENABLED = String(process.env.API_RUNTIME_CACHE_ENABLED || 'true').toLowerCase() !== 'false';
+const API_RUNTIME_CACHE_STATUS_TTL_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.API_RUNTIME_CACHE_STATUS_TTL_MS, 10) || 5000
+);
+const API_RUNTIME_CACHE_CATEGORIES_TTL_MS = Math.max(
+  3000,
+  Number.parseInt(process.env.API_RUNTIME_CACHE_CATEGORIES_TTL_MS, 10) || 45000
+);
+const API_RUNTIME_CACHE_PUBLIC_ANNOUNCEMENTS_TTL_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.API_RUNTIME_CACHE_PUBLIC_ANNOUNCEMENTS_TTL_MS, 10) || 8000
+);
+const API_RUNTIME_CACHE_WORKSPACE_ANNOUNCEMENTS_TTL_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.API_RUNTIME_CACHE_WORKSPACE_ANNOUNCEMENTS_TTL_MS, 10) || 6000
+);
+const PLATFORM_STATUS_CACHE_MS = Math.max(
+  5000,
+  Number.parseInt(process.env.PLATFORM_STATUS_CACHE_MS, 10) || 45000
+);
+const GITHUB_REPO = String(process.env.GITHUB_REPO || '').trim();
+const GITHUB_API_BASE_URL = String(process.env.GITHUB_API_BASE_URL || 'https://api.github.com').trim();
+const GITHUB_TOKEN = String(process.env.GITHUB_TOKEN || '').trim();
+const VERCEL_API_BASE_URL = String(process.env.VERCEL_API_BASE_URL || 'https://api.vercel.com').trim();
+const VERCEL_API_TOKEN = String(process.env.VERCEL_TOKEN || process.env.VERCEL_API_TOKEN || '').trim();
+const VERCEL_PROJECT_ID = String(process.env.VERCEL_PROJECT_ID || '').trim();
+const VERCEL_TEAM_ID = String(process.env.VERCEL_TEAM_ID || '').trim();
 
 const corsOrigin = configuredOrigins.length > 0 ? configuredOrigins : '*';
 const UPLOAD_DOWNLOAD_ONLY_EXTENSIONS = new Set([
@@ -2272,7 +2313,12 @@ async function runAnnouncementMaintenance(options = {}) {
   const nowMs = Date.now();
 
   if (!forceRun && nowMs - lastMaintenanceRunAtMs < ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS) {
-    return;
+    return {
+      skipped: true,
+      backfilled: 0,
+      archivedExpired: 0,
+      deactivatedExpired: 0
+    };
   }
 
   if (maintenanceInFlight) {
@@ -2283,15 +2329,33 @@ async function runAnnouncementMaintenance(options = {}) {
     try {
       const backfilled = await backfillMissingCreatedHistory();
       const expired = await archiveExpiredAnnouncements();
+      const changed = backfilled > 0 || expired.archived > 0 || expired.deactivated > 0;
 
-      if (backfilled > 0 || expired.archived > 0 || expired.deactivated > 0) {
+      if (changed) {
+        invalidateAnnouncementRuntimeCaches();
+      }
+
+      if (changed) {
         console.log(
           `🧾 Announcement maintenance: backfilled=${backfilled}, archivedExpired=${expired.archived}, deactivatedExpired=${expired.deactivated}`
         );
       }
       lastMaintenanceRunAtMs = Date.now();
+      return {
+        skipped: false,
+        backfilled,
+        archivedExpired: expired.archived,
+        deactivatedExpired: expired.deactivated
+      };
     } catch (error) {
       console.error('⚠️ Announcement maintenance failed:', error.message);
+      return {
+        skipped: false,
+        backfilled: 0,
+        archivedExpired: 0,
+        deactivatedExpired: 0,
+        error: error.message
+      };
     } finally {
       maintenanceInFlight = null;
     }
@@ -2746,8 +2810,16 @@ app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, r
 
 app.get('/api/announcements/public', async (req, res) => {
   try {
-    await runAnnouncementMaintenance();
     const requestedCategory = normalizeCategoryFilter(req.query.category);
+    const cacheKey = `public-announcements:${requestedCategory}`;
+    const cachedPayload = getRuntimeCachedPayload(cacheKey);
+    if (cachedPayload) {
+      res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
+      res.setHeader('X-Runtime-Cache', 'HIT');
+      return res.json(cachedPayload);
+    }
+
+    await runAnnouncementMaintenance();
     const nowIso = new Date().toISOString();
     let query = supabase
       .from('announcements')
@@ -2770,8 +2842,11 @@ app.get('/api/announcements/public', async (req, res) => {
         ? data || []
         : (data || []).filter((row) => isAnnouncementVisibleForDisplayCategory(row, requestedCategory));
     const sortedRows = [...scopedRows].sort(comparePublicAnnouncements);
+    const dtoPayload = sortedRows.map(toAnnouncementDto);
+    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_PUBLIC_ANNOUNCEMENTS_TTL_MS);
     res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
-    res.json(sortedRows.map(toAnnouncementDto));
+    res.setHeader('X-Runtime-Cache', 'MISS');
+    res.json(dtoPayload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2779,6 +2854,13 @@ app.get('/api/announcements/public', async (req, res) => {
 
 app.get('/api/announcements', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
+    const cacheKey = 'workspace-announcements';
+    const cachedPayload = getRuntimeCachedPayload(cacheKey);
+    if (cachedPayload) {
+      res.setHeader('X-Runtime-Cache', 'HIT');
+      return res.json(cachedPayload);
+    }
+
     await runAnnouncementMaintenance();
     const nowIso = new Date().toISOString();
     const { data, error } = await supabase
@@ -2789,7 +2871,10 @@ app.get('/api/announcements', simpleAuth, requireWorkspaceRole, async (req, res)
       .limit(MAX_WORKSPACE_ANNOUNCEMENTS);
 
     throwSupabaseError('Error fetching announcements', error);
-    res.json((data || []).map(toAnnouncementDto));
+    const dtoPayload = (data || []).map(toAnnouncementDto);
+    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_WORKSPACE_ANNOUNCEMENTS_TTL_MS);
+    res.setHeader('X-Runtime-Cache', 'MISS');
+    res.json(dtoPayload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2906,6 +2991,7 @@ app.post(
 
     const data = await runAnnouncementInsert(announcementRow, 'Error creating announcement');
     await appendHistory(data, 'created', (req.user && req.user.email) || null);
+    invalidateAnnouncementRuntimeCaches();
 
     io.emit('announcementUpdate', {
       action: 'create',
@@ -3033,6 +3119,7 @@ app.post('/api/announcements/batch', simpleAuth, requireWorkspaceRole, async (re
     for (const row of insertedRows) {
       await appendHistory(row, 'created', (req.user && req.user.email) || null);
     }
+    invalidateAnnouncementRuntimeCaches();
 
     io.emit('announcementUpdate', {
       action: 'batch_create',
@@ -3240,6 +3327,7 @@ app.put(
       for (const row of updatedRows || []) {
         await appendHistory(row, 'updated', (req.user && req.user.email) || null);
       }
+      invalidateAnnouncementRuntimeCaches();
 
       io.emit('announcementUpdate', {
         action: 'batch_update',
@@ -3370,6 +3458,7 @@ app.put(
     }
 
     await appendHistory(data, 'updated', (req.user && req.user.email) || null);
+    invalidateAnnouncementRuntimeCaches();
 
     io.emit('announcementUpdate', {
       action: 'update',
@@ -3420,6 +3509,7 @@ app.delete('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (re
         .delete()
         .eq('display_batch_id', existingBatchId);
       throwSupabaseError('Error deleting announcement batch', batchDeleteError);
+      invalidateAnnouncementRuntimeCaches();
 
       io.emit('announcementUpdate', {
         action: 'batch_delete',
@@ -3448,6 +3538,7 @@ app.delete('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (re
 
     const { error } = await supabase.from('announcements').delete().eq('id', req.params.id);
     throwSupabaseError('Error deleting announcement', error);
+    invalidateAnnouncementRuntimeCaches();
 
     io.emit('announcementUpdate', {
       action: 'delete',
@@ -3529,12 +3620,26 @@ app.get('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (req, 
 
 app.get('/api/status', async (req, res) => {
   try {
+    const cacheKey = 'live-status';
+    const cachedPayload = getRuntimeCachedPayload(cacheKey);
+    if (cachedPayload) {
+      res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
+      res.setHeader('X-Runtime-Cache', 'HIT');
+      return res.json(cachedPayload);
+    }
+
     const live = await getLiveState();
     res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
     if (!live) {
-      return res.json(getFallbackLiveDto());
+      const fallbackPayload = getFallbackLiveDto();
+      setRuntimeCachedPayload(cacheKey, fallbackPayload, API_RUNTIME_CACHE_STATUS_TTL_MS);
+      res.setHeader('X-Runtime-Cache', 'MISS');
+      return res.json(fallbackPayload);
     }
-    res.json(toLiveDto(live));
+    const dtoPayload = toLiveDto(live);
+    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_STATUS_TTL_MS);
+    res.setHeader('X-Runtime-Cache', 'MISS');
+    res.json(dtoPayload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3542,14 +3647,25 @@ app.get('/api/status', async (req, res) => {
 
 app.get('/api/categories', async (req, res) => {
   try {
+    const cacheKey = 'categories';
+    const cachedPayload = getRuntimeCachedPayload(cacheKey);
+    if (cachedPayload) {
+      res.setHeader('Cache-Control', CACHE_CONTROL_CATEGORIES_PUBLIC);
+      res.setHeader('X-Runtime-Cache', 'HIT');
+      return res.json(cachedPayload);
+    }
+
     const { data, error } = await supabase
       .from('categories')
       .select('*')
       .order('created_at', { ascending: true });
 
     throwSupabaseError('Error fetching categories', error);
+    const dtoPayload = (data || []).map(toCategoryDto);
+    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_CATEGORIES_TTL_MS);
     res.setHeader('Cache-Control', CACHE_CONTROL_CATEGORIES_PUBLIC);
-    res.json((data || []).map(toCategoryDto));
+    res.setHeader('X-Runtime-Cache', 'MISS');
+    res.json(dtoPayload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3597,6 +3713,7 @@ app.post('/api/categories', simpleAuth, requireAdminRole, async (req, res) => {
       actionAt: data.created_at
     });
 
+    invalidateCategoriesRuntimeCache();
     res.status(201).json(toCategoryDto(data));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -3647,6 +3764,7 @@ app.delete('/api/categories/:id', simpleAuth, requireAdminRole, async (req, res)
       actionAt: deletedAt
     });
 
+    invalidateCategoriesRuntimeCache();
     res.json({ message: 'Category deleted', id: category.id });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -3943,6 +4061,7 @@ app.post('/api/start', simpleAuth, requireWorkspaceRole, async (req, res) => {
     if (warning) {
       payload.warning = warning;
     }
+    invalidateLiveRuntimeCache();
     io.emit('liveUpdate', payload);
     res.json(payload);
   } catch (error) {
@@ -3987,6 +4106,7 @@ app.post('/api/stop', simpleAuth, requireWorkspaceRole, async (req, res) => {
     if (warning) {
       payload.warning = warning;
     }
+    invalidateLiveRuntimeCache();
     io.emit('liveUpdate', payload);
     res.json(payload);
   } catch (error) {
@@ -4013,6 +4133,82 @@ function cloneJsonValue(value) {
   } catch {
     return value;
   }
+}
+
+function getRuntimeCachedPayload(cacheKey) {
+  if (!API_RUNTIME_CACHE_ENABLED) {
+    return null;
+  }
+  const entry = runtimeApiResponseCache.get(cacheKey);
+  if (!entry) {
+    runtimeApiCacheStats.misses += 1;
+    return null;
+  }
+  if (Date.now() > entry.expiresAtMs) {
+    runtimeApiResponseCache.delete(cacheKey);
+    runtimeApiCacheStats.misses += 1;
+    return null;
+  }
+  runtimeApiCacheStats.hits += 1;
+  return cloneJsonValue(entry.payload);
+}
+
+function setRuntimeCachedPayload(cacheKey, payload, ttlMs) {
+  if (!API_RUNTIME_CACHE_ENABLED) {
+    return;
+  }
+  const safeTtlMs = Math.max(500, Number.parseInt(ttlMs, 10) || 1000);
+  runtimeApiResponseCache.set(cacheKey, {
+    payload: cloneJsonValue(payload),
+    expiresAtMs: Date.now() + safeTtlMs
+  });
+  runtimeApiCacheStats.sets += 1;
+}
+
+function invalidatePlatformStatusCache() {
+  platformStatusCacheState.payload = null;
+  platformStatusCacheState.updatedAtMs = 0;
+}
+
+function invalidateRuntimeCachedPayload(prefix = '') {
+  const normalizedPrefix = String(prefix || '').trim();
+  let invalidatedCount = 0;
+  for (const cacheKey of runtimeApiResponseCache.keys()) {
+    if (!normalizedPrefix || cacheKey.startsWith(normalizedPrefix)) {
+      runtimeApiResponseCache.delete(cacheKey);
+      invalidatedCount += 1;
+    }
+  }
+  if (invalidatedCount > 0) {
+    runtimeApiCacheStats.invalidations += invalidatedCount;
+    runtimeApiCacheStats.lastInvalidateAt = new Date().toISOString();
+    invalidatePlatformStatusCache();
+  }
+  return invalidatedCount;
+}
+
+function invalidateAnnouncementRuntimeCaches() {
+  invalidateRuntimeCachedPayload('public-announcements:');
+  invalidateRuntimeCachedPayload('workspace-announcements');
+  invalidatePlatformStatusCache();
+}
+
+function invalidateCategoriesRuntimeCache() {
+  invalidateRuntimeCachedPayload('categories');
+  invalidatePlatformStatusCache();
+}
+
+function invalidateLiveRuntimeCache() {
+  invalidateRuntimeCachedPayload('live-status');
+  invalidatePlatformStatusCache();
+}
+
+function getRuntimeCacheStatsSnapshot() {
+  return {
+    enabled: API_RUNTIME_CACHE_ENABLED,
+    keys: runtimeApiResponseCache.size,
+    ...runtimeApiCacheStats
+  };
 }
 
 function getMaintenanceAgentUpdatedAt(agentStatus) {
@@ -4054,6 +4250,305 @@ async function probeUrlWithTimeout(url, timeoutMs) {
   } finally {
     clearTimeout(timeoutHandle);
   }
+}
+
+async function fetchJsonWithTimeout(url, { timeoutMs = MAINTENANCE_AGENT_PROBE_TIMEOUT_MS, headers = {} } = {}) {
+  const startedAtMs = Date.now();
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        ...headers
+      }
+    });
+    const rawText = await response.text().catch(() => '');
+    let payload = null;
+    if (rawText) {
+      try {
+        payload = JSON.parse(rawText);
+      } catch {
+        payload = null;
+      }
+    }
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      latencyMs: Date.now() - startedAtMs,
+      payload,
+      error: response.ok ? null : `HTTP ${response.status}`
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: 0,
+      latencyMs: Date.now() - startedAtMs,
+      payload: null,
+      error: error.message || 'Request failed'
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+function buildBearerAuthHeaders(token) {
+  const normalizedToken = String(token || '').trim();
+  if (!normalizedToken) {
+    return {};
+  }
+  return {
+    Authorization: `Bearer ${normalizedToken}`
+  };
+}
+
+function normalizeGithubRepoValue(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/+|\/+$/g, '');
+}
+
+async function probeGithubPlatform() {
+  const repo = normalizeGithubRepoValue(GITHUB_REPO);
+  if (!repo || !repo.includes('/')) {
+    return {
+      enabled: false,
+      configured: false,
+      status: 'not_configured',
+      message: 'Set GITHUB_REPO=owner/repo to enable GitHub diagnostics.'
+    };
+  }
+
+  const apiUrl = `${GITHUB_API_BASE_URL.replace(/\/+$/, '')}/repos/${repo}`;
+  const response = await fetchJsonWithTimeout(apiUrl, {
+    timeoutMs: MAINTENANCE_AGENT_PROBE_TIMEOUT_MS,
+    headers: buildBearerAuthHeaders(GITHUB_TOKEN)
+  });
+
+  if (!response.ok) {
+    return {
+      enabled: true,
+      configured: true,
+      status: 'degraded',
+      message: response.error || 'GitHub diagnostics failed.',
+      latencyMs: response.latencyMs,
+      statusCode: response.statusCode
+    };
+  }
+
+  const payload = response.payload || {};
+  return {
+    enabled: true,
+    configured: true,
+    status: 'ok',
+    message: `Connected to ${repo}.`,
+    latencyMs: response.latencyMs,
+    statusCode: response.statusCode,
+    repo,
+    defaultBranch: payload.default_branch || null,
+    pushedAt: payload.pushed_at || null,
+    visibility: payload.visibility || (payload.private ? 'private' : 'public')
+  };
+}
+
+async function probeVercelPlatform() {
+  if (!VERCEL_API_TOKEN || !VERCEL_PROJECT_ID) {
+    return {
+      enabled: false,
+      configured: false,
+      status: 'not_configured',
+      message: 'Set VERCEL_TOKEN and VERCEL_PROJECT_ID to enable Vercel diagnostics.'
+    };
+  }
+
+  const baseUrl = VERCEL_API_BASE_URL.replace(/\/+$/, '');
+  const teamQuery = VERCEL_TEAM_ID ? `?teamId=${encodeURIComponent(VERCEL_TEAM_ID)}` : '';
+  const projectUrl = `${baseUrl}/v9/projects/${encodeURIComponent(VERCEL_PROJECT_ID)}${teamQuery}`;
+  const deploymentsUrl = `${baseUrl}/v6/deployments?projectId=${encodeURIComponent(VERCEL_PROJECT_ID)}&limit=1${
+    VERCEL_TEAM_ID ? `&teamId=${encodeURIComponent(VERCEL_TEAM_ID)}` : ''
+  }`;
+
+  const [projectResponse, deploymentResponse] = await Promise.all([
+    fetchJsonWithTimeout(projectUrl, {
+      timeoutMs: MAINTENANCE_AGENT_PROBE_TIMEOUT_MS,
+      headers: buildBearerAuthHeaders(VERCEL_API_TOKEN)
+    }),
+    fetchJsonWithTimeout(deploymentsUrl, {
+      timeoutMs: MAINTENANCE_AGENT_PROBE_TIMEOUT_MS,
+      headers: buildBearerAuthHeaders(VERCEL_API_TOKEN)
+    })
+  ]);
+
+  if (!projectResponse.ok) {
+    return {
+      enabled: true,
+      configured: true,
+      status: 'degraded',
+      message: projectResponse.error || 'Vercel project diagnostics failed.',
+      latencyMs: projectResponse.latencyMs,
+      statusCode: projectResponse.statusCode
+    };
+  }
+
+  const projectPayload = projectResponse.payload || {};
+  const deploymentPayload = deploymentResponse.payload || {};
+  const latestDeployment =
+    Array.isArray(deploymentPayload.deployments) && deploymentPayload.deployments.length > 0
+      ? deploymentPayload.deployments[0]
+      : null;
+  const deploymentState = String(latestDeployment?.state || '').trim().toLowerCase();
+  const status =
+    deploymentResponse.ok && (deploymentState === 'ready' || deploymentState === '')
+      ? 'ok'
+      : deploymentResponse.ok
+        ? 'degraded'
+        : 'degraded';
+
+  return {
+    enabled: true,
+    configured: true,
+    status,
+    message:
+      status === 'ok'
+        ? 'Vercel project and latest deployment are healthy.'
+        : deploymentResponse.error || 'Vercel deployment diagnostics detected an issue.',
+    latencyMs: Math.max(projectResponse.latencyMs || 0, deploymentResponse.latencyMs || 0),
+    statusCode: projectResponse.statusCode,
+    projectName: projectPayload.name || null,
+    latestDeploymentState: deploymentState || null,
+    latestDeploymentCreatedAt: latestDeployment?.createdAt
+      ? (() => {
+          const numericCreatedAt = Number(latestDeployment.createdAt);
+          if (Number.isFinite(numericCreatedAt) && numericCreatedAt > 0) {
+            return new Date(numericCreatedAt).toISOString();
+          }
+          return toIsoStringOrNull(latestDeployment.createdAt);
+        })()
+      : null,
+    latestDeploymentUrl: latestDeployment?.url ? `https://${latestDeployment.url}` : null
+  };
+}
+
+async function probeSupabasePlatform() {
+  const startedAtMs = Date.now();
+  try {
+    const [dbProbe, bucketProbe] = await Promise.all([
+      supabase.from('users').select('id').limit(1),
+      supabase.storage.listBuckets()
+    ]);
+    const dbError = dbProbe.error;
+    if (dbError && !isMissingTableError(dbError, 'users')) {
+      throwSupabaseError('Supabase diagnostics database probe failed', dbError);
+    }
+    const bucketError = bucketProbe.error;
+    if (bucketError) {
+      throw new Error(`Storage check failed: ${bucketError.message}`);
+    }
+    const buckets = Array.isArray(bucketProbe.data) ? bucketProbe.data : [];
+    const storageBucketFound = buckets.some((bucket) => bucket && bucket.name === SUPABASE_STORAGE_BUCKET);
+    return {
+      enabled: true,
+      configured: true,
+      status: dbError ? 'degraded' : storageBucketFound ? 'ok' : 'degraded',
+      message: dbError
+        ? 'Supabase is reachable, but required database table metadata is degraded.'
+        : storageBucketFound
+          ? 'Supabase database and storage are healthy.'
+          : `Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}" is missing.`,
+      latencyMs: Date.now() - startedAtMs,
+      database: dbError ? 'degraded' : 'ok',
+      storageBucket: SUPABASE_STORAGE_BUCKET,
+      storageBucketFound
+    };
+  } catch (error) {
+    return {
+      enabled: true,
+      configured: true,
+      status: 'degraded',
+      message: error.message || 'Supabase diagnostics failed.',
+      latencyMs: Date.now() - startedAtMs,
+      database: 'degraded',
+      storageBucket: SUPABASE_STORAGE_BUCKET,
+      storageBucketFound: false
+    };
+  }
+}
+
+function derivePlatformSummaryState(integrationStates = []) {
+  const states = integrationStates
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (states.length === 0) return 'unknown';
+  if (states.includes('degraded') || states.includes('not_configured')) return 'degraded';
+  if (states.includes('ok')) return 'ok';
+  return 'unknown';
+}
+
+async function buildPlatformStatusPayload() {
+  const [maintenanceAgentResolution, github, vercel, supabaseStatus] = await Promise.all([
+    resolveMaintenanceAgentStatus({ includeNetworkProbe: false }),
+    probeGithubPlatform(),
+    probeVercelPlatform(),
+    probeSupabasePlatform()
+  ]);
+  const maintenanceSummary = buildMaintenanceAgentSummary(maintenanceAgentResolution.agentStatus);
+  const integrations = {
+    github,
+    vercel,
+    supabase: supabaseStatus
+  };
+  const summaryState = derivePlatformSummaryState([
+    maintenanceSummary.state,
+    github.status,
+    vercel.status,
+    supabaseStatus.status
+  ]);
+
+  return {
+    updatedAt: new Date().toISOString(),
+    summary: {
+      state: summaryState,
+      message:
+        summaryState === 'ok'
+          ? 'Platform diagnostics are healthy.'
+          : 'One or more platform diagnostics are degraded or not configured.'
+    },
+    maintenanceAgent: maintenanceSummary,
+    cache: getRuntimeCacheStatsSnapshot(),
+    integrations
+  };
+}
+
+async function getPlatformStatusPayload() {
+  const nowMs = Date.now();
+  if (
+    platformStatusCacheState.payload &&
+    nowMs - platformStatusCacheState.updatedAtMs <= PLATFORM_STATUS_CACHE_MS
+  ) {
+    return cloneJsonValue(platformStatusCacheState.payload);
+  }
+
+  if (platformStatusCacheState.inFlight) {
+    return platformStatusCacheState.inFlight;
+  }
+
+  platformStatusCacheState.inFlight = (async () => {
+    try {
+      const payload = await buildPlatformStatusPayload();
+      platformStatusCacheState.payload = payload;
+      platformStatusCacheState.updatedAtMs = Date.now();
+      return cloneJsonValue(payload);
+    } finally {
+      platformStatusCacheState.inFlight = null;
+    }
+  })();
+
+  return platformStatusCacheState.inFlight;
 }
 
 async function probeRuntimeNetwork({ enabled = true } = {}) {
@@ -4346,6 +4841,17 @@ app.get('/api/system/maintenance-agent', simpleAuth, requireWorkspaceRole, async
   }
 });
 
+app.get('/api/system/platform-status', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const payload = await getPlatformStatusPayload();
+    const state = String(payload?.summary?.state || '').toLowerCase();
+    const httpStatus = state === 'degraded' ? 207 : 200;
+    res.status(httpStatus).json(payload);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/test', (req, res) => {
   res.json({
     status: 'Server is running perfectly!',
@@ -4451,6 +4957,10 @@ app.get('/', (req, res) => {
       },
       uploads: {
         presign: 'POST /api/uploads/presign'
+      },
+      system: {
+        maintenanceAgent: 'GET /api/system/maintenance-agent',
+        platformStatus: 'GET /api/system/platform-status'
       },
       displayUsers: {
         list: 'GET /api/display-users',

@@ -9,7 +9,6 @@ import { useTheme } from '../hooks/useTheme';
 import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { usePageVisibility } from '../hooks/usePageVisibility';
-import DocumentAttachment from './DocumentAttachment';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
 
@@ -340,6 +339,16 @@ const formatLatencyLabel = (value) => {
   return `${parsed}ms`;
 };
 
+const getStatusPillClass = (state) => {
+  const normalized = String(state || '')
+    .trim()
+    .toLowerCase();
+  if (normalized === 'ok' || normalized === 'healthy') return 'pill pill--success';
+  if (normalized === 'recovering' || normalized === 'unknown') return 'pill pill--info';
+  if (normalized === 'not_configured') return 'pill';
+  return 'pill pill--danger';
+};
+
 const runSingleFlight = async (pendingRef, task) => {
   if (pendingRef.current) {
     return pendingRef.current;
@@ -410,6 +419,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [announcementLiveInputError, setAnnouncementLiveInputError] = useState('');
   const [maintenanceAgentPayload, setMaintenanceAgentPayload] = useState(null);
   const [maintenanceAgentError, setMaintenanceAgentError] = useState('');
+  const [platformStatusPayload, setPlatformStatusPayload] = useState(null);
+  const [platformStatusError, setPlatformStatusError] = useState('');
   const mediaInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const mediaReplaceInputRef = useRef(null);
@@ -421,6 +432,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const displayUsersRequestRef = useRef(null);
   const staffUsersRequestRef = useRef(null);
   const maintenanceAgentRequestRef = useRef(null);
+  const platformStatusRequestRef = useRef(null);
   const [mediaReplaceIndex, setMediaReplaceIndex] = useState(-1);
   const [documentReplaceIndex, setDocumentReplaceIndex] = useState(-1);
 
@@ -610,6 +622,24 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       : maintenanceAgentState === 'recovering'
         ? 'pill pill--info'
         : 'pill pill--danger';
+  const platformSummary = useMemo(() => platformStatusPayload?.summary || null, [platformStatusPayload]);
+  const platformIntegrations = useMemo(
+    () => platformStatusPayload?.integrations || {},
+    [platformStatusPayload]
+  );
+  const platformState = String(platformSummary?.state || 'unknown')
+    .trim()
+    .toLowerCase();
+  const platformPillClass = getStatusPillClass(platformState);
+  const githubPlatformState = String(platformIntegrations?.github?.status || 'unknown')
+    .trim()
+    .toLowerCase();
+  const vercelPlatformState = String(platformIntegrations?.vercel?.status || 'unknown')
+    .trim()
+    .toLowerCase();
+  const supabasePlatformState = String(platformIntegrations?.supabase?.status || 'unknown')
+    .trim()
+    .toLowerCase();
 
   const editingAnnouncementPreview = useMemo(() => {
     if (!editingId) return null;
@@ -748,6 +778,26 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     });
   }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
 
+  const fetchPlatformStatus = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    await runSingleFlight(platformStatusRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/system/platform-status'), applyWorkspaceAuth());
+        setPlatformStatusPayload(response.data || null);
+        setPlatformStatusError('');
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        setPlatformStatusError(extractApiError(error, 'Platform diagnostics are unavailable.'));
+      }
+    });
+  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
+
   useEffect(() => {
     const hasWorkspaceSession = isStaffWorkspace ? hasStaffSession() : hasAdminSession();
     if (!hasWorkspaceSession) {
@@ -759,6 +809,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchLiveStatus();
     fetchCategories();
     fetchMaintenanceAgentStatus();
+    fetchPlatformStatus();
     if (isAdminWorkspace) {
       fetchDisplayUsers();
       fetchStaffUsers();
@@ -769,6 +820,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchDisplayUsers,
     fetchLiveStatus,
     fetchMaintenanceAgentStatus,
+    fetchPlatformStatus,
     fetchStaffUsers,
     isAdminWorkspace,
     isStaffWorkspace,
@@ -806,12 +858,23 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     offlineIntervalMs: 120000
   });
 
+  useAdaptivePolling(fetchPlatformStatus, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: 60000,
+    hiddenIntervalMs: 120000,
+    offlineIntervalMs: 150000
+  });
+
   useEffect(() => {
     const syncVisibleWorkspace = () => {
       if (!isOnline) return;
       fetchAnnouncements();
       fetchLiveStatus();
       fetchMaintenanceAgentStatus();
+      fetchPlatformStatus();
     };
     const handleOnline = () => {
       setRequestError('');
@@ -819,6 +882,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       fetchLiveStatus();
       fetchCategories();
       fetchMaintenanceAgentStatus();
+      fetchPlatformStatus();
       if (isAdminWorkspace) {
         fetchDisplayUsers();
         fetchStaffUsers();
@@ -838,6 +902,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchDisplayUsers,
     fetchLiveStatus,
     fetchMaintenanceAgentStatus,
+    fetchPlatformStatus,
     fetchStaffUsers,
     isAdminWorkspace,
     isOnline
@@ -856,6 +921,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       fetchAnnouncements();
       fetchLiveStatus();
       fetchMaintenanceAgentStatus();
+      fetchPlatformStatus();
     };
     const handleDisconnect = () => {
       setSocketConnected(false);
@@ -886,7 +952,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       socket.off('liveUpdate', handleLiveUpdate);
       socket.off('announcementUpdate', fetchAnnouncements);
     };
-  }, [fetchAnnouncements, fetchLiveStatus, fetchMaintenanceAgentStatus, socket]);
+  }, [fetchAnnouncements, fetchLiveStatus, fetchMaintenanceAgentStatus, fetchPlatformStatus, socket]);
 
   useEffect(() => {
     return () => {
@@ -2270,7 +2336,21 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               {maintenanceAgentSource ? <span className="pill">Source: {maintenanceAgentSource}</span> : null}
               <span className="pill">Updated: {formatAgentRelativeTime(maintenanceAgentSummary?.updatedAt)}</span>
             </div>
+            <div className="agent-status-banner__metrics">
+              <span className={platformPillClass}>Platform: {platformState.toUpperCase()}</span>
+              <span className={getStatusPillClass(githubPlatformState)}>
+                GitHub: {githubPlatformState.toUpperCase()}
+              </span>
+              <span className={getStatusPillClass(vercelPlatformState)}>
+                Vercel: {vercelPlatformState.toUpperCase()}
+              </span>
+              <span className={getStatusPillClass(supabasePlatformState)}>
+                Supabase: {supabasePlatformState.toUpperCase()}
+              </span>
+            </div>
+            {platformSummary?.message ? <p className="file-help">{platformSummary.message}</p> : null}
             {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
+            {platformStatusError ? <p className="field-error">{platformStatusError}</p> : null}
           </div>
 
           <div className="field">
@@ -2635,15 +2715,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               <div className="batch-preview-grid">
                 {documentFiles.map((file, index) => (
                   <div className="batch-preview-card" key={`${file.name || 'document'}-${index}`}>
-                    <DocumentAttachment
+                    <AttachmentPreview
                       fileUrl={documentPreviewUrls[index]}
                       fileName={file.name}
-                      mimeType={file.type}
+                      typeHint={file.type}
                       fileSizeBytes={file.size}
                       title={`Document preview ${index + 1}`}
                       className="document-preview--full"
-                      slideshow
-                      slideshowAutoplay={false}
+                      documentPreview
+                      documentSlideshow
+                      documentSlideshowAutoplay={false}
                     />
                     <div className="batch-preview-card__actions">
                       <span className="batch-preview-card__label">

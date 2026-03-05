@@ -69,6 +69,7 @@ The workspace now includes an autonomous maintenance daemon:
 - Script: `digital-notice-board/scripts/maintenance-agent.js`
 - Runtime status file: `digital-notice-board/.runtime/maintenance-agent-status.json`
 - Admin/Staff API status endpoint: `GET /api/system/maintenance-agent`
+- Admin/Staff platform diagnostics endpoint: `GET /api/system/platform-status`
 
 Behavior:
 - Monitors API health (`/api/health`), network latency, and DNS reachability.
@@ -76,6 +77,16 @@ Behavior:
 - Runs controlled self-healing for local managed modes:
 - `serve` mode recovery command: `node scripts/local-control.js serve-start`
 - `dev` mode recovery command: `node scripts/local-control.js dev-up`
+- Uses runtime diagnostics fallback automatically in serverless environments where local daemon heartbeat files are unavailable.
+- Adds internal runtime API caching with automatic invalidation for public/workspace announcement, category, and live-status reads.
+
+Optional platform diagnostics env vars:
+- `GITHUB_REPO` (`owner/repo`)
+- `GITHUB_TOKEN` (optional for higher GitHub API limits/private repos)
+- `VERCEL_PROJECT_ID`
+- `VERCEL_TOKEN`
+- `VERCEL_TEAM_ID` (optional)
+- `PLATFORM_STATUS_CACHE_MS` (optional)
 
 Commands:
 - `npm run agent:up`
