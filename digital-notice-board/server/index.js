@@ -3207,6 +3207,7 @@ app.put(
       mediaHeight,
       displayBatchId,
       displayBatchSlot,
+      removeAttachment,
       liveStreamLinks
     } = req.body;
     const hasTitleField = Object.prototype.hasOwnProperty.call(req.body || {}, 'title');
@@ -3215,6 +3216,7 @@ app.put(
     const hasMediaHeightField = Object.prototype.hasOwnProperty.call(req.body || {}, 'mediaHeight');
     const hasDisplayBatchIdField = Object.prototype.hasOwnProperty.call(req.body || {}, 'displayBatchId');
     const hasDisplayBatchSlotField = Object.prototype.hasOwnProperty.call(req.body || {}, 'displayBatchSlot');
+    const hasRemoveAttachmentField = Object.prototype.hasOwnProperty.call(req.body || {}, 'removeAttachment');
     const hasLiveStreamLinksField = Object.prototype.hasOwnProperty.call(req.body || {}, 'liveStreamLinks');
     const normalizedTitle = hasTitleField ? String(title || '').trim() : null;
     const normalizedContent = hasContentField ? String(content || '').trim() : null;
@@ -3226,6 +3228,7 @@ app.put(
     const normalizedDisplayBatchSlot = hasDisplayBatchSlotField
       ? parseDisplayBatchSlot(displayBatchSlot, { strict: true })
       : null;
+    const removeAttachmentRequested = hasRemoveAttachmentField ? toBoolean(removeAttachment, false) : false;
     const normalizedLiveStreamLinks = hasLiveStreamLinksField
       ? parseAnnouncementLiveStreamsInput(liveStreamLinks)
       : null;
@@ -3242,6 +3245,11 @@ app.put(
         error: 'Provide either file upload or attachmentUrl metadata, not both.'
       });
     }
+    if (removeAttachmentRequested && (uploadedFile || attachmentInput.hasAttachmentInput)) {
+      return res.status(400).json({
+        error: 'Choose either attachment replacement or attachment removal, not both.'
+      });
+    }
     if (mutationScope === 'batch') {
       const existingBatchId = normalizeDisplayBatchId(existing.display_batch_id);
       if (!existingBatchId) {
@@ -3253,6 +3261,11 @@ app.put(
         return res.status(400).json({
           error:
             'Batch update does not support replacing attachments. Edit a single file to replace media/document.'
+        });
+      }
+      if (removeAttachmentRequested) {
+        return res.status(400).json({
+          error: 'Batch update does not support removing attachments. Edit a single file instead.'
         });
       }
       if (hasDisplayBatchIdField || hasDisplayBatchSlotField) {
@@ -3370,8 +3383,11 @@ app.put(
       ? uploadResult.url
       : attachmentInput.hasAttachmentInput
         ? attachmentInput.attachmentPath
+        : removeAttachmentRequested
+          ? null
         : existing.image;
     const hasIncomingAttachment = Boolean(uploadResult || attachmentInput.hasAttachmentInput);
+    const hasAttachmentRemoval = removeAttachmentRequested && Boolean(existing.image);
     const existingFileSize = Number.parseInt(existing.file_size_bytes, 10);
     const existingMediaWidth = parsePositiveInteger(existing.media_width);
     const existingMediaHeight = parsePositiveInteger(existing.media_height);
@@ -3379,12 +3395,18 @@ app.put(
       ? getAttachmentMetadata(uploadedFile)
       : attachmentInput.hasAttachmentInput
         ? attachmentInput.attachmentMetadata
+        : hasAttachmentRemoval
+          ? {
+              file_name: null,
+              file_mime_type: null,
+              file_size_bytes: null
+            }
       : {
           file_name: existing.file_name || null,
           file_mime_type: existing.file_mime_type || null,
           file_size_bytes: Number.isNaN(existingFileSize) ? null : existingFileSize
         };
-    if (hasIncomingAttachment && existing.image && existing.image !== attachmentPath) {
+    if ((hasIncomingAttachment || hasAttachmentRemoval) && existing.image && existing.image !== attachmentPath) {
       await removeAttachmentReference(existing.image);
     }
 
@@ -3429,8 +3451,8 @@ app.put(
       image: attachmentPath,
       type: getAnnouncementType(attachmentPath, effectiveContent, attachmentMimeType),
       ...attachmentMetadata,
-      media_width: hasIncomingAttachment ? normalizedMediaWidth : existingMediaWidth,
-      media_height: hasIncomingAttachment ? normalizedMediaHeight : existingMediaHeight,
+      media_width: hasIncomingAttachment ? normalizedMediaWidth : hasAttachmentRemoval ? null : existingMediaWidth,
+      media_height: hasIncomingAttachment ? normalizedMediaHeight : hasAttachmentRemoval ? null : existingMediaHeight,
       live_stream_links: nextLiveStreamLinks,
       display_batch_id: normalizeDisplayBatchId(existing.display_batch_id) || null,
       display_batch_slot: parseDisplayBatchSlot(existing.display_batch_slot),

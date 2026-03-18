@@ -417,6 +417,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [staffAccessSaving, setStaffAccessSaving] = useState(false);
   const [requestError, setRequestError] = useState('');
   const [announcementLiveInputError, setAnnouncementLiveInputError] = useState('');
+  const [editAttachmentRemoved, setEditAttachmentRemoved] = useState(false);
   const [maintenanceAgentPayload, setMaintenanceAgentPayload] = useState(null);
   const [maintenanceAgentError, setMaintenanceAgentError] = useState('');
   const [platformStatusPayload, setPlatformStatusPayload] = useState(null);
@@ -656,6 +657,22 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const isEditingBatchGroup =
     Boolean(editingAnnouncementPreview && editingAnnouncementPreview.displayBatchId) &&
     editingBatchCount > 1;
+  const hasSelectedEditAttachmentReplacement = mediaFiles.length > 0 || documentFiles.length > 0;
+  const editingAttachmentTypeHint = String(
+    editingAnnouncementPreview?.fileMimeType || editingAnnouncementPreview?.type || ''
+  ).toLowerCase();
+  const editingExistingAttachmentKind = editingAttachmentTypeHint.startsWith('video/')
+    ? 'video'
+    : editingAttachmentTypeHint.startsWith('image/')
+      ? 'image'
+      : editingAnnouncementPreview?.image
+        ? 'document'
+        : '';
+  const showExistingAttachmentEditor =
+    Boolean(editingAnnouncementPreview?.image) &&
+    !editAttachmentRemoved &&
+    !hasSelectedEditAttachmentReplacement;
+  const canRemoveEditingAttachment = !isEditingBatchGroup;
 
   const fetchAnnouncements = useCallback(async () => {
     if (!isOnline) {
@@ -1088,6 +1105,23 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     };
   }, [mediaFiles]);
 
+  const clearSelectedAttachmentDrafts = () => {
+    revokeObjectUrls(mediaPreviewUrls);
+    revokeObjectUrls(documentPreviewUrls);
+    setMediaFiles([]);
+    setMediaPreviewUrls([]);
+    setMediaDimensionsByKey({});
+    setDocumentFiles([]);
+    setDocumentPreviewUrls([]);
+    setMediaReplaceIndex(-1);
+    setDocumentReplaceIndex(-1);
+    if (mediaInputRef.current) mediaInputRef.current.value = '';
+    if (videoInputRef.current) videoInputRef.current.value = '';
+    if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
+    if (documentInputRef.current) documentInputRef.current.value = '';
+    if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
+  };
+
   const resetForm = () => {
     setEditingId(null);
     setFormData({
@@ -1100,23 +1134,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       startAt: getDefaultStart(),
       endAt: getDefaultEnd()
     });
-    revokeObjectUrls(mediaPreviewUrls);
-    revokeObjectUrls(documentPreviewUrls);
-    setMediaFiles([]);
-    setMediaPreviewUrls([]);
-    setMediaDimensionsByKey({});
-    setDocumentFiles([]);
-    setDocumentPreviewUrls([]);
-    setMediaReplaceIndex(-1);
-    setDocumentReplaceIndex(-1);
+    setEditAttachmentRemoved(false);
+    clearSelectedAttachmentDrafts();
     setAnnouncementLiveLinkInput('');
     setAnnouncementLiveLinks([]);
     setAnnouncementLiveInputError('');
-    if (mediaInputRef.current) mediaInputRef.current.value = '';
-    if (videoInputRef.current) videoInputRef.current.value = '';
-    if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
-    if (documentInputRef.current) documentInputRef.current.value = '';
-    if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
   };
 
   const addAnnouncementLiveLinksFromInput = () => {
@@ -1181,7 +1203,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         ? announcements.find((announcement) => announcement.id === editingId)
         : null;
       const editingBatchSize = editingAnnouncement ? getBatchAttachmentCount(editingAnnouncement) : 1;
-      const hasExistingAttachment = Boolean(editingAnnouncement && editingAnnouncement.image);
+      const hasExistingAttachment = Boolean(
+        editingAnnouncement && editingAnnouncement.image && !editAttachmentRemoved
+      );
       const normalizedAnnouncementLiveLinks = normalizeLiveLinkArray([
         ...announcementLiveLinks,
         ...pendingAnnouncementLinks
@@ -1234,6 +1258,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         payload.append('active', String(formData.isActive));
         payload.append('category', formData.category || '');
         payload.append('liveStreamLinks', JSON.stringify(normalizedAnnouncementLiveLinks));
+        if (options.removeAttachment) {
+          payload.append('removeAttachment', 'true');
+        }
         if (options.mediaWidth && options.mediaHeight) {
           payload.append('mediaWidth', String(options.mediaWidth));
           payload.append('mediaHeight', String(options.mediaHeight));
@@ -1323,6 +1350,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             ? mediaDimensionsByKey[getDimensionLookupKey(selectedAttachment)] || {}
             : {};
         appendBaseFields(payload, {
+          removeAttachment: editAttachmentRemoved,
           mediaWidth: selectedDimensions.width,
           mediaHeight: selectedDimensions.height
         });
@@ -1482,24 +1510,31 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       startAt: toInputDateTime(announcement.startAt),
       endAt: toInputDateTime(announcement.endAt)
     });
-    revokeObjectUrls(mediaPreviewUrls);
-    revokeObjectUrls(documentPreviewUrls);
-    setMediaFiles([]);
-    setMediaPreviewUrls([]);
-    setMediaDimensionsByKey({});
-    setDocumentFiles([]);
-    setDocumentPreviewUrls([]);
-    setMediaReplaceIndex(-1);
-    setDocumentReplaceIndex(-1);
+    setEditAttachmentRemoved(false);
+    clearSelectedAttachmentDrafts();
     setAnnouncementLiveLinkInput('');
     setAnnouncementLiveLinks(normalizeLiveLinkArray(announcement.liveStreamLinks || []));
     setAnnouncementLiveInputError('');
-    if (mediaInputRef.current) mediaInputRef.current.value = '';
-    if (videoInputRef.current) videoInputRef.current.value = '';
-    if (mediaReplaceInputRef.current) mediaReplaceInputRef.current.value = '';
-    if (documentInputRef.current) documentInputRef.current.value = '';
-    if (documentReplaceInputRef.current) documentReplaceInputRef.current.value = '';
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const discardReplacementAttachment = () => {
+    clearSelectedAttachmentDrafts();
+    setEditAttachmentRemoved(false);
+    setRequestError('');
+  };
+
+  const removeExistingAttachment = () => {
+    if (!editingAnnouncementPreview?.image) {
+      return;
+    }
+    if (!canRemoveEditingAttachment) {
+      setRequestError('Batch items cannot remove the current attachment. Replace the file instead.');
+      return;
+    }
+    clearSelectedAttachmentDrafts();
+    setEditAttachmentRemoved(true);
+    setRequestError('');
   };
 
   const appendMediaFiles = (incomingFiles, mode = 'all') => {
@@ -1542,8 +1577,12 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       if (!selectedFile) return;
 
       revokeObjectUrls(mediaPreviewUrls);
+      revokeObjectUrls(documentPreviewUrls);
       setMediaFiles([selectedFile]);
       setMediaPreviewUrls([URL.createObjectURL(selectedFile)]);
+      setDocumentFiles([]);
+      setDocumentPreviewUrls([]);
+      setEditAttachmentRemoved(false);
       if (filteredFiles.length > 1 || incomingFiles.length > 1) {
         setRequestError('Editing mode supports only one replacement attachment.');
       }
@@ -1608,9 +1647,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       const selectedFile = incomingFiles[0] || null;
       if (!selectedFile) return;
 
+      revokeObjectUrls(mediaPreviewUrls);
       revokeObjectUrls(documentPreviewUrls);
+      setMediaFiles([]);
+      setMediaPreviewUrls([]);
+      setMediaDimensionsByKey({});
       setDocumentFiles([selectedFile]);
       setDocumentPreviewUrls([URL.createObjectURL(selectedFile)]);
+      setEditAttachmentRemoved(false);
       setRequestError(
         incomingFiles.length > 1 ? 'Editing mode supports only one replacement attachment.' : ''
       );
@@ -1732,6 +1776,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       next[targetIndex] = URL.createObjectURL(selectedFile);
       return next;
     });
+    setEditAttachmentRemoved(false);
     setRequestError('');
   };
 
@@ -1763,6 +1808,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       next[targetIndex] = URL.createObjectURL(selectedFile);
       return next;
     });
+    setEditAttachmentRemoved(false);
     setRequestError('');
   };
 
@@ -2788,6 +2834,77 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 aria-hidden="true"
               />
             </div>
+
+            {showExistingAttachmentEditor ? (
+              <div className="batch-preview-grid">
+                <div className="batch-preview-card">
+                  <AttachmentPreview
+                    filePath={editingAnnouncementPreview.image}
+                    fileName={editingAnnouncementPreview.fileName}
+                    typeHint={editingAnnouncementPreview.fileMimeType || editingAnnouncementPreview.type}
+                    fileSizeBytes={editingAnnouncementPreview.fileSizeBytes}
+                    title="Current attachment"
+                    imageAlt="Current attachment"
+                    className={
+                      editingExistingAttachmentKind === 'document'
+                        ? 'document-preview--full'
+                        : 'media-preview--full'
+                    }
+                    documentPreview={false}
+                  />
+                  <div className="batch-preview-card__actions">
+                    <span className="batch-preview-card__label">
+                      Current {editingExistingAttachmentKind || 'attachment'}
+                      {editingAnnouncementPreview.fileName ? ` • ${editingAnnouncementPreview.fileName}` : ''}
+                    </span>
+                    <div className="inline-actions">
+                      <button
+                        className="btn btn--danger btn--tiny"
+                        type="button"
+                        onClick={removeExistingAttachment}
+                        disabled={!canRemoveEditingAttachment}
+                      >
+                        Remove Current Attachment
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {editingAnnouncementPreview?.image && editAttachmentRemoved && !hasSelectedEditAttachmentReplacement ? (
+              <div className="field">
+                <p className="file-help">
+                  The current attachment will be removed when you update this announcement.
+                </p>
+                <div className="inline-actions">
+                  <button
+                    className="btn btn--ghost btn--tiny"
+                    type="button"
+                    onClick={() => setEditAttachmentRemoved(false)}
+                  >
+                    Keep Current Attachment
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {editingAnnouncementPreview?.image && hasSelectedEditAttachmentReplacement ? (
+              <div className="field">
+                <p className="file-help">
+                  The selected replacement will overwrite the current attachment when you update.
+                </p>
+                <div className="inline-actions">
+                  <button
+                    className="btn btn--ghost btn--tiny"
+                    type="button"
+                    onClick={discardReplacementAttachment}
+                  >
+                    Use Current Attachment Instead
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {mediaPreviewUrls.length > 0 ? (
               <div className="batch-preview-grid">

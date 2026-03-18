@@ -377,6 +377,7 @@ async function run() {
       String(docAnnouncement?.type || '').toLowerCase().includes('document'),
       `Document announcement type is incorrect: ${docAnnouncement?.type || 'unknown'}`
     );
+    assert(String(docAnnouncement?.image || '').trim().length > 0, 'Document announcement attachment is missing.');
 
     logStep('Updating announcement');
     const updateForm = new FormData();
@@ -388,6 +389,31 @@ async function run() {
       token: adminToken,
       body: updateForm
     });
+
+    logStep('Updating document announcement without replacing attachment');
+    const docKeepAttachmentForm = new FormData();
+    docKeepAttachmentForm.set('title', `Smoke Doc Updated ${runId}`);
+    docKeepAttachmentForm.set('content', 'Smoke document announcement updated');
+    const updatedDocAnnouncement = await request(`/api/announcements/${docAnnouncementId}`, {
+      method: 'PUT',
+      token: adminToken,
+      body: docKeepAttachmentForm
+    });
+    assert(
+      String(updatedDocAnnouncement?.image || '').trim().length > 0,
+      'Document attachment was unexpectedly removed during edit.'
+    );
+
+    logStep('Removing document attachment through edit');
+    const docRemoveAttachmentForm = new FormData();
+    docRemoveAttachmentForm.set('content', 'Smoke document converted to text-only announcement');
+    docRemoveAttachmentForm.set('removeAttachment', 'true');
+    const removedDocAttachment = await request(`/api/announcements/${docAnnouncementId}`, {
+      method: 'PUT',
+      token: adminToken,
+      body: docRemoveAttachmentForm
+    });
+    assert(!removedDocAttachment?.image, 'Document attachment was not removed during edit.');
 
     logStep('Checking public announcements by category');
     const publicAnnouncements = await request(`/api/announcements/public?category=${createdCategoryId}`);
