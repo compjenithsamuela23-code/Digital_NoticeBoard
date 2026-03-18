@@ -243,6 +243,7 @@ const DisplayBoard = () => {
   const [requestError, setRequestError] = useState('');
   const [documentSlideCount, setDocumentSlideCount] = useState(1);
   const [documentSlideIndex, setDocumentSlideIndex] = useState(1);
+  const [liveReconnectToken, setLiveReconnectToken] = useState(0);
   const previousDocumentSlideIndexRef = useRef(1);
   const documentCycleCountRef = useRef(0);
 
@@ -251,6 +252,7 @@ const DisplayBoard = () => {
   const { isDark, toggleTheme } = useTheme();
   const { isOnline } = useNetworkStatus();
   const isPageVisible = usePageVisibility();
+  const wasOnlineRef = useRef(isOnline);
   const [socketConnected, setSocketConnected] = useState(Boolean(socket?.connected));
 
   const isAdmin = hasAdminSession();
@@ -418,6 +420,13 @@ const DisplayBoard = () => {
       window.removeEventListener('online', handleOnline);
     };
   }, [fetchAnnouncements, fetchCategories, fetchLiveStatus, isOnline]);
+
+  useEffect(() => {
+    if (isOnline && !wasOnlineRef.current) {
+      setLiveReconnectToken((value) => value + 1);
+    }
+    wasOnlineRef.current = isOnline;
+  }, [isOnline]);
 
   useEffect(() => {
     if (!socket) {
@@ -799,13 +808,13 @@ const DisplayBoard = () => {
     liveSourceTiles.length,
     showLivePanel
   ]);
-  const rotationControlLabel = showLivePanel
-    ? isPlaying
-      ? 'Pause Notice Slideshow'
-      : 'Resume Notice Slideshow'
-    : isPlaying
-      ? 'Pause Auto-Rotate'
-      : 'Resume Auto-Rotate';
+  const rotationControlLabel = isPlaying ? 'Pause Auto-Rotate' : 'Resume Auto-Rotate';
+
+  useEffect(() => {
+    if (showLivePanel && !isPlaying) {
+      setIsPlaying(true);
+    }
+  }, [isPlaying, showLivePanel]);
 
   const handleNext = () => {
     if (hasEmergency) return;
@@ -987,15 +996,11 @@ const DisplayBoard = () => {
                   >
                     {combinedLiveTiles.map((tile, index) => {
                       const tileStream = tile.stream;
-                      const streamSrc = withAutoplay(
-                        tileStream.embedUrl,
-                        tileStream.provider,
-                        index === 0
-                      );
+                      const streamSrc = withAutoplay(tileStream.embedUrl, tileStream.provider, true);
                       return (
                         <iframe
                           className="live-stream-grid__frame"
-                          key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
+                          key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}-${liveReconnectToken}`}
                           title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
                           src={streamSrc}
                           allow="autoplay; encrypted-media; fullscreen"
@@ -1020,13 +1025,6 @@ const DisplayBoard = () => {
             <div className="controls">
               <button className="btn btn--ghost btn--tiny" type="button" onClick={handlePrev}>
                 Previous
-              </button>
-              <button
-                className="btn btn--primary btn--tiny"
-                type="button"
-                onClick={() => setIsPlaying((value) => !value)}
-              >
-                {rotationControlLabel}
               </button>
               <button className="btn btn--ghost btn--tiny" type="button" onClick={handleNext}>
                 Next
@@ -1201,15 +1199,11 @@ const DisplayBoard = () => {
                 >
                   {combinedLiveTiles.map((tile, index) => {
                     const tileStream = tile.stream;
-                    const streamSrc = withAutoplay(
-                      tileStream.embedUrl,
-                      tileStream.provider,
-                      index === 0
-                    );
+                    const streamSrc = withAutoplay(tileStream.embedUrl, tileStream.provider, true);
                     return (
                       <iframe
                         className="live-stream-grid__frame"
-                        key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}`}
+                        key={`${tile.id}-${isAudioMuted ? 'muted' : 'sound'}-${liveReconnectToken}`}
                         title={`${tileStream.provider || 'Live'} Broadcast ${index + 1}`}
                         src={streamSrc}
                         allow="autoplay; encrypted-media; fullscreen"
@@ -1392,13 +1386,15 @@ const DisplayBoard = () => {
             <button className="btn btn--ghost btn--tiny" type="button" onClick={handlePrev}>
               Previous
             </button>
-            <button
-              className="btn btn--primary btn--tiny"
-              type="button"
-              onClick={() => setIsPlaying((value) => !value)}
-            >
-              {rotationControlLabel}
-            </button>
+            {!showLivePanel ? (
+              <button
+                className="btn btn--primary btn--tiny"
+                type="button"
+                onClick={() => setIsPlaying((value) => !value)}
+              >
+                {rotationControlLabel}
+              </button>
+            ) : null}
             <button className="btn btn--ghost btn--tiny" type="button" onClick={handleNext}>
               Next
             </button>
