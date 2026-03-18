@@ -533,16 +533,16 @@ const DisplayBoard = () => {
     Number.isFinite(currentAnnouncementMediaHeight) &&
     currentAnnouncementMediaHeight > 0;
   const mediaAspectStyle = useMemo(() => {
-    if (hasMediaDimensions) {
-      return { aspectRatio: `${currentAnnouncementMediaWidth} / ${currentAnnouncementMediaHeight}` };
-    }
     if (!currentAnnouncementHasAnyMedia) {
       return undefined;
     }
-    if (currentAnnouncementHasDocument) {
-      return { aspectRatio: '16 / 10' };
+    if (!currentAnnouncementHasDocument) {
+      return undefined;
     }
-    return { aspectRatio: '16 / 9' };
+    if (hasMediaDimensions) {
+      return { aspectRatio: `${currentAnnouncementMediaWidth} / ${currentAnnouncementMediaHeight}` };
+    }
+    return { aspectRatio: '16 / 10' };
   }, [
     currentAnnouncementHasAnyMedia,
     currentAnnouncementHasDocument,

@@ -248,20 +248,6 @@ function resolveDimensions(mediaPath, type, mimeType, widthValue, heightValue) {
     return { width, height };
   }
 
-  const normalizedType = String(type || '').toLowerCase();
-  const normalizedMime = String(mimeType || '').toLowerCase();
-  const isVisual =
-    normalizedType.includes('image') ||
-    normalizedType.includes('video') ||
-    normalizedMime.startsWith('image/') ||
-    normalizedMime.startsWith('video/') ||
-    isImagePath(mediaPath) ||
-    isVideoPath(mediaPath);
-
-  if (isVisual) {
-    return { width: 16, height: 9 };
-  }
-
   return { width, height };
 }
 

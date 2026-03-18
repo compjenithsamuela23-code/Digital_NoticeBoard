@@ -1204,24 +1204,6 @@ function resolveMediaAspectDimensions({ mediaPath, mimeType, type, widthValue, h
     };
   }
 
-  const normalizedMimeType = normalizeUploadedMimeType(mimeType) || '';
-  const normalizedType = String(type || '').toLowerCase();
-  const isVideoLike =
-    normalizedType.includes('video') ||
-    normalizedMimeType.startsWith('video/') ||
-    isVideoMediaPath(mediaPath);
-  const isImageLike =
-    normalizedType.includes('image') ||
-    normalizedMimeType.startsWith('image/') ||
-    isImageMediaPath(mediaPath);
-
-  if (isVideoLike || isImageLike) {
-    return {
-      mediaWidth: 16,
-      mediaHeight: 9
-    };
-  }
-
   return {
     mediaWidth: Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : null,
     mediaHeight: Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : null
