@@ -421,6 +421,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [maintenanceAgentError, setMaintenanceAgentError] = useState('');
   const [platformStatusPayload, setPlatformStatusPayload] = useState(null);
   const [platformStatusError, setPlatformStatusError] = useState('');
+  const [opsAgentPayload, setOpsAgentPayload] = useState(null);
+  const [opsAgentError, setOpsAgentError] = useState('');
+  const [opsAgentActionPending, setOpsAgentActionPending] = useState('');
+  const [opsAgentActionResult, setOpsAgentActionResult] = useState(null);
   const mediaInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const mediaReplaceInputRef = useRef(null);
@@ -433,6 +437,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const staffUsersRequestRef = useRef(null);
   const maintenanceAgentRequestRef = useRef(null);
   const platformStatusRequestRef = useRef(null);
+  const opsAgentRequestRef = useRef(null);
+  const opsAgentActionRequestRef = useRef(null);
   const [mediaReplaceIndex, setMediaReplaceIndex] = useState(-1);
   const [documentReplaceIndex, setDocumentReplaceIndex] = useState(-1);
 
@@ -618,6 +624,26 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const supabasePlatformState = String(platformIntegrations?.supabase?.status || 'unknown')
     .trim()
     .toLowerCase();
+  const opsAgentDetails = useMemo(() => opsAgentPayload?.agent || null, [opsAgentPayload]);
+  const opsAgentSummary = useMemo(() => opsAgentPayload?.summary || null, [opsAgentPayload]);
+  const opsAgentActions = useMemo(
+    () => (Array.isArray(opsAgentPayload?.actions) ? opsAgentPayload.actions : []),
+    [opsAgentPayload]
+  );
+  const opsAgentRecommendations = useMemo(
+    () => (Array.isArray(opsAgentPayload?.recommendations) ? opsAgentPayload.recommendations : []),
+    [opsAgentPayload]
+  );
+  const opsAgentLastRepair = useMemo(() => opsAgentPayload?.lastRepair || null, [opsAgentPayload]);
+  const opsAgentState = String(opsAgentSummary?.state || 'unknown')
+    .trim()
+    .toLowerCase();
+  const opsAgentPillClass = getStatusPillClass(opsAgentState);
+  const opsAgentAutoFixLabel = opsAgentDetails?.serverless
+    ? 'MANUAL ONLY'
+    : opsAgentDetails?.autoFixEnabled
+      ? 'ENABLED'
+      : 'DISABLED';
 
   const editingAnnouncementPreview = useMemo(() => {
     if (!editingId) return null;
@@ -776,6 +802,87 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     });
   }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
 
+  const fetchOpsAgentStatus = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    await runSingleFlight(opsAgentRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/system/ops-agent'), applyWorkspaceAuth());
+        setOpsAgentPayload(response.data || null);
+        setOpsAgentError('');
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        setOpsAgentError(extractApiError(error, 'Ops agent status is unavailable.'));
+      }
+    });
+  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
+
+  const runOpsAgentAction = useCallback(
+    async (action) => {
+      const actionId = String(action?.id || '').trim();
+      if (!actionId) {
+        return;
+      }
+      if (!isAdminWorkspace) {
+        setOpsAgentError('Only the admin workspace can run ops actions.');
+        return;
+      }
+      if (!isOnline) {
+        setOpsAgentError('Network appears offline. Waiting to reconnect...');
+        return;
+      }
+
+      setOpsAgentActionPending(actionId);
+      setOpsAgentActionResult(null);
+      setOpsAgentError('');
+
+      try {
+        await runSingleFlight(opsAgentActionRequestRef, async () => {
+          const response = await apiClient.post(
+            apiUrl(`/api/system/ops-agent/actions/${encodeURIComponent(actionId)}`),
+            {},
+            applyWorkspaceAuth()
+          );
+          const payload = response.data || {};
+          const nextStatus = payload.status || null;
+          if (nextStatus) {
+            setOpsAgentPayload(nextStatus);
+            if (nextStatus.platform) {
+              setPlatformStatusPayload(nextStatus.platform);
+            }
+          }
+          setOpsAgentActionResult(payload.result || null);
+        });
+
+        await fetchMaintenanceAgentStatus();
+        await fetchPlatformStatus();
+        await fetchOpsAgentStatus();
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        setOpsAgentError(extractApiError(error, `Unable to run "${action?.label || actionId}".`));
+      } finally {
+        setOpsAgentActionPending('');
+      }
+    },
+    [
+      applyWorkspaceAuth,
+      fetchMaintenanceAgentStatus,
+      fetchOpsAgentStatus,
+      fetchPlatformStatus,
+      handleAuthFailure,
+      isAdminWorkspace,
+      isOnline
+    ]
+  );
+
   useEffect(() => {
     const hasWorkspaceSession = isStaffWorkspace ? hasStaffSession() : hasAdminSession();
     if (!hasWorkspaceSession) {
@@ -788,6 +895,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchCategories();
     fetchMaintenanceAgentStatus();
     fetchPlatformStatus();
+    fetchOpsAgentStatus();
     if (isAdminWorkspace) {
       fetchDisplayUsers();
       fetchStaffUsers();
@@ -798,6 +906,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchDisplayUsers,
     fetchLiveStatus,
     fetchMaintenanceAgentStatus,
+    fetchOpsAgentStatus,
     fetchPlatformStatus,
     fetchStaffUsers,
     isAdminWorkspace,
@@ -846,6 +955,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     offlineIntervalMs: 150000
   });
 
+  useAdaptivePolling(fetchOpsAgentStatus, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: 45000,
+    hiddenIntervalMs: 90000,
+    offlineIntervalMs: 120000
+  });
+
   useEffect(() => {
     const syncVisibleWorkspace = () => {
       if (!isOnline) return;
@@ -853,6 +972,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       fetchLiveStatus();
       fetchMaintenanceAgentStatus();
       fetchPlatformStatus();
+      fetchOpsAgentStatus();
     };
     const handleOnline = () => {
       setRequestError('');
@@ -861,6 +981,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       fetchCategories();
       fetchMaintenanceAgentStatus();
       fetchPlatformStatus();
+      fetchOpsAgentStatus();
       if (isAdminWorkspace) {
         fetchDisplayUsers();
         fetchStaffUsers();
@@ -880,6 +1001,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchDisplayUsers,
     fetchLiveStatus,
     fetchMaintenanceAgentStatus,
+    fetchOpsAgentStatus,
     fetchPlatformStatus,
     fetchStaffUsers,
     isAdminWorkspace,
@@ -900,6 +1022,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       fetchLiveStatus();
       fetchMaintenanceAgentStatus();
       fetchPlatformStatus();
+      fetchOpsAgentStatus();
     };
     const handleDisconnect = () => {
       setSocketConnected(false);
@@ -930,7 +1053,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       socket.off('liveUpdate', handleLiveUpdate);
       socket.off('announcementUpdate', fetchAnnouncements);
     };
-  }, [fetchAnnouncements, fetchLiveStatus, fetchMaintenanceAgentStatus, fetchPlatformStatus, socket]);
+  }, [fetchAnnouncements, fetchLiveStatus, fetchMaintenanceAgentStatus, fetchOpsAgentStatus, fetchPlatformStatus, socket]);
 
   useEffect(() => {
     return () => {
@@ -2291,7 +2414,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
           <div className={`agent-status-banner agent-status-banner--${maintenanceAgentState}`}>
             <div className="agent-status-banner__head">
-              <h3>AI Maintenance Agent</h3>
+              <h3>AI Operations Agent</h3>
               <span className={maintenanceAgentPillClass}>
                 {maintenanceAgentState.toUpperCase()}
               </span>
@@ -2319,8 +2442,63 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 Supabase: {supabasePlatformState.toUpperCase()}
               </span>
             </div>
+            <div className="agent-status-banner__metrics">
+              <span className={opsAgentPillClass}>Ops: {opsAgentState.toUpperCase()}</span>
+              <span className="pill">Mode: {opsAgentAutoFixLabel}</span>
+              <span className="pill">Checks: {opsAgentSummary?.checksCompleted || 0}</span>
+              <span className="pill">Repairs: {opsAgentSummary?.repairsSucceeded || 0}</span>
+              <span className="pill">Failed: {opsAgentSummary?.repairsFailed || 0}</span>
+              <span className="pill">Updated: {formatAgentRelativeTime(opsAgentPayload?.updatedAt)}</span>
+            </div>
+            {opsAgentSummary?.message ? <p className="file-help">{opsAgentSummary.message}</p> : null}
+            {opsAgentRecommendations.length > 0 ? (
+              <div className="agent-status-banner__metrics">
+                <span className="pill pill--info">Recommended</span>
+                {opsAgentRecommendations.map((action) => (
+                  <span className="pill" key={`ops-recommendation-${action.id}`}>
+                    {action.label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <div className="inline-actions">
+              <button
+                className="btn btn--ghost btn--tiny"
+                type="button"
+                onClick={fetchOpsAgentStatus}
+                disabled={Boolean(opsAgentActionPending)}
+              >
+                Refresh Ops Status
+              </button>
+              {isAdminWorkspace
+                ? opsAgentActions.map((action) => (
+                    <button
+                      key={action.id}
+                      className="btn btn--ghost btn--tiny"
+                      type="button"
+                      title={action.reason || action.description || action.label}
+                      onClick={() => runOpsAgentAction(action)}
+                      disabled={!action.available || Boolean(opsAgentActionPending)}
+                    >
+                      {opsAgentActionPending === action.id ? `Running ${action.label}...` : action.label}
+                    </button>
+                  ))
+                : null}
+            </div>
+            {opsAgentLastRepair ? (
+              <p className={opsAgentLastRepair.success ? 'file-help' : 'field-error'}>
+                Last repair: {opsAgentLastRepair.label} {opsAgentLastRepair.success ? 'succeeded' : 'failed'}{' '}
+                {formatAgentRelativeTime(opsAgentLastRepair.completedAt)}. {opsAgentLastRepair.message}
+              </p>
+            ) : null}
+            {opsAgentActionResult ? (
+              <p className={opsAgentActionResult.success ? 'file-help' : 'field-error'}>
+                Action result: {opsAgentActionResult.message}
+              </p>
+            ) : null}
             {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
             {platformStatusError ? <p className="field-error">{platformStatusError}</p> : null}
+            {opsAgentError ? <p className="field-error">{opsAgentError}</p> : null}
           </div>
 
           <div className="field">

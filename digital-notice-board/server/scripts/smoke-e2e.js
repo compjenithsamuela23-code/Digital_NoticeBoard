@@ -178,6 +178,22 @@ async function run() {
     assert(platformStatus && typeof platformStatus === 'object', 'Platform diagnostics response is invalid.');
     assert(String(platformStatus?.summary?.state || '').trim().length > 0, 'Platform diagnostics state is missing.');
 
+    logStep('Checking ops agent status endpoint');
+    const opsAgentStatus = await request('/api/system/ops-agent', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(opsAgentStatus && typeof opsAgentStatus === 'object', 'Ops agent response is invalid.');
+    assert(String(opsAgentStatus?.summary?.state || '').trim().length > 0, 'Ops agent state is missing.');
+
+    logStep('Running ops agent runtime refresh action');
+    const opsAgentAction = await request('/api/system/ops-agent/actions/refresh_runtime', {
+      method: 'POST',
+      token: adminToken
+    });
+    assert(opsAgentAction && typeof opsAgentAction === 'object', 'Ops agent action response is invalid.');
+    assert(Boolean(opsAgentAction?.result), 'Ops agent action result is missing.');
+
     logStep('Creating temporary category');
     const category = await request('/api/categories', {
       method: 'POST',

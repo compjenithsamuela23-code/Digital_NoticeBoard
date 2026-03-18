@@ -5,6 +5,7 @@ const path = require('path');
 const dotenv = require('dotenv');
 const http = require('http');
 const socketIo = require('socket.io');
+const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const dns = require('dns').promises;
@@ -94,8 +95,19 @@ let lastMaintenanceRunAtMs = 0;
 let historyTableMode = 'unknown';
 let runtimeInitPromise = null;
 let maintenanceIntervalHandle = null;
+let opsAgentIntervalHandle = null;
 let storageBucketReadyPromise = null;
 let runtimeMaintenanceChecksCompleted = 0;
+const opsAgentRuntimeState = {
+  startedAt: new Date().toISOString(),
+  checksCompleted: 0,
+  repairsAttempted: 0,
+  repairsSucceeded: 0,
+  repairsFailed: 0,
+  lastRepairAtMs: 0,
+  lastRepair: null,
+  currentAction: null
+};
 const runtimeApiResponseCache = new Map();
 const runtimeApiCacheStats = {
   hits: 0,
@@ -210,6 +222,24 @@ const VERCEL_API_BASE_URL = String(process.env.VERCEL_API_BASE_URL || 'https://a
 const VERCEL_API_TOKEN = String(process.env.VERCEL_TOKEN || process.env.VERCEL_API_TOKEN || '').trim();
 const VERCEL_PROJECT_ID = String(process.env.VERCEL_PROJECT_ID || '').trim();
 const VERCEL_TEAM_ID = String(process.env.VERCEL_TEAM_ID || '').trim();
+const VERCEL_DEPLOY_HOOK_URL = String(process.env.VERCEL_DEPLOY_HOOK_URL || '').trim();
+const GITHUB_ACTIONS_WORKFLOW_ID = String(process.env.GITHUB_ACTIONS_WORKFLOW_ID || '').trim();
+const GITHUB_ACTIONS_REF = String(process.env.GITHUB_ACTIONS_REF || '').trim();
+const OPS_AGENT_RUNTIME_NAME = 'Digital Notice Board Ops Agent';
+const OPS_AGENT_RUNTIME_VERSION = '1.0.0';
+const OPS_AGENT_AUTOFIX_ENABLED = String(process.env.OPS_AGENT_AUTOFIX_ENABLED || 'true').toLowerCase() !== 'false';
+const OPS_AGENT_INTERVAL_MS = Math.max(
+  15000,
+  Number.parseInt(process.env.OPS_AGENT_INTERVAL_MS, 10) || 60000
+);
+const OPS_AGENT_COOLDOWN_MS = Math.max(
+  30000,
+  Number.parseInt(process.env.OPS_AGENT_COOLDOWN_MS, 10) || 5 * 60 * 1000
+);
+const OPS_AGENT_ACTION_TIMEOUT_MS = Math.max(
+  10000,
+  Number.parseInt(process.env.OPS_AGENT_ACTION_TIMEOUT_MS, 10) || 3 * 60 * 1000
+);
 
 const corsOrigin = configuredOrigins.length > 0 ? configuredOrigins : '*';
 const UPLOAD_DOWNLOAD_ONLY_EXTENSIONS = new Set([
@@ -4234,19 +4264,23 @@ async function probeUrlWithTimeout(url, timeoutMs) {
   }
 }
 
-async function fetchJsonWithTimeout(url, { timeoutMs = MAINTENANCE_AGENT_PROBE_TIMEOUT_MS, headers = {} } = {}) {
+async function requestJsonWithTimeout(
+  url,
+  { method = 'GET', timeoutMs = MAINTENANCE_AGENT_PROBE_TIMEOUT_MS, headers = {}, body = null } = {}
+) {
   const startedAtMs = Date.now();
   const controller = new AbortController();
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
-      method: 'GET',
+      method,
       cache: 'no-store',
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
         ...headers
-      }
+      },
+      body
     });
     const rawText = await response.text().catch(() => '');
     let payload = null;
@@ -4275,6 +4309,10 @@ async function fetchJsonWithTimeout(url, { timeoutMs = MAINTENANCE_AGENT_PROBE_T
   } finally {
     clearTimeout(timeoutHandle);
   }
+}
+
+async function fetchJsonWithTimeout(url, options = {}) {
+  return requestJsonWithTimeout(url, { ...options, method: 'GET' });
 }
 
 function buildBearerAuthHeaders(token) {
@@ -4531,6 +4569,416 @@ async function getPlatformStatusPayload() {
   })();
 
   return platformStatusCacheState.inFlight;
+}
+
+function getServerNpmExecutable() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
+async function runServerScript(scriptName) {
+  if (IS_SERVERLESS_RUNTIME) {
+    return {
+      ok: false,
+      code: null,
+      output: '',
+      message: 'Local server scripts are unavailable in serverless runtime.'
+    };
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn(getServerNpmExecutable(), ['run', scriptName], {
+      cwd: __dirname,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const outputChunks = [];
+    const pushChunk = (value) => {
+      const normalized = String(value || '').trim();
+      if (normalized) {
+        outputChunks.push(normalized);
+      }
+    };
+
+    child.stdout.on('data', (chunk) => pushChunk(chunk));
+    child.stderr.on('data', (chunk) => pushChunk(chunk));
+
+    const timeoutHandle = setTimeout(() => {
+      child.kill('SIGTERM');
+    }, OPS_AGENT_ACTION_TIMEOUT_MS);
+
+    child.on('error', (error) => {
+      clearTimeout(timeoutHandle);
+      resolve({
+        ok: false,
+        code: null,
+        output: '',
+        message: error.message || `Failed to run npm script "${scriptName}".`
+      });
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timeoutHandle);
+      resolve({
+        ok: Number(code || 0) === 0,
+        code: Number.isInteger(code) ? code : null,
+        output: outputChunks.join('\n').slice(0, 4000),
+        message:
+          Number(code || 0) === 0
+            ? `npm run ${scriptName} completed successfully.`
+            : `npm run ${scriptName} exited with code ${String(code)}.`
+      });
+    });
+  });
+}
+
+function buildOpsActionCatalog(platformPayload, maintenanceSummary) {
+  const integrations = platformPayload?.integrations || {};
+  const supabaseStatus = integrations.supabase || {};
+  const vercelStatus = integrations.vercel || {};
+  const githubStatus = integrations.github || {};
+
+  return [
+    {
+      id: 'refresh_runtime',
+      label: 'Refresh Runtime',
+      description: 'Invalidate caches and rerun runtime maintenance.',
+      available: true,
+      autoEligible: maintenanceSummary?.status !== 'ok',
+      reason: 'Available in all environments.'
+    },
+    {
+      id: 'repair_storage_bucket',
+      label: 'Repair Supabase Storage',
+      description: 'Ensure the configured Supabase storage bucket exists.',
+      available: true,
+      autoEligible: supabaseStatus.enabled === true && supabaseStatus.storageBucketFound === false,
+      reason: 'Uses the existing Supabase service role already configured for this app.'
+    },
+    {
+      id: 'backfill_media_metadata',
+      label: 'Backfill Media Metadata',
+      description: 'Rebuild stored media width and height metadata for existing posts.',
+      available: !IS_SERVERLESS_RUNTIME,
+      autoEligible: false,
+      reason: !IS_SERVERLESS_RUNTIME
+        ? 'Available in app runtime.'
+        : 'Unavailable in serverless runtime.'
+    },
+    {
+      id: 'redeploy_vercel',
+      label: 'Redeploy Vercel',
+      description: 'Trigger a production redeploy through a Vercel deploy hook.',
+      available: Boolean(VERCEL_DEPLOY_HOOK_URL),
+      autoEligible: Boolean(VERCEL_DEPLOY_HOOK_URL) && vercelStatus.status === 'degraded',
+      reason: VERCEL_DEPLOY_HOOK_URL
+        ? 'Vercel deploy hook is configured.'
+        : 'Set VERCEL_DEPLOY_HOOK_URL to enable automated redeploys.'
+    },
+    {
+      id: 'dispatch_github_workflow',
+      label: 'Run GitHub Workflow',
+      description: 'Dispatch a GitHub Actions workflow for CI/CD or repository repair.',
+      available: Boolean(GITHUB_REPO && GITHUB_TOKEN && GITHUB_ACTIONS_WORKFLOW_ID),
+      autoEligible: Boolean(GITHUB_REPO && GITHUB_TOKEN && GITHUB_ACTIONS_WORKFLOW_ID) && githubStatus.status === 'degraded',
+      reason:
+        GITHUB_REPO && GITHUB_TOKEN && GITHUB_ACTIONS_WORKFLOW_ID
+          ? 'GitHub workflow dispatch is configured.'
+          : 'Set GITHUB_REPO, GITHUB_TOKEN, and GITHUB_ACTIONS_WORKFLOW_ID to enable workflow dispatch.'
+    }
+  ];
+}
+
+function buildOpsRecommendations({ maintenanceSummary, platformPayload, actionCatalog }) {
+  const integrations = platformPayload?.integrations || {};
+  const recommendedActionIds = [];
+
+  if (maintenanceSummary?.status && maintenanceSummary.status !== 'ok') {
+    recommendedActionIds.push('refresh_runtime');
+  }
+  if (integrations.supabase?.enabled === true && integrations.supabase?.storageBucketFound === false) {
+    recommendedActionIds.push('repair_storage_bucket');
+  }
+  if (integrations.vercel?.status === 'degraded' && VERCEL_DEPLOY_HOOK_URL) {
+    recommendedActionIds.push('redeploy_vercel');
+  }
+  if (integrations.github?.status === 'degraded' && GITHUB_REPO && GITHUB_TOKEN && GITHUB_ACTIONS_WORKFLOW_ID) {
+    recommendedActionIds.push('dispatch_github_workflow');
+  }
+
+  return recommendedActionIds
+    .map((actionId) => actionCatalog.find((action) => action.id === actionId))
+    .filter(Boolean);
+}
+
+function buildOpsAgentSummary({ maintenanceSummary, platformPayload, recommendations }) {
+  const platformState = String(platformPayload?.summary?.state || 'unknown')
+    .trim()
+    .toLowerCase();
+
+  if (opsAgentRuntimeState.currentAction) {
+    return {
+      state: 'recovering',
+      message: `Running ${opsAgentRuntimeState.currentAction.label}...`
+    };
+  }
+
+  if ((maintenanceSummary?.status && maintenanceSummary.status !== 'ok') || platformState === 'degraded') {
+    return {
+      state: 'degraded',
+      message:
+        recommendations.length > 0
+          ? `Recommended action: ${recommendations[0].label}.`
+          : 'Diagnostics detected an issue that may require manual review.'
+    };
+  }
+
+  return {
+    state: 'healthy',
+    message: 'Ops agent diagnostics are healthy.'
+  };
+}
+
+async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
+  if (forceRefresh) {
+    invalidatePlatformStatusCache();
+  }
+
+  const [maintenanceAgentResolution, platformPayload] = await Promise.all([
+    resolveMaintenanceAgentStatus({ includeNetworkProbe: false }),
+    getPlatformStatusPayload()
+  ]);
+  const maintenanceSummary = buildMaintenanceAgentSummary(maintenanceAgentResolution.agentStatus);
+  const actionCatalog = buildOpsActionCatalog(platformPayload, maintenanceSummary);
+  const recommendations = buildOpsRecommendations({
+    maintenanceSummary,
+    platformPayload,
+    actionCatalog
+  });
+  const summary = buildOpsAgentSummary({
+    maintenanceSummary,
+    platformPayload,
+    recommendations
+  });
+
+  return {
+    updatedAt: new Date().toISOString(),
+    agent: {
+      name: OPS_AGENT_RUNTIME_NAME,
+      version: OPS_AGENT_RUNTIME_VERSION,
+      pid: process.pid,
+      startedAt: opsAgentRuntimeState.startedAt,
+      intervalMs: IS_SERVERLESS_RUNTIME ? null : OPS_AGENT_INTERVAL_MS,
+      autoFixEnabled: OPS_AGENT_AUTOFIX_ENABLED && !IS_SERVERLESS_RUNTIME,
+      serverless: IS_SERVERLESS_RUNTIME
+    },
+    summary: {
+      ...summary,
+      checksCompleted: opsAgentRuntimeState.checksCompleted,
+      repairsAttempted: opsAgentRuntimeState.repairsAttempted,
+      repairsSucceeded: opsAgentRuntimeState.repairsSucceeded,
+      repairsFailed: opsAgentRuntimeState.repairsFailed
+    },
+    maintenanceAgent: maintenanceSummary,
+    platform: platformPayload,
+    actions: actionCatalog,
+    recommendations,
+    lastRepair: opsAgentRuntimeState.lastRepair
+  };
+}
+
+async function executeOpsAgentAction(actionId, platformPayload) {
+  switch (actionId) {
+    case 'refresh_runtime': {
+      invalidateAnnouncementRuntimeCaches();
+      invalidateCategoriesRuntimeCache();
+      invalidateLiveRuntimeCache();
+      await ensureStorageBucketReady();
+      await runAnnouncementMaintenance({ force: true });
+      return {
+        success: true,
+        message: 'Runtime caches were refreshed and maintenance was rerun.',
+        details: null
+      };
+    }
+    case 'repair_storage_bucket': {
+      await ensureStorageBucketReady();
+      invalidatePlatformStatusCache();
+      return {
+        success: true,
+        message: `Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}" is ready.`,
+        details: null
+      };
+    }
+    case 'backfill_media_metadata': {
+      const scriptResult = await runServerScript('backfill:media');
+      return {
+        success: scriptResult.ok,
+        message: scriptResult.message,
+        details: scriptResult.output || null
+      };
+    }
+    case 'redeploy_vercel': {
+      if (!VERCEL_DEPLOY_HOOK_URL) {
+        return {
+          success: false,
+          message: 'VERCEL_DEPLOY_HOOK_URL is not configured.',
+          details: null
+        };
+      }
+      const response = await requestJsonWithTimeout(VERCEL_DEPLOY_HOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ trigger: 'ops-agent' })
+      });
+      return {
+        success: response.ok,
+        message: response.ok ? 'Vercel redeploy hook triggered.' : response.error || 'Vercel redeploy failed.',
+        details: response.payload || null
+      };
+    }
+    case 'dispatch_github_workflow': {
+      const repo = normalizeGithubRepoValue(GITHUB_REPO);
+      if (!repo || !GITHUB_TOKEN || !GITHUB_ACTIONS_WORKFLOW_ID) {
+        return {
+          success: false,
+          message: 'GitHub workflow dispatch is not fully configured.',
+          details: null
+        };
+      }
+      const ref =
+        GITHUB_ACTIONS_REF ||
+        String(platformPayload?.integrations?.github?.defaultBranch || '').trim() ||
+        'main';
+      const apiUrl = `${GITHUB_API_BASE_URL.replace(/\/+$/, '')}/repos/${repo}/actions/workflows/${encodeURIComponent(
+        GITHUB_ACTIONS_WORKFLOW_ID
+      )}/dispatches`;
+      const response = await requestJsonWithTimeout(apiUrl, {
+        method: 'POST',
+        headers: {
+          ...buildBearerAuthHeaders(GITHUB_TOKEN),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ref })
+      });
+      return {
+        success: response.ok || response.statusCode === 204,
+        message:
+          response.ok || response.statusCode === 204
+            ? `GitHub workflow dispatch queued for ref "${ref}".`
+            : response.error || 'GitHub workflow dispatch failed.',
+        details: response.payload || null
+      };
+    }
+    default:
+      return {
+        success: false,
+        message: `Unsupported ops action: ${String(actionId || '')}`,
+        details: null
+      };
+  }
+}
+
+async function runOpsAgentAction(actionId, { trigger = 'manual' } = {}) {
+  const platformPayload = await getPlatformStatusPayload();
+  const actionCatalog = buildOpsActionCatalog(
+    platformPayload,
+    buildMaintenanceAgentSummary((await resolveMaintenanceAgentStatus({ includeNetworkProbe: false })).agentStatus)
+  );
+  const selectedAction = actionCatalog.find((action) => action.id === actionId);
+
+  if (!selectedAction) {
+    return {
+      result: {
+        actionId,
+        label: actionId,
+        trigger,
+        success: false,
+        message: 'Requested action is not supported.',
+        details: null,
+        completedAt: new Date().toISOString()
+      },
+      status: await buildOpsAgentStatusPayload({ forceRefresh: true })
+    };
+  }
+
+  opsAgentRuntimeState.currentAction = {
+    id: selectedAction.id,
+    label: selectedAction.label,
+    trigger,
+    startedAt: new Date().toISOString()
+  };
+
+  let result;
+  try {
+    const execution = await executeOpsAgentAction(selectedAction.id, platformPayload);
+    opsAgentRuntimeState.repairsAttempted += 1;
+    if (execution.success) {
+      opsAgentRuntimeState.repairsSucceeded += 1;
+    } else {
+      opsAgentRuntimeState.repairsFailed += 1;
+    }
+    opsAgentRuntimeState.lastRepairAtMs = Date.now();
+    opsAgentRuntimeState.lastRepair = {
+      actionId: selectedAction.id,
+      label: selectedAction.label,
+      trigger,
+      success: execution.success,
+      message: execution.message,
+      details: execution.details,
+      completedAt: new Date().toISOString()
+    };
+    result = opsAgentRuntimeState.lastRepair;
+  } catch (error) {
+    opsAgentRuntimeState.repairsAttempted += 1;
+    opsAgentRuntimeState.repairsFailed += 1;
+    opsAgentRuntimeState.lastRepairAtMs = Date.now();
+    opsAgentRuntimeState.lastRepair = {
+      actionId: selectedAction.id,
+      label: selectedAction.label,
+      trigger,
+      success: false,
+      message: error.message || 'Ops action failed.',
+      details: null,
+      completedAt: new Date().toISOString()
+    };
+    result = opsAgentRuntimeState.lastRepair;
+  } finally {
+    opsAgentRuntimeState.currentAction = null;
+    invalidatePlatformStatusCache();
+  }
+
+  return {
+    result,
+    status: await buildOpsAgentStatusPayload({ forceRefresh: true })
+  };
+}
+
+async function runOpsAgentCycle() {
+  opsAgentRuntimeState.checksCompleted += 1;
+  const statusPayload = await buildOpsAgentStatusPayload({ forceRefresh: true });
+
+  if (IS_SERVERLESS_RUNTIME || !OPS_AGENT_AUTOFIX_ENABLED || opsAgentRuntimeState.currentAction) {
+    return statusPayload;
+  }
+
+  const cooldownActive = Date.now() - opsAgentRuntimeState.lastRepairAtMs < OPS_AGENT_COOLDOWN_MS;
+  if (cooldownActive) {
+    return statusPayload;
+  }
+
+  const nextAutoAction = (statusPayload.recommendations || []).find(
+    (action) => action && action.autoEligible && action.available
+  );
+
+  if (!nextAutoAction) {
+    return statusPayload;
+  }
+
+  await runOpsAgentAction(nextAutoAction.id, { trigger: 'auto' });
+  return buildOpsAgentStatusPayload({ forceRefresh: true });
 }
 
 async function probeRuntimeNetwork({ enabled = true } = {}) {
@@ -4834,6 +5282,32 @@ app.get('/api/system/platform-status', simpleAuth, requireWorkspaceRole, async (
   }
 });
 
+app.get('/api/system/ops-agent', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const payload = await buildOpsAgentStatusPayload({ forceRefresh: true });
+    const state = String(payload?.summary?.state || '').toLowerCase();
+    const httpStatus = state === 'degraded' ? 207 : 200;
+    res.status(httpStatus).json(payload);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/system/ops-agent/actions/:actionId', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const actionId = String(req.params.actionId || '').trim();
+    if (!actionId) {
+      return res.status(400).json({ error: 'Action id is required.' });
+    }
+
+    const payload = await runOpsAgentAction(actionId, { trigger: 'manual' });
+    const httpStatus = payload.result?.success ? 200 : 207;
+    return res.status(httpStatus).json(payload);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/test', (req, res) => {
   res.json({
     status: 'Server is running perfectly!',
@@ -4942,7 +5416,9 @@ app.get('/', (req, res) => {
       },
       system: {
         maintenanceAgent: 'GET /api/system/maintenance-agent',
-        platformStatus: 'GET /api/system/platform-status'
+        platformStatus: 'GET /api/system/platform-status',
+        opsAgent: 'GET /api/system/ops-agent',
+        opsAction: 'POST /api/system/ops-agent/actions/:actionId'
       },
       displayUsers: {
         list: 'GET /api/display-users',
@@ -4987,6 +5463,18 @@ function ensureMaintenanceScheduler() {
   }, ANNOUNCEMENT_MAINTENANCE_INTERVAL_MS);
 }
 
+function ensureOpsAgentScheduler() {
+  if (IS_SERVERLESS_RUNTIME || opsAgentIntervalHandle) {
+    return;
+  }
+
+  opsAgentIntervalHandle = setInterval(() => {
+    runOpsAgentCycle().catch((error) => {
+      console.error('⚠️ Ops agent cycle failed:', error.message || String(error));
+    });
+  }, OPS_AGENT_INTERVAL_MS);
+}
+
 async function ensureRuntimeInitialized() {
   if (!runtimeInitPromise) {
     runtimeInitPromise = initializeSupabase().catch((error) => {
@@ -4997,6 +5485,12 @@ async function ensureRuntimeInitialized() {
 
   await runtimeInitPromise;
   ensureMaintenanceScheduler();
+  ensureOpsAgentScheduler();
+  if (opsAgentRuntimeState.checksCompleted === 0) {
+    runOpsAgentCycle().catch((error) => {
+      console.error('⚠️ Ops agent startup cycle failed:', error.message || String(error));
+    });
+  }
 }
 
 async function startServer() {
