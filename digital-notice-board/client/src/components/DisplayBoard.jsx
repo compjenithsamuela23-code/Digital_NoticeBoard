@@ -29,6 +29,8 @@ const MAX_VISIBLE_SPLIT_ITEMS = 4;
 const MAX_ANNOUNCEMENT_STREAM_LINKS = 24;
 const MAX_GLOBAL_STREAM_LINKS = 24;
 const DISPLAY_ROTATION_INTERVAL_MS = 8000;
+const ANNOUNCEMENT_TEXT_SLIDE_MAX_CHARS = 520;
+const ANNOUNCEMENT_TEXT_SLIDE_MAX_LINES = 7;
 const DISPLAY_CACHE_KEYS = {
   announcements: 'dnb.display.announcements',
   categories: 'dnb.display.categories',
@@ -129,6 +131,75 @@ const buildTakeoverVersion = (slide) => {
     announcement.priority ?? 1,
     liveLinks.join('|')
   ].join('::');
+};
+
+const splitAnnouncementTextIntoSlides = (
+  value,
+  { maxChars = ANNOUNCEMENT_TEXT_SLIDE_MAX_CHARS, maxLines = ANNOUNCEMENT_TEXT_SLIDE_MAX_LINES } = {}
+) => {
+  const normalized = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+
+  const lines = normalized.split('\n');
+  const chunks = [];
+  let buffer = [];
+  let charsInBuffer = 0;
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    const chunk = buffer.join('\n').trim();
+    if (chunk) {
+      chunks.push(chunk);
+    }
+    buffer = [];
+    charsInBuffer = 0;
+  };
+
+  lines.forEach((line) => {
+    const safeLine = String(line || '').trim();
+    if (!safeLine && buffer.length > 0) {
+      buffer.push('');
+      charsInBuffer += 1;
+      return;
+    }
+
+    const nextChars = charsInBuffer + safeLine.length + 1;
+    if (buffer.length > 0 && (buffer.length >= maxLines || nextChars > maxChars)) {
+      flush();
+    }
+
+    buffer.push(safeLine);
+    charsInBuffer += safeLine.length + 1;
+  });
+
+  flush();
+  return chunks.slice(0, 40);
+};
+
+const buildAnnouncementTextSlides = (title, content) => {
+  const safeTitle = String(title || '').trim();
+  const safeContent = String(content || '').replace(/\r\n/g, '\n').trim();
+
+  if (!safeTitle && !safeContent) {
+    return [];
+  }
+
+  const contentChunks = splitAnnouncementTextIntoSlides(safeContent);
+  if (contentChunks.length === 0) {
+    return [
+      {
+        id: 'announcement-text-1',
+        title: safeTitle || 'Announcement',
+        content: safeContent || ''
+      }
+    ];
+  }
+
+  return contentChunks.map((chunk, index) => ({
+    id: `announcement-text-${index + 1}`,
+    title: safeTitle || `Announcement ${index + 1}`,
+    content: chunk
+  }));
 };
 
 const safeUrl = (value) => {
@@ -341,6 +412,7 @@ const DisplayBoard = () => {
   const [requestError, setRequestError] = useState('');
   const [documentSlideCount, setDocumentSlideCount] = useState(1);
   const [documentSlideIndex, setDocumentSlideIndex] = useState(1);
+  const [currentAnnouncementTextPage, setCurrentAnnouncementTextPage] = useState(0);
   const [liveReconnectToken, setLiveReconnectToken] = useState(0);
   const [takeoverQueue, setTakeoverQueue] = useState([]);
   const previousDocumentSlideIndexRef = useRef(1);
@@ -767,6 +839,17 @@ const DisplayBoard = () => {
   const currentAnnouncementHasAnyMedia = currentAnnouncementMediaGroupCount > 0;
   const currentAnnouncementTitle = String((currentAnnouncement && currentAnnouncement.title) || '').trim();
   const currentAnnouncementContent = String((currentAnnouncement && currentAnnouncement.content) || '').trim();
+  const announcementTextSlides = useMemo(
+    () => buildAnnouncementTextSlides(currentAnnouncementTitle, currentAnnouncementContent),
+    [currentAnnouncementContent, currentAnnouncementTitle]
+  );
+  const announcementTextPageCount = announcementTextSlides.length;
+  const activeAnnouncementTextPage = Math.min(
+    currentAnnouncementTextPage,
+    Math.max(0, announcementTextPageCount - 1)
+  );
+  const currentAnnouncementTextSlide =
+    announcementTextSlides[activeAnnouncementTextPage] || null;
   const currentAnnouncementHasText = Boolean(currentAnnouncementTitle || currentAnnouncementContent);
   const shouldShowEmergencyContent = currentAnnouncementHasText || !currentAnnouncementHasAnyMedia;
   const currentAnnouncementMediaWidth = Number.parseInt(currentAnnouncement && currentAnnouncement.mediaWidth, 10);
@@ -918,10 +1001,28 @@ const DisplayBoard = () => {
   }, [activeLiveStreamEmbeds.length, hiddenLiveStreamCount, liveSourceTiles.length]);
   const showAnnouncementFallbackText =
     currentAnnouncementHasAnyMedia && !currentAnnouncementHasText && !shouldUsePresentationFocusLayout;
+  const shouldShowTextSlideHero =
+    !showLivePanel && !currentAnnouncementHasAnyMedia && announcementTextPageCount > 0;
+  const shouldTreatTextSlidesAsPrimaryPages =
+    !showLivePanel && !showAnnouncementMediaPanel && announcementTextPageCount > 1;
+  const shouldUseAnnouncementStageLayout =
+    shouldUsePresentationFocusLayout || shouldShowTextSlideHero;
   const announcementPanelTitle =
-    currentAnnouncementTitle || (currentAnnouncementIsPresentation ? 'Presentation' : 'Notice Attachment');
+    currentAnnouncementTextSlide?.title ||
+    currentAnnouncementTitle ||
+    (currentAnnouncementIsPresentation ? 'Presentation' : 'Notice Attachment');
   const announcementPanelContent =
-    currentAnnouncementContent || 'Media has been posted without additional text content.';
+    currentAnnouncementTextSlide?.content ||
+    currentAnnouncementContent ||
+    'Media has been posted without additional text content.';
+
+  useEffect(() => {
+    const maxPageIndex = Math.max(0, announcementTextPageCount - 1);
+    if (currentAnnouncementTextPage <= maxPageIndex) {
+      return;
+    }
+    setCurrentAnnouncementTextPage(maxPageIndex);
+  }, [announcementTextPageCount, currentAnnouncementTextPage]);
 
   const getAdjacentSlideId = useCallback(
     (baseSlideId, direction = 1) => {
@@ -979,7 +1080,8 @@ const DisplayBoard = () => {
       currentAnnouncementMediaGroupCount <= 1 &&
       currentAnnouncementHasDocument &&
       documentSlideCount > 1;
-    if (shouldPauseAnnouncementRotation) {
+    const shouldPauseAnnouncementRotationForText = shouldTreatTextSlidesAsPrimaryPages;
+    if (shouldPauseAnnouncementRotation || shouldPauseAnnouncementRotationForText) {
       return;
     }
 
@@ -1004,6 +1106,7 @@ const DisplayBoard = () => {
     displaySlides.length,
     documentSlideCount,
     isPlaying,
+    shouldTreatTextSlidesAsPrimaryPages,
     showLivePanel
   ]);
 
@@ -1020,9 +1123,38 @@ const DisplayBoard = () => {
     setCurrentMediaGroupPage(0);
     setDocumentSlideCount(1);
     setDocumentSlideIndex(1);
+    setCurrentAnnouncementTextPage(0);
     previousDocumentSlideIndexRef.current = 1;
     documentCycleCountRef.current = 0;
   }, [currentAnnouncementId]);
+
+  useEffect(() => {
+    if (!isPlaying || announcementTextPageCount <= 1) {
+      return undefined;
+    }
+
+    const interval = setInterval(() => {
+      setCurrentAnnouncementTextPage((previous) => {
+        if (previous < announcementTextPageCount - 1) {
+          return previous + 1;
+        }
+
+        if (shouldTreatTextSlidesAsPrimaryPages && displaySlides.length > 1) {
+          advanceScheduledSequence(1);
+        }
+
+        return 0;
+      });
+    }, DISPLAY_ROTATION_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [
+    advanceScheduledSequence,
+    announcementTextPageCount,
+    displaySlides.length,
+    isPlaying,
+    shouldTreatTextSlidesAsPrimaryPages
+  ]);
 
   useEffect(() => {
     if (
@@ -1086,6 +1218,9 @@ const DisplayBoard = () => {
       }
       return `${announcementLabel} • Live always on (${liveSourceTiles.length} ${liveSourceTiles.length === 1 ? 'stream' : 'streams'})`;
     }
+    if (shouldTreatTextSlidesAsPrimaryPages) {
+      return `${announcementLabel} • Text slide ${activeAnnouncementTextPage + 1} of ${announcementTextPageCount}`;
+    }
     if (currentAnnouncementMediaGroupCount > 1) {
       if (announcementMediaPageCount > 1) {
         return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments) • Panel ${
@@ -1103,9 +1238,11 @@ const DisplayBoard = () => {
   }, [
     activeLiveStreamEmbeds.length,
     activeAnnouncementMediaPage,
+    activeAnnouncementTextPage,
     activeSlideIndex,
     activeTakeover,
     announcementMediaPageCount,
+    announcementTextPageCount,
     currentAnnouncementMediaGroupCount,
     currentAnnouncementHasDocument,
     currentAnnouncementIsPresentation,
@@ -1114,6 +1251,7 @@ const DisplayBoard = () => {
     documentSlideIndex,
     hiddenLiveStreamCount,
     liveSourceTiles.length,
+    shouldTreatTextSlidesAsPrimaryPages,
     showLivePanel
   ]);
   const rotationControlLabel = isPlaying ? 'Pause Auto-Rotate' : 'Resume Auto-Rotate';
@@ -1133,11 +1271,21 @@ const DisplayBoard = () => {
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages && activeAnnouncementTextPage < announcementTextPageCount - 1) {
+      setCurrentAnnouncementTextPage((previous) =>
+        Math.min(previous + 1, Math.max(0, announcementTextPageCount - 1))
+      );
+      return;
+    }
+
     if (activePanelPageCount > 1 && activePanelPageIndex < activePanelPageCount - 1) {
       setCurrentMediaGroupPage((previous) => Math.min(previous + 1, activePanelPageCount - 1));
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages) {
+      setCurrentAnnouncementTextPage(0);
+    }
     setCurrentMediaGroupPage(0);
     advanceScheduledSequence(1);
   };
@@ -1151,11 +1299,19 @@ const DisplayBoard = () => {
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages && activeAnnouncementTextPage > 0) {
+      setCurrentAnnouncementTextPage((previous) => Math.max(previous - 1, 0));
+      return;
+    }
+
     if (activePanelPageCount > 1 && activePanelPageIndex > 0) {
       setCurrentMediaGroupPage((previous) => Math.max(previous - 1, 0));
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages) {
+      setCurrentAnnouncementTextPage(Math.max(0, announcementTextPageCount - 1));
+    }
     setCurrentMediaGroupPage(0);
     advanceScheduledSequence(-1);
   };
@@ -1638,15 +1794,20 @@ const DisplayBoard = () => {
 
           <section
             className={`announcement-panel display-panel ${
-              shouldUsePresentationFocusLayout ? 'display-panel--media-only' : ''
+              shouldUseAnnouncementStageLayout ? 'display-panel--media-only' : ''
             } ${isEmergency ? 'emergency-frame' : ''}`.trim()}
           >
-            {!shouldUsePresentationFocusLayout ? (
+            {!shouldUseAnnouncementStageLayout ? (
               <div className="panel-head">
                 <h2>Current Announcement</h2>
                 <div className="inline-actions">
                   <span className="pill pill--info">Priority {currentAnnouncement.priority || 1}</span>
                   {categoryLabel ? <span className="pill">{categoryLabel}</span> : null}
+                  {announcementTextPageCount > 1 ? (
+                    <span className="pill">
+                      Text {activeAnnouncementTextPage + 1}/{announcementTextPageCount}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -1654,14 +1815,40 @@ const DisplayBoard = () => {
             <div
               className={`announcement-body ${
                 shouldUsePresentationFocusLayout ? 'announcement-body--media-only' : ''
-              }`.trim()}
+              } ${shouldShowTextSlideHero ? 'announcement-body--text-stage' : ''}`.trim()}
             >
-              {!shouldUsePresentationFocusLayout ? (
+              {shouldShowTextSlideHero ? (
+                <div className="announcement-text-stage">
+                  <div className="announcement-text-stage__chrome">
+                    <p className="announcement-kicker">
+                      {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
+                    </p>
+                    {announcementTextPageCount > 1 ? (
+                      <span className="pill">
+                        Text {activeAnnouncementTextPage + 1}/{announcementTextPageCount}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="announcement-text-stage__inner">
+                    {announcementPanelTitle ? (
+                      <h3 className="announcement-title announcement-title--stage">
+                        {announcementPanelTitle}
+                      </h3>
+                    ) : null}
+                    {announcementPanelContent ? (
+                      <p className="announcement-content announcement-content--stage">
+                        {announcementPanelContent}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              {!shouldUseAnnouncementStageLayout ? (
                 <p className="announcement-kicker">
                   {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
                 </p>
               ) : null}
-              {!shouldUsePresentationFocusLayout && (currentAnnouncementTitle || showAnnouncementFallbackText) ? (
+              {!shouldUseAnnouncementStageLayout && (announcementPanelTitle || showAnnouncementFallbackText) ? (
                 <h3 className="announcement-title">{announcementPanelTitle}</h3>
               ) : null}
 
@@ -1706,7 +1893,7 @@ const DisplayBoard = () => {
                 </div>
               ) : null}
 
-              {!shouldUsePresentationFocusLayout && (currentAnnouncementContent || showAnnouncementFallbackText) ? (
+              {!shouldUseAnnouncementStageLayout && (announcementPanelContent || showAnnouncementFallbackText) ? (
                 <p className="announcement-content">{announcementPanelContent}</p>
               ) : null}
             </div>
