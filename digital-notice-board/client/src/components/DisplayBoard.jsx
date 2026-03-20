@@ -425,6 +425,8 @@ const DisplayBoard = () => {
   const hasHydratedTakeoversRef = useRef(false);
   const announcementsRef = useRef(announcements);
   const announcementsEtagRef = useRef('');
+  const categoriesEtagRef = useRef('');
+  const liveStatusEtagRef = useRef('');
   const categoriesRef = useRef(categories);
   const liveStateRef = useRef({
     link: liveLink,
@@ -537,6 +539,63 @@ const DisplayBoard = () => {
     [displayCategoryId]
   );
 
+  const syncCategories = useCallback((nextCategories) => {
+    const safeCategories = Array.isArray(nextCategories) ? nextCategories : [];
+    setCategories(safeCategories);
+    writeCachedDisplayPayload(DISPLAY_CACHE_KEYS.categories, safeCategories);
+  }, []);
+
+  const syncLiveStatus = useCallback((statusPayload) => {
+    const nextLinks =
+      Array.isArray(statusPayload?.links) && statusPayload.links.length > 0
+        ? statusPayload.links
+        : statusPayload?.link
+          ? [statusPayload.link]
+          : [];
+    const nextLivePayload = {
+      status: statusPayload?.status || 'OFF',
+      link: statusPayload?.link || null,
+      links: nextLinks,
+      category: normalizeLiveCategory(statusPayload?.category)
+    };
+    setLiveStatus(nextLivePayload.status);
+    setLiveLink(nextLivePayload.link);
+    setLiveLinks(nextLivePayload.links);
+    setLiveCategory(nextLivePayload.category);
+    writeCachedDisplayPayload(DISPLAY_CACHE_KEYS.live, nextLivePayload);
+  }, []);
+
+  const fetchDisplayBootstrap = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    try {
+      const categoryFilter = String(displayCategoryId || 'all').trim();
+      const response = await apiClient.get(apiUrl('/api/display/bootstrap'), {
+        params: categoryFilter && categoryFilter !== 'all' ? { category: categoryFilter } : {}
+      });
+      const payload = response.data || {};
+      syncAnnouncements(payload.announcements || []);
+      syncCategories(payload.categories || []);
+      syncLiveStatus(payload.liveStatus || {});
+      announcementsEtagRef.current = String(payload?.etags?.announcements || '').trim();
+      categoriesEtagRef.current = String(payload?.etags?.categories || '').trim();
+      liveStatusEtagRef.current = String(payload?.etags?.liveStatus || '').trim();
+      setRequestError('');
+    } catch (error) {
+      console.error('Error fetching display bootstrap:', error);
+      const hasCachedDisplayContent =
+        categoriesRef.current.length > 0 ||
+        announcementsRef.current.length > 0 ||
+        liveStateRef.current.links.length > 0 ||
+        Boolean(liveStateRef.current.link);
+      setRequestError(
+        withCachedContentNotice(extractApiError(error, 'Unable to sync display data.'), hasCachedDisplayContent)
+      );
+    }
+  }, [displayCategoryId, isOnline, syncAnnouncements, syncCategories, syncLiveStatus]);
+
   const fetchAnnouncements = useCallback(async () => {
     if (!isOnline) {
       setRequestError(
@@ -578,10 +637,16 @@ const DisplayBoard = () => {
     }
 
     try {
-      const response = await apiClient.get(apiUrl('/api/categories'));
-      const nextCategories = Array.isArray(response.data) ? response.data : [];
-      setCategories(nextCategories);
-      writeCachedDisplayPayload(DISPLAY_CACHE_KEYS.categories, nextCategories);
+      const response = await apiClient.get(
+        apiUrl('/api/categories'),
+        buildConditionalGetConfig(categoriesEtagRef.current)
+      );
+      if (response.status === 304) {
+        setRequestError('');
+        return;
+      }
+      categoriesEtagRef.current = getResponseEtag(response) || categoriesEtagRef.current;
+      syncCategories(response.data || []);
       setRequestError('');
     } catch (error) {
       console.error('Error fetching categories:', error);
@@ -594,7 +659,7 @@ const DisplayBoard = () => {
         withCachedContentNotice(extractApiError(error, 'Unable to load categories.'), hasCachedDisplayContent)
       );
     }
-  }, [isOnline]);
+  }, [isOnline, syncCategories]);
 
   const fetchLiveStatus = useCallback(async () => {
     if (!isOnline) {
@@ -602,25 +667,13 @@ const DisplayBoard = () => {
     }
 
     try {
-      const response = await apiClient.get(apiUrl('/api/status'));
-      const statusPayload = response.data || {};
-      const nextLinks =
-        Array.isArray(statusPayload.links) && statusPayload.links.length > 0
-          ? statusPayload.links
-          : statusPayload.link
-            ? [statusPayload.link]
-            : [];
-      const nextLivePayload = {
-        status: statusPayload.status || 'OFF',
-        link: statusPayload.link || null,
-        links: nextLinks,
-        category: normalizeLiveCategory(statusPayload.category)
-      };
-      setLiveStatus(nextLivePayload.status);
-      setLiveLink(nextLivePayload.link);
-      setLiveLinks(nextLivePayload.links);
-      setLiveCategory(nextLivePayload.category);
-      writeCachedDisplayPayload(DISPLAY_CACHE_KEYS.live, nextLivePayload);
+      const response = await apiClient.get(apiUrl('/api/status'), buildConditionalGetConfig(liveStatusEtagRef.current));
+      if (response.status === 304) {
+        setRequestError('');
+        return;
+      }
+      liveStatusEtagRef.current = getResponseEtag(response) || liveStatusEtagRef.current;
+      syncLiveStatus(response.data || {});
       setRequestError('');
     } catch (error) {
       console.error('Error fetching live status:', error);
@@ -633,13 +686,11 @@ const DisplayBoard = () => {
         withCachedContentNotice(extractApiError(error, 'Unable to load live status.'), hasCachedDisplayContent)
       );
     }
-  }, [isOnline]);
+  }, [isOnline, syncLiveStatus]);
 
   useEffect(() => {
-    fetchAnnouncements();
-    fetchCategories();
-    fetchLiveStatus();
-  }, [fetchAnnouncements, fetchCategories, fetchLiveStatus]);
+    fetchDisplayBootstrap();
+  }, [fetchDisplayBootstrap]);
 
   useAdaptivePolling(fetchLiveStatus, {
     enabled: true,
@@ -675,14 +726,11 @@ const DisplayBoard = () => {
   useEffect(() => {
     const syncVisibleDisplay = () => {
       if (!isOnline) return;
-      fetchAnnouncements();
-      fetchLiveStatus();
+      fetchDisplayBootstrap();
     };
     const handleOnline = () => {
       setRequestError('');
-      fetchAnnouncements();
-      fetchCategories();
-      fetchLiveStatus();
+      fetchDisplayBootstrap();
     };
 
     window.addEventListener('focus', syncVisibleDisplay);
@@ -692,7 +740,7 @@ const DisplayBoard = () => {
       window.removeEventListener('focus', syncVisibleDisplay);
       window.removeEventListener('online', handleOnline);
     };
-  }, [fetchAnnouncements, fetchCategories, fetchLiveStatus, isOnline]);
+  }, [fetchDisplayBootstrap, isOnline]);
 
   useEffect(() => {
     if (isOnline && !wasOnlineRef.current) {
@@ -711,30 +759,14 @@ const DisplayBoard = () => {
 
     const syncOnConnect = () => {
       setSocketConnected(true);
-      fetchAnnouncements();
-      fetchLiveStatus();
+      fetchDisplayBootstrap();
     };
     const handleDisconnect = () => {
       setSocketConnected(false);
     };
     const handleLiveUpdate = (data) => {
-      const nextLinks =
-        Array.isArray(data?.links) && data.links.length > 0
-          ? data.links
-          : data?.link
-            ? [data.link]
-            : [];
-      const nextLivePayload = {
-        status: data?.status || 'OFF',
-        link: data?.link || null,
-        links: nextLinks,
-        category: normalizeLiveCategory(data?.category)
-      };
-      setLiveStatus(nextLivePayload.status);
-      setLiveLink(nextLivePayload.link);
-      setLiveLinks(nextLivePayload.links);
-      setLiveCategory(nextLivePayload.category);
-      writeCachedDisplayPayload(DISPLAY_CACHE_KEYS.live, nextLivePayload);
+      liveStatusEtagRef.current = '';
+      syncLiveStatus(data || {});
     };
     const handleAnnouncementUpdate = (payload) => {
       const nextAnnouncements = applyAnnouncementSocketEvent(announcementsRef.current, payload, {
@@ -763,7 +795,7 @@ const DisplayBoard = () => {
       socket.off('announcementUpdate', handleAnnouncementUpdate);
       socket.off('liveUpdate', handleLiveUpdate);
     };
-  }, [displayCategoryId, fetchAnnouncements, fetchLiveStatus, socket, syncAnnouncements]);
+  }, [displayCategoryId, fetchAnnouncements, fetchDisplayBootstrap, socket, syncAnnouncements, syncLiveStatus]);
 
   const displaySlides = useMemo(() => toDisplaySlides(announcements), [announcements]);
 

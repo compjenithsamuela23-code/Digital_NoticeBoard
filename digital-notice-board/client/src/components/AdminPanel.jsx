@@ -529,17 +529,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const documentReplaceInputRef = useRef(null);
   const announcementsRef = useRef(announcements);
   const announcementsEtagRef = useRef('');
+  const categoriesEtagRef = useRef('');
+  const liveStatusEtagRef = useRef('');
   const announcementsRequestRef = useRef(null);
+  const workspaceBootstrapRequestRef = useRef(null);
+  const systemDashboardRequestRef = useRef(null);
   const liveStatusRequestRef = useRef(null);
   const categoriesRequestRef = useRef(null);
-  const uploadCapabilitiesRequestRef = useRef(null);
   const displayUsersRequestRef = useRef(null);
   const staffUsersRequestRef = useRef(null);
-  const maintenanceAgentRequestRef = useRef(null);
-  const platformStatusRequestRef = useRef(null);
-  const opsAgentRequestRef = useRef(null);
-  const opsAgentSettingsRequestRef = useRef(null);
-  const opsAgentHistoryRequestRef = useRef(null);
   const opsAgentActionRequestRef = useRef(null);
   const windowFileDragDepthRef = useRef(0);
   const dropZoneDragDepthRef = useRef({
@@ -581,6 +579,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   useEffect(() => {
     announcementsEtagRef.current = '';
+    categoriesEtagRef.current = '';
+    liveStatusEtagRef.current = '';
   }, [workspaceRole]);
   const getBatchAttachmentCount = useCallback(
     (announcement) => {
@@ -969,6 +969,84 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setAnnouncements(Array.isArray(nextAnnouncements) ? nextAnnouncements : []);
   }, []);
 
+  const syncCategories = useCallback((nextCategories) => {
+    setCategories(Array.isArray(nextCategories) ? nextCategories : []);
+  }, []);
+
+  const syncLiveStatus = useCallback((statusPayload) => {
+    const nextLinks =
+      Array.isArray(statusPayload?.links) && statusPayload.links.length > 0
+        ? statusPayload.links
+        : statusPayload?.link
+          ? [statusPayload.link]
+          : [];
+    setLiveStatus(statusPayload?.status || 'OFF');
+    setLiveLinks(nextLinks);
+    setLiveDraftLinks((previous) => (previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)));
+    setLiveCategory(normalizeLiveCategory(statusPayload?.category));
+  }, []);
+
+  const syncUploadCapabilities = useCallback((payload) => {
+    const nextMaxFileSizeBytes = Number.parseInt(payload?.maxFileSizeBytes, 10);
+    const nextMaxFileSizeMb = Number.parseInt(payload?.maxFileSizeMb, 10);
+
+    setUploadCapabilities({
+      maxFileSizeBytes:
+        Number.isFinite(nextMaxFileSizeBytes) && nextMaxFileSizeBytes > 0
+          ? Math.min(nextMaxFileSizeBytes, MAX_ATTACHMENT_UPLOAD_BYTES)
+          : MAX_ATTACHMENT_UPLOAD_BYTES,
+      maxFileSizeMb:
+        Number.isFinite(nextMaxFileSizeMb) && nextMaxFileSizeMb > 0
+          ? Math.min(nextMaxFileSizeMb, MAX_ATTACHMENT_UPLOAD_MB)
+          : MAX_ATTACHMENT_UPLOAD_MB
+    });
+  }, []);
+
+  const syncSystemDashboard = useCallback((payload) => {
+    setMaintenanceAgentPayload(payload?.maintenance || null);
+    setMaintenanceAgentError('');
+    setPlatformStatusPayload(payload?.platform || null);
+    setPlatformStatusError('');
+    setOpsAgentPayload(payload?.ops || null);
+    setOpsAgentError('');
+    setOpsAgentSettings(payload?.settings || payload?.ops?.settings || null);
+    setOpsAgentSettingsError('');
+    setOpsAgentHistory(Array.isArray(payload?.history?.items) ? payload.history.items : []);
+    setOpsAgentHistoryError('');
+  }, []);
+
+  const fetchWorkspaceBootstrap = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    await runSingleFlight(workspaceBootstrapRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/workspace/bootstrap'), applyWorkspaceAuth());
+        const payload = response.data || {};
+        syncAnnouncements(payload.announcements || []);
+        syncCategories(payload.categories || []);
+        syncLiveStatus(payload.liveStatus || {});
+        syncUploadCapabilities(payload.uploadCapabilities || {});
+        announcementsEtagRef.current = String(payload?.etags?.announcements || '').trim();
+        categoriesEtagRef.current = String(payload?.etags?.categories || '').trim();
+        liveStatusEtagRef.current = String(payload?.etags?.liveStatus || '').trim();
+        setRequestError('');
+      } catch (error) {
+        if (handleRequestError(error, 'Unable to sync workspace data.')) return;
+        console.error('Error fetching workspace bootstrap:', error);
+      }
+    });
+  }, [
+    applyWorkspaceAuth,
+    handleRequestError,
+    isOnline,
+    syncAnnouncements,
+    syncCategories,
+    syncLiveStatus,
+    syncUploadCapabilities
+  ]);
+
   const fetchAnnouncements = useCallback(async () => {
     if (!isOnline) {
       setRequestError('Network appears offline. Waiting to reconnect...');
@@ -1002,25 +1080,17 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     await runSingleFlight(liveStatusRequestRef, async () => {
       try {
-        const response = await apiClient.get(apiUrl('/api/status'));
-        const statusPayload = response.data || {};
-        const nextLinks =
-          Array.isArray(statusPayload.links) && statusPayload.links.length > 0
-            ? statusPayload.links
-            : statusPayload.link
-              ? [statusPayload.link]
-              : [];
-        setLiveStatus(statusPayload.status || 'OFF');
-        setLiveLinks(nextLinks);
-        setLiveDraftLinks((previous) =>
-          previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)
-        );
-        setLiveCategory(normalizeLiveCategory(statusPayload.category));
+        const response = await apiClient.get(apiUrl('/api/status'), buildConditionalGetConfig(liveStatusEtagRef.current));
+        if (response.status === 304) {
+          return;
+        }
+        liveStatusEtagRef.current = getResponseEtag(response) || liveStatusEtagRef.current;
+        syncLiveStatus(response.data || {});
       } catch (error) {
         console.error('Error fetching live status:', error);
       }
     });
-  }, [isOnline]);
+  }, [isOnline, syncLiveStatus]);
 
   const fetchCategories = useCallback(async () => {
     if (!isOnline) {
@@ -1029,47 +1099,23 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     await runSingleFlight(categoriesRequestRef, async () => {
       try {
-        const response = await apiClient.get(apiUrl('/api/categories'), applyWorkspaceAuth());
-        setCategories(response.data || []);
+        const response = await apiClient.get(
+          apiUrl('/api/categories'),
+          buildConditionalGetConfig(categoriesEtagRef.current)
+        );
+        if (response.status === 304) {
+          setRequestError('');
+          return;
+        }
+        categoriesEtagRef.current = getResponseEtag(response) || categoriesEtagRef.current;
+        syncCategories(response.data || []);
         setRequestError('');
       } catch (error) {
         if (handleRequestError(error, 'Unable to load categories.')) return;
         console.error('Error fetching categories:', error);
       }
     });
-  }, [applyWorkspaceAuth, handleRequestError, isOnline]);
-
-  const fetchUploadCapabilities = useCallback(async () => {
-    if (!isOnline) {
-      return;
-    }
-
-    await runSingleFlight(uploadCapabilitiesRequestRef, async () => {
-      try {
-        const response = await apiClient.get(apiUrl('/api/uploads/capabilities'), applyWorkspaceAuth());
-        const payload = response.data || {};
-        const nextMaxFileSizeBytes = Number.parseInt(payload.maxFileSizeBytes, 10);
-        const nextMaxFileSizeMb = Number.parseInt(payload.maxFileSizeMb, 10);
-
-        setUploadCapabilities({
-          maxFileSizeBytes:
-            Number.isFinite(nextMaxFileSizeBytes) && nextMaxFileSizeBytes > 0
-              ? Math.min(nextMaxFileSizeBytes, MAX_ATTACHMENT_UPLOAD_BYTES)
-              : MAX_ATTACHMENT_UPLOAD_BYTES,
-          maxFileSizeMb:
-            Number.isFinite(nextMaxFileSizeMb) && nextMaxFileSizeMb > 0
-              ? Math.min(nextMaxFileSizeMb, MAX_ATTACHMENT_UPLOAD_MB)
-              : MAX_ATTACHMENT_UPLOAD_MB
-        });
-      } catch (error) {
-        if (error.response?.status === 401) {
-          handleAuthFailure();
-          return;
-        }
-        console.error('Error fetching upload capabilities:', error);
-      }
-    });
-  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
+  }, [handleRequestError, isOnline, syncCategories]);
 
   const fetchDisplayUsers = useCallback(async () => {
     if (!isAdminWorkspace) {
@@ -1111,111 +1157,29 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     });
   }, [applyWorkspaceAuth, handleRequestError, isAdminWorkspace, isOnline]);
 
-  const fetchMaintenanceAgentStatus = useCallback(async () => {
+  const fetchSystemDashboard = useCallback(async () => {
     if (!isOnline) {
       return;
     }
 
-    await runSingleFlight(maintenanceAgentRequestRef, async () => {
+    await runSingleFlight(systemDashboardRequestRef, async () => {
       try {
-        const response = await apiClient.get(
-          apiUrl('/api/system/maintenance-agent'),
-          applyWorkspaceAuth()
-        );
-        setMaintenanceAgentPayload(response.data || null);
-        setMaintenanceAgentError('');
+        const response = await apiClient.get(apiUrl('/api/system/dashboard'), applyWorkspaceAuth());
+        syncSystemDashboard(response.data || {});
       } catch (error) {
         if (error.response?.status === 401) {
           handleAuthFailure();
           return;
         }
-        setMaintenanceAgentError(extractApiError(error, 'Maintenance agent status is unavailable.'));
+        const errorMessage = extractApiError(error, 'System diagnostics are unavailable.');
+        setMaintenanceAgentError(errorMessage);
+        setPlatformStatusError(errorMessage);
+        setOpsAgentError(errorMessage);
+        setOpsAgentSettingsError(errorMessage);
+        setOpsAgentHistoryError(errorMessage);
       }
     });
-  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
-
-  const fetchPlatformStatus = useCallback(async () => {
-    if (!isOnline) {
-      return;
-    }
-
-    await runSingleFlight(platformStatusRequestRef, async () => {
-      try {
-        const response = await apiClient.get(apiUrl('/api/system/platform-status'), applyWorkspaceAuth());
-        setPlatformStatusPayload(response.data || null);
-        setPlatformStatusError('');
-      } catch (error) {
-        if (error.response?.status === 401) {
-          handleAuthFailure();
-          return;
-        }
-        setPlatformStatusError(extractApiError(error, 'Platform diagnostics are unavailable.'));
-      }
-    });
-  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
-
-  const fetchOpsAgentStatus = useCallback(async () => {
-    if (!isOnline) {
-      return;
-    }
-
-    await runSingleFlight(opsAgentRequestRef, async () => {
-      try {
-        const response = await apiClient.get(apiUrl('/api/system/ops-agent'), applyWorkspaceAuth());
-        setOpsAgentPayload(response.data || null);
-        setOpsAgentError('');
-      } catch (error) {
-        if (error.response?.status === 401) {
-          handleAuthFailure();
-          return;
-        }
-        setOpsAgentError(extractApiError(error, 'Ops agent status is unavailable.'));
-      }
-    });
-  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
-
-  const fetchOpsAgentSettings = useCallback(async () => {
-    if (!isOnline) {
-      return;
-    }
-
-    await runSingleFlight(opsAgentSettingsRequestRef, async () => {
-      try {
-        const response = await apiClient.get(apiUrl('/api/system/ops-agent/settings'), applyWorkspaceAuth());
-        setOpsAgentSettings(response.data || null);
-        setOpsAgentSettingsError('');
-      } catch (error) {
-        if (error.response?.status === 401) {
-          handleAuthFailure();
-          return;
-        }
-        setOpsAgentSettingsError(extractApiError(error, 'Ops agent settings are unavailable.'));
-      }
-    });
-  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
-
-  const fetchOpsAgentHistory = useCallback(async () => {
-    if (!isOnline) {
-      return;
-    }
-
-    await runSingleFlight(opsAgentHistoryRequestRef, async () => {
-      try {
-        const response = await apiClient.get(
-          apiUrl('/api/system/ops-agent/history'),
-          applyWorkspaceAuth({ params: { limit: 10 } })
-        );
-        setOpsAgentHistory(Array.isArray(response.data?.items) ? response.data.items : []);
-        setOpsAgentHistoryError('');
-      } catch (error) {
-        if (error.response?.status === 401) {
-          handleAuthFailure();
-          return;
-        }
-        setOpsAgentHistoryError(extractApiError(error, 'Ops agent history is unavailable.'));
-      }
-    });
-  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
+  }, [applyWorkspaceAuth, handleAuthFailure, isOnline, syncSystemDashboard]);
 
   const updateOpsAgentSettings = useCallback(
     async (autoFixEnabled) => {
@@ -1247,7 +1211,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             setPlatformStatusPayload(payload.status.platform);
           }
         }
-        await fetchOpsAgentHistory();
+        await fetchSystemDashboard();
       } catch (error) {
         if (error.response?.status === 401) {
           handleAuthFailure();
@@ -1258,7 +1222,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         setOpsAgentSettingsPending(false);
       }
     },
-    [applyWorkspaceAuth, fetchOpsAgentHistory, handleAuthFailure, isAdminWorkspace, isOnline]
+    [applyWorkspaceAuth, fetchSystemDashboard, handleAuthFailure, isAdminWorkspace, isOnline]
   );
 
   const runOpsAgentAction = useCallback(
@@ -1298,11 +1262,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
           setOpsAgentActionResult(payload.result || null);
         });
 
-        await fetchMaintenanceAgentStatus();
-        await fetchOpsAgentSettings();
-        await fetchPlatformStatus();
-        await fetchOpsAgentStatus();
-        await fetchOpsAgentHistory();
+        await fetchSystemDashboard();
       } catch (error) {
         if (error.response?.status === 401) {
           handleAuthFailure();
@@ -1315,11 +1275,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     },
     [
       applyWorkspaceAuth,
-      fetchMaintenanceAgentStatus,
-      fetchOpsAgentHistory,
-      fetchOpsAgentSettings,
-      fetchOpsAgentStatus,
-      fetchPlatformStatus,
+      fetchSystemDashboard,
       handleAuthFailure,
       isAdminWorkspace,
       isOnline
@@ -1333,31 +1289,17 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       return;
     }
 
-    fetchAnnouncements();
-    fetchLiveStatus();
-    fetchCategories();
-    fetchUploadCapabilities();
-    fetchMaintenanceAgentStatus();
-    fetchOpsAgentSettings();
-    fetchPlatformStatus();
-    fetchOpsAgentStatus();
-    fetchOpsAgentHistory();
+    fetchWorkspaceBootstrap();
+    fetchSystemDashboard();
     if (isAdminWorkspace) {
       fetchDisplayUsers();
       fetchStaffUsers();
     }
   }, [
-    fetchAnnouncements,
-    fetchCategories,
     fetchDisplayUsers,
-    fetchLiveStatus,
-    fetchMaintenanceAgentStatus,
-    fetchOpsAgentHistory,
-    fetchOpsAgentSettings,
-    fetchOpsAgentStatus,
-    fetchPlatformStatus,
     fetchStaffUsers,
-    fetchUploadCapabilities,
+    fetchSystemDashboard,
+    fetchWorkspaceBootstrap,
     isAdminWorkspace,
     isStaffWorkspace,
     navigate,
@@ -1384,7 +1326,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     offlineIntervalMs: 90000
   });
 
-  useAdaptivePolling(fetchMaintenanceAgentStatus, {
+  useAdaptivePolling(fetchSystemDashboard, {
     enabled: true,
     online: isOnline,
     visible: isPageVisible,
@@ -1392,69 +1334,18 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     baseIntervalMs: 45000,
     hiddenIntervalMs: 90000,
     offlineIntervalMs: 120000
-  });
-
-  useAdaptivePolling(fetchPlatformStatus, {
-    enabled: true,
-    online: isOnline,
-    visible: isPageVisible,
-    immediate: false,
-    baseIntervalMs: 60000,
-    hiddenIntervalMs: 120000,
-    offlineIntervalMs: 150000
-  });
-
-  useAdaptivePolling(fetchOpsAgentStatus, {
-    enabled: true,
-    online: isOnline,
-    visible: isPageVisible,
-    immediate: false,
-    baseIntervalMs: 45000,
-    hiddenIntervalMs: 90000,
-    offlineIntervalMs: 120000
-  });
-
-  useAdaptivePolling(fetchOpsAgentSettings, {
-    enabled: true,
-    online: isOnline,
-    visible: isPageVisible,
-    immediate: false,
-    baseIntervalMs: 60000,
-    hiddenIntervalMs: 120000,
-    offlineIntervalMs: 150000
-  });
-
-  useAdaptivePolling(fetchOpsAgentHistory, {
-    enabled: true,
-    online: isOnline,
-    visible: isPageVisible,
-    immediate: false,
-    baseIntervalMs: 60000,
-    hiddenIntervalMs: 120000,
-    offlineIntervalMs: 150000
   });
 
   useEffect(() => {
     const syncVisibleWorkspace = () => {
       if (!isOnline) return;
-      fetchAnnouncements();
-      fetchLiveStatus();
-      fetchMaintenanceAgentStatus();
-      fetchOpsAgentSettings();
-      fetchPlatformStatus();
-      fetchOpsAgentStatus();
-      fetchOpsAgentHistory();
+      fetchWorkspaceBootstrap();
+      fetchSystemDashboard();
     };
     const handleOnline = () => {
       setRequestError('');
-      fetchAnnouncements();
-      fetchLiveStatus();
-      fetchCategories();
-      fetchMaintenanceAgentStatus();
-      fetchOpsAgentSettings();
-      fetchPlatformStatus();
-      fetchOpsAgentStatus();
-      fetchOpsAgentHistory();
+      fetchWorkspaceBootstrap();
+      fetchSystemDashboard();
       if (isAdminWorkspace) {
         fetchDisplayUsers();
         fetchStaffUsers();
@@ -1469,16 +1360,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       window.removeEventListener('online', handleOnline);
     };
   }, [
-    fetchAnnouncements,
-    fetchCategories,
     fetchDisplayUsers,
-    fetchLiveStatus,
-    fetchMaintenanceAgentStatus,
-    fetchOpsAgentHistory,
-    fetchOpsAgentSettings,
-    fetchOpsAgentStatus,
-    fetchPlatformStatus,
     fetchStaffUsers,
+    fetchSystemDashboard,
+    fetchWorkspaceBootstrap,
     isAdminWorkspace,
     isOnline
   ]);
@@ -1493,30 +1378,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     const handleConnect = () => {
       setSocketConnected(true);
-      fetchAnnouncements();
-      fetchLiveStatus();
-      fetchMaintenanceAgentStatus();
-      fetchOpsAgentSettings();
-      fetchPlatformStatus();
-      fetchOpsAgentStatus();
-      fetchOpsAgentHistory();
+      fetchWorkspaceBootstrap();
+      fetchSystemDashboard();
     };
     const handleDisconnect = () => {
       setSocketConnected(false);
     };
     const handleLiveUpdate = (payload) => {
-      const nextLinks =
-        Array.isArray(payload?.links) && payload.links.length > 0
-          ? payload.links
-          : payload?.link
-            ? [payload.link]
-            : [];
-      setLiveStatus(payload?.status || 'OFF');
-      setLiveLinks(nextLinks);
-      setLiveDraftLinks((previous) =>
-        previous.length > 0 ? previous : normalizeLiveLinkArray(nextLinks)
-      );
-      setLiveCategory(normalizeLiveCategory(payload?.category));
+      liveStatusEtagRef.current = '';
+      syncLiveStatus(payload || {});
     };
     const handleAnnouncementUpdate = (payload) => {
       const nextAnnouncements = applyAnnouncementSocketEvent(announcementsRef.current, payload, {
@@ -1524,9 +1394,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       });
 
       if (!nextAnnouncements) {
-        fetchAnnouncements();
-        return;
-      }
+      fetchAnnouncements();
+      return;
+    }
 
       announcementsEtagRef.current = '';
       syncAnnouncements(nextAnnouncements);
@@ -1546,13 +1416,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     };
   }, [
     fetchAnnouncements,
-    fetchLiveStatus,
-    fetchMaintenanceAgentStatus,
-    fetchOpsAgentHistory,
-    fetchOpsAgentSettings,
-    fetchOpsAgentStatus,
-    fetchPlatformStatus,
+    fetchSystemDashboard,
+    fetchWorkspaceBootstrap,
     syncAnnouncements,
+    syncLiveStatus,
     socket
   ]);
 
@@ -3139,11 +3006,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
               className="btn btn--ghost btn--tiny"
               type="button"
               onClick={() => {
-                fetchMaintenanceAgentStatus();
-                fetchPlatformStatus();
-                fetchOpsAgentStatus();
-                fetchOpsAgentSettings();
-                fetchOpsAgentHistory();
+                fetchSystemDashboard();
               }}
               disabled={Boolean(opsAgentActionPending) || opsAgentSettingsPending}
             >

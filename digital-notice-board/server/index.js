@@ -199,6 +199,33 @@ const CACHE_CONTROL_CATEGORIES_PUBLIC = 'public, max-age=30, stale-while-revalid
 const CACHE_CONTROL_UPLOAD_ASSETS = 'public, max-age=3600, stale-while-revalidate=86400';
 const CACHE_CONTROL_STATIC_IMMUTABLE = 'public, max-age=31536000, immutable';
 const CACHE_CONTROL_STATIC_FALLBACK = 'public, max-age=600';
+const ANNOUNCEMENT_SELECT_COLUMN_LIST = [
+  'id',
+  'title',
+  'content',
+  'priority',
+  'duration',
+  'is_active',
+  'category',
+  'image',
+  'file_name',
+  'file_mime_type',
+  'file_size_bytes',
+  'media_width',
+  'media_height',
+  'live_stream_links',
+  'display_batch_id',
+  'display_batch_slot',
+  'created_at',
+  'start_at',
+  'end_at',
+  'expires_at',
+  'updated_at'
+];
+const ANNOUNCEMENT_SELECT_COLUMNS = ANNOUNCEMENT_SELECT_COLUMN_LIST.join(',');
+const CATEGORY_SELECT_COLUMNS = ['id', 'name', 'created_at'].join(',');
+const LIVE_STATE_SELECT_COLUMN_LIST = ['id', 'status', 'link', 'links', 'category', 'started_at', 'stopped_at'];
+const LIVE_STATE_SELECT_COLUMNS = LIVE_STATE_SELECT_COLUMN_LIST.join(',');
 const MAX_PUBLIC_ANNOUNCEMENTS = Math.max(
   48,
   Number.parseInt(process.env.MAX_PUBLIC_ANNOUNCEMENTS, 10) || 320
@@ -2230,14 +2257,63 @@ function getFallbackLiveDto() {
   };
 }
 
-async function getAnnouncementById(id) {
-  const { data, error } = await supabase
-    .from('announcements')
-    .select('*')
-    .eq('id', id)
-    .limit(1);
+async function executeAnnouncementSelect(buildQuery, context) {
+  let selectedColumns = [...ANNOUNCEMENT_SELECT_COLUMN_LIST];
+  const removedColumns = new Set();
 
-  throwSupabaseError('Error reading announcement', error);
+  while (true) {
+    const { data, error } = await buildQuery(selectedColumns.join(','));
+    if (!error) {
+      return { data, selectedColumns };
+    }
+
+    const missingColumn = getMissingColumnForTable(error, 'announcements');
+    if (missingColumn && selectedColumns.includes(missingColumn) && !removedColumns.has(missingColumn)) {
+      removedColumns.add(missingColumn);
+      selectedColumns = selectedColumns.filter((column) => column !== missingColumn);
+      continue;
+    }
+
+    throwSupabaseError(context, error);
+  }
+}
+
+async function executeLiveStateSelect(buildQuery, context) {
+  let selectedColumns = [...LIVE_STATE_SELECT_COLUMN_LIST];
+  const removedColumns = new Set();
+
+  while (true) {
+    const { data, error } = await buildQuery(selectedColumns.join(','));
+    if (!error) {
+      return { data, selectedColumns };
+    }
+
+    const missingColumn = getMissingColumnForTable(error, 'live_state');
+    if (missingColumn && selectedColumns.includes(missingColumn) && !removedColumns.has(missingColumn)) {
+      removedColumns.add(missingColumn);
+      selectedColumns = selectedColumns.filter((column) => column !== missingColumn);
+      continue;
+    }
+
+    if (isMissingTableError(error, 'live_state')) {
+      return { data: null, selectedColumns };
+    }
+
+    throwSupabaseError(context, error);
+  }
+}
+
+async function getAnnouncementById(id) {
+  const { data } = await executeAnnouncementSelect(
+    (selectColumns) =>
+      supabase
+        .from('announcements')
+        .select(selectColumns)
+        .eq('id', id)
+        .limit(1),
+    'Error reading announcement'
+  );
+
   return data && data.length > 0 ? data[0] : null;
 }
 
@@ -2247,13 +2323,16 @@ async function getAnnouncementsByDisplayBatchId(displayBatchId) {
     return [];
   }
 
-  const { data, error } = await supabase
-    .from('announcements')
-    .select('*')
-    .eq('display_batch_id', normalizedDisplayBatchId)
-    .order('created_at', { ascending: true });
+  const { data } = await executeAnnouncementSelect(
+    (selectColumns) =>
+      supabase
+        .from('announcements')
+        .select(selectColumns)
+        .eq('display_batch_id', normalizedDisplayBatchId)
+        .order('created_at', { ascending: true }),
+    'Error reading announcement batch'
+  );
 
-  throwSupabaseError('Error reading announcement batch', error);
   return data || [];
 }
 
@@ -2513,17 +2592,16 @@ async function runAnnouncementMaintenance(options = {}) {
 }
 
 async function getLiveState() {
-  const { data, error } = await supabase
-    .from('live_state')
-    .select('*')
-    .eq('id', LIVE_STATUS_ID)
-    .limit(1);
+  const { data } = await executeLiveStateSelect(
+    (selectColumns) =>
+      supabase
+        .from('live_state')
+        .select(selectColumns)
+        .eq('id', LIVE_STATUS_ID)
+        .limit(1),
+    'Error reading live status'
+  );
 
-  if (isMissingTableError(error, 'live_state')) {
-    return null;
-  }
-
-  throwSupabaseError('Error reading live status', error);
   return data && data.length > 0 ? data[0] : null;
 }
 
@@ -2910,15 +2988,7 @@ app.post('/api/display-auth/logout', simpleAuth, async (req, res) => {
 app.get('/api/uploads/capabilities', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
     await ensureStorageBucketReady();
-    const directUploadMaxSizeBytes = getDirectUploadMaxSizeBytes();
-    const directUploadMaxSizeMb = getDirectUploadMaxSizeMb();
-
-    res.json({
-      bucketName: SUPABASE_STORAGE_BUCKET,
-      maxFileSizeBytes: directUploadMaxSizeBytes,
-      maxFileSizeMb: directUploadMaxSizeMb,
-      resumableUploadUrl: SUPABASE_RESUMABLE_UPLOAD_URL
-    });
+    res.json(buildUploadCapabilitiesPayload());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2979,49 +3049,32 @@ app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, r
   }
 });
 
+app.get('/api/display/bootstrap', async (req, res) => {
+  try {
+    const payload = await buildDisplayBootstrapPayload(req.query.category);
+    res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/workspace/bootstrap', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    await ensureStorageBucketReady();
+    const payload = await buildWorkspaceBootstrapPayload();
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/announcements/public', async (req, res) => {
   try {
-    const requestedCategory = normalizeCategoryFilter(req.query.category);
-    const cacheKey = `public-announcements:${requestedCategory}`;
-    const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
-    if (cachedEntry) {
-      res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
-      res.setHeader('ETag', cachedEntry.etag);
-      res.setHeader('X-Runtime-Cache', 'HIT');
-      if (requestHasFreshEtag(req, cachedEntry.etag)) {
-        return res.status(304).end();
-      }
-      return res.json(cachedEntry.payload);
-    }
-
-    await runAnnouncementMaintenance();
-    const nowIso = new Date().toISOString();
-    let query = supabase
-      .from('announcements')
-      .select('*')
-      .eq('is_active', true)
-      .lte('start_at', nowIso)
-      .gt('end_at', nowIso);
-
-    if (requestedCategory !== 'all') {
-      query = query.or(`category.is.null,category.eq.${requestedCategory},priority.eq.0`);
-    }
-
-    const { data, error } = await query
-      .order('created_at', { ascending: false })
-      .limit(MAX_PUBLIC_ANNOUNCEMENTS);
-
-    throwSupabaseError('Error fetching public announcements', error);
-    const scopedRows =
-      requestedCategory === 'all'
-        ? data || []
-        : (data || []).filter((row) => isAnnouncementVisibleForDisplayCategory(row, requestedCategory));
-    const sortedRows = [...scopedRows].sort(comparePublicAnnouncements);
-    const dtoPayload = sortedRows.map(toAnnouncementDto);
-    const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_PUBLIC_ANNOUNCEMENTS_TTL_MS);
+    const nextCacheEntry = await getPublicAnnouncementsResponsePayload(req.query.category);
     res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
     res.setHeader('ETag', nextCacheEntry.etag);
-    res.setHeader('X-Runtime-Cache', 'MISS');
+    res.setHeader('X-Runtime-Cache', nextCacheEntry.cacheStatus);
     if (requestHasFreshEtag(req, nextCacheEntry.etag)) {
       return res.status(304).end();
     }
@@ -3033,31 +3086,9 @@ app.get('/api/announcements/public', async (req, res) => {
 
 app.get('/api/announcements', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
-    const cacheKey = 'workspace-announcements';
-    const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
-    if (cachedEntry) {
-      res.setHeader('ETag', cachedEntry.etag);
-      res.setHeader('X-Runtime-Cache', 'HIT');
-      if (requestHasFreshEtag(req, cachedEntry.etag)) {
-        return res.status(304).end();
-      }
-      return res.json(cachedEntry.payload);
-    }
-
-    await runAnnouncementMaintenance();
-    const nowIso = new Date().toISOString();
-    const { data, error } = await supabase
-      .from('announcements')
-      .select('*')
-      .gt('end_at', nowIso)
-      .order('created_at', { ascending: false })
-      .limit(MAX_WORKSPACE_ANNOUNCEMENTS);
-
-    throwSupabaseError('Error fetching announcements', error);
-    const dtoPayload = (data || []).map(toAnnouncementDto);
-    const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_WORKSPACE_ANNOUNCEMENTS_TTL_MS);
+    const nextCacheEntry = await getWorkspaceAnnouncementsResponsePayload();
     res.setHeader('ETag', nextCacheEntry.etag);
-    res.setHeader('X-Runtime-Cache', 'MISS');
+    res.setHeader('X-Runtime-Cache', nextCacheEntry.cacheStatus);
     if (requestHasFreshEtag(req, nextCacheEntry.etag)) {
       return res.status(304).end();
     }
@@ -3832,26 +3863,14 @@ app.get('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (req, 
 
 app.get('/api/status', async (req, res) => {
   try {
-    const cacheKey = 'live-status';
-    const cachedPayload = getRuntimeCachedPayload(cacheKey);
-    if (cachedPayload) {
-      res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
-      res.setHeader('X-Runtime-Cache', 'HIT');
-      return res.json(cachedPayload);
-    }
-
-    const live = await getLiveState();
+    const nextCacheEntry = await getLiveStatusResponsePayload();
     res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
-    if (!live) {
-      const fallbackPayload = getFallbackLiveDto();
-      setRuntimeCachedPayload(cacheKey, fallbackPayload, API_RUNTIME_CACHE_STATUS_TTL_MS);
-      res.setHeader('X-Runtime-Cache', 'MISS');
-      return res.json(fallbackPayload);
+    res.setHeader('ETag', nextCacheEntry.etag);
+    res.setHeader('X-Runtime-Cache', nextCacheEntry.cacheStatus);
+    if (requestHasFreshEtag(req, nextCacheEntry.etag)) {
+      return res.status(304).end();
     }
-    const dtoPayload = toLiveDto(live);
-    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_STATUS_TTL_MS);
-    res.setHeader('X-Runtime-Cache', 'MISS');
-    res.json(dtoPayload);
+    res.json(nextCacheEntry.payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3859,25 +3878,14 @@ app.get('/api/status', async (req, res) => {
 
 app.get('/api/categories', async (req, res) => {
   try {
-    const cacheKey = 'categories';
-    const cachedPayload = getRuntimeCachedPayload(cacheKey);
-    if (cachedPayload) {
-      res.setHeader('Cache-Control', CACHE_CONTROL_CATEGORIES_PUBLIC);
-      res.setHeader('X-Runtime-Cache', 'HIT');
-      return res.json(cachedPayload);
-    }
-
-    const { data, error } = await supabase
-      .from('categories')
-      .select('*')
-      .order('created_at', { ascending: true });
-
-    throwSupabaseError('Error fetching categories', error);
-    const dtoPayload = (data || []).map(toCategoryDto);
-    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_CATEGORIES_TTL_MS);
+    const nextCacheEntry = await getCategoriesResponsePayload();
     res.setHeader('Cache-Control', CACHE_CONTROL_CATEGORIES_PUBLIC);
-    res.setHeader('X-Runtime-Cache', 'MISS');
-    res.json(dtoPayload);
+    res.setHeader('ETag', nextCacheEntry.etag);
+    res.setHeader('X-Runtime-Cache', nextCacheEntry.cacheStatus);
+    if (requestHasFreshEtag(req, nextCacheEntry.etag)) {
+      return res.status(304).end();
+    }
+    res.json(nextCacheEntry.payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -4528,6 +4536,191 @@ function setRuntimeCachedPayload(cacheKey, payload, ttlMs) {
     payload: cloneJsonValue(entry.payload),
     etag: entry.etag,
     expiresAtMs: entry.expiresAtMs
+  };
+}
+
+function buildUploadCapabilitiesPayload() {
+  const directUploadMaxSizeBytes = Math.min(runtimeDirectUploadMaxSizeBytes, MAX_UPLOAD_SIZE_BYTES);
+  const directUploadMaxSizeMb = Math.max(1, Math.floor(directUploadMaxSizeBytes / (1024 * 1024)));
+
+  return {
+    mode: 'direct-to-storage',
+    storage: 'supabase',
+    bucketName: SUPABASE_STORAGE_BUCKET,
+    maxFileSizeBytes: directUploadMaxSizeBytes,
+    maxFileSizeMb: directUploadMaxSizeMb,
+    targetMaxFileSizeBytes: DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES,
+    targetMaxFileSizeMb: DESIRED_DIRECT_UPLOAD_MAX_SIZE_MB,
+    resumableUploadUrl: SUPABASE_RESUMABLE_UPLOAD_URL
+  };
+}
+
+async function getLiveStatusResponsePayload() {
+  const cacheKey = 'live-status';
+  const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
+  if (cachedEntry) {
+    return {
+      payload: cachedEntry.payload,
+      etag: cachedEntry.etag,
+      cacheStatus: 'HIT'
+    };
+  }
+
+  const live = await getLiveState();
+  const dtoPayload = live ? toLiveDto(live) : getFallbackLiveDto();
+  const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_STATUS_TTL_MS);
+
+  return {
+    payload: nextCacheEntry.payload,
+    etag: nextCacheEntry.etag,
+    cacheStatus: 'MISS'
+  };
+}
+
+async function getCategoriesResponsePayload() {
+  const cacheKey = 'categories';
+  const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
+  if (cachedEntry) {
+    return {
+      payload: cachedEntry.payload,
+      etag: cachedEntry.etag,
+      cacheStatus: 'HIT'
+    };
+  }
+
+  const { data, error } = await supabase
+    .from('categories')
+    .select(CATEGORY_SELECT_COLUMNS)
+    .order('created_at', { ascending: true });
+
+  throwSupabaseError('Error fetching categories', error);
+  const dtoPayload = (data || []).map(toCategoryDto);
+  const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_CATEGORIES_TTL_MS);
+
+  return {
+    payload: nextCacheEntry.payload,
+    etag: nextCacheEntry.etag,
+    cacheStatus: 'MISS'
+  };
+}
+
+async function getPublicAnnouncementsResponsePayload(requestedCategoryInput) {
+  const requestedCategory = normalizeCategoryFilter(requestedCategoryInput);
+  const cacheKey = `public-announcements:${requestedCategory}`;
+  const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
+  if (cachedEntry) {
+    return {
+      payload: cachedEntry.payload,
+      etag: cachedEntry.etag,
+      cacheStatus: 'HIT',
+      requestedCategory
+    };
+  }
+
+  await runAnnouncementMaintenance();
+  const nowIso = new Date().toISOString();
+  const { data } = await executeAnnouncementSelect((selectColumns) => {
+    let query = supabase
+      .from('announcements')
+      .select(selectColumns)
+      .eq('is_active', true)
+      .lte('start_at', nowIso)
+      .gt('end_at', nowIso);
+
+    if (requestedCategory !== 'all') {
+      query = query.or(`category.is.null,category.eq.${requestedCategory},priority.eq.0`);
+    }
+
+    return query.order('created_at', { ascending: false }).limit(MAX_PUBLIC_ANNOUNCEMENTS);
+  }, 'Error fetching public announcements');
+
+  const scopedRows =
+    requestedCategory === 'all'
+      ? data || []
+      : (data || []).filter((row) => isAnnouncementVisibleForDisplayCategory(row, requestedCategory));
+  const sortedRows = [...scopedRows].sort(comparePublicAnnouncements);
+  const dtoPayload = sortedRows.map(toAnnouncementDto);
+  const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_PUBLIC_ANNOUNCEMENTS_TTL_MS);
+
+  return {
+    payload: nextCacheEntry.payload,
+    etag: nextCacheEntry.etag,
+    cacheStatus: 'MISS',
+    requestedCategory
+  };
+}
+
+async function getWorkspaceAnnouncementsResponsePayload() {
+  const cacheKey = 'workspace-announcements';
+  const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
+  if (cachedEntry) {
+    return {
+      payload: cachedEntry.payload,
+      etag: cachedEntry.etag,
+      cacheStatus: 'HIT'
+    };
+  }
+
+  await runAnnouncementMaintenance();
+  const nowIso = new Date().toISOString();
+  const { data } = await executeAnnouncementSelect(
+    (selectColumns) =>
+      supabase
+        .from('announcements')
+        .select(selectColumns)
+        .gt('end_at', nowIso)
+        .order('created_at', { ascending: false })
+        .limit(MAX_WORKSPACE_ANNOUNCEMENTS),
+    'Error fetching announcements'
+  );
+  const dtoPayload = (data || []).map(toAnnouncementDto);
+  const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_WORKSPACE_ANNOUNCEMENTS_TTL_MS);
+
+  return {
+    payload: nextCacheEntry.payload,
+    etag: nextCacheEntry.etag,
+    cacheStatus: 'MISS'
+  };
+}
+
+async function buildDisplayBootstrapPayload(requestedCategoryInput) {
+  const [announcements, categories, liveStatus] = await Promise.all([
+    getPublicAnnouncementsResponsePayload(requestedCategoryInput),
+    getCategoriesResponsePayload(),
+    getLiveStatusResponsePayload()
+  ]);
+
+  return {
+    updatedAt: new Date().toISOString(),
+    announcements: announcements.payload,
+    categories: categories.payload,
+    liveStatus: liveStatus.payload,
+    etags: {
+      announcements: announcements.etag,
+      categories: categories.etag,
+      liveStatus: liveStatus.etag
+    }
+  };
+}
+
+async function buildWorkspaceBootstrapPayload() {
+  const [announcements, categories, liveStatus] = await Promise.all([
+    getWorkspaceAnnouncementsResponsePayload(),
+    getCategoriesResponsePayload(),
+    getLiveStatusResponsePayload()
+  ]);
+
+  return {
+    updatedAt: new Date().toISOString(),
+    announcements: announcements.payload,
+    categories: categories.payload,
+    liveStatus: liveStatus.payload,
+    uploadCapabilities: buildUploadCapabilitiesPayload(),
+    etags: {
+      announcements: announcements.etag,
+      categories: categories.etag,
+      liveStatus: liveStatus.etag
+    }
   };
 }
 
@@ -5200,16 +5393,11 @@ function buildOpsAgentSummary({ maintenanceSummary, platformPayload, recommendat
   };
 }
 
-async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
-  if (forceRefresh) {
-    invalidatePlatformStatusCache();
-  }
-
-  const [maintenanceAgentResolution, platformPayload, settings] = await Promise.all([
-    resolveMaintenanceAgentStatus({ includeNetworkProbe: false }),
-    getPlatformStatusPayload(),
-    getOpsAgentControlSettings()
-  ]);
+async function buildOpsAgentStatusPayloadFromDependencies({
+  maintenanceAgentResolution,
+  platformPayload,
+  settings
+}) {
   const maintenanceSummary = buildMaintenanceAgentSummary(maintenanceAgentResolution.agentStatus);
   const actionCatalog = buildOpsActionCatalog(platformPayload, maintenanceSummary);
   const recommendations = buildOpsRecommendations({
@@ -5270,6 +5458,55 @@ async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
     recommendations,
     insights,
     lastRepair: opsAgentRuntimeState.lastRepair
+  };
+}
+
+async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
+  if (forceRefresh) {
+    invalidatePlatformStatusCache();
+  }
+
+  const [maintenanceAgentResolution, platformPayload, settings] = await Promise.all([
+    resolveMaintenanceAgentStatus({ includeNetworkProbe: false }),
+    getPlatformStatusPayload(),
+    getOpsAgentControlSettings()
+  ]);
+
+  return buildOpsAgentStatusPayloadFromDependencies({
+    maintenanceAgentResolution,
+    platformPayload,
+    settings
+  });
+}
+
+async function buildSystemDashboardPayload() {
+  const [maintenanceAgentResolution, platformPayload, settings, historyItems] = await Promise.all([
+    resolveMaintenanceAgentStatus({ includeNetworkProbe: true }),
+    getPlatformStatusPayload(),
+    getOpsAgentControlSettings(),
+    getOpsAgentHistory(10)
+  ]);
+  const maintenanceSummary = buildMaintenanceAgentSummary(maintenanceAgentResolution.agentStatus);
+  const opsPayload = await buildOpsAgentStatusPayloadFromDependencies({
+    maintenanceAgentResolution,
+    platformPayload,
+    settings
+  });
+
+  return {
+    updatedAt: new Date().toISOString(),
+    maintenance: {
+      status: maintenanceSummary.status,
+      summary: maintenanceSummary,
+      source: maintenanceAgentResolution.source,
+      agent: maintenanceAgentResolution.agentStatus
+    },
+    platform: platformPayload,
+    ops: opsPayload,
+    settings,
+    history: {
+      items: historyItems
+    }
   };
 }
 
@@ -5772,6 +6009,22 @@ app.get('/api/system/maintenance-agent', simpleAuth, requireWorkspaceRole, async
       source,
       agent: agentStatus
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/system/dashboard', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const payload = await buildSystemDashboardPayload();
+    const platformState = String(payload?.platform?.summary?.state || '').toLowerCase();
+    const opsState = String(payload?.ops?.summary?.state || '').toLowerCase();
+    const maintenanceState = String(payload?.maintenance?.summary?.state || '').toLowerCase();
+    const httpStatus =
+      platformState === 'degraded' || opsState === 'degraded' || maintenanceState === 'degraded'
+        ? 207
+        : 200;
+    res.status(httpStatus).json(payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

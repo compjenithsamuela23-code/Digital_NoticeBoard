@@ -205,6 +205,74 @@ async function run() {
       `Expected workspace announcements conditional request to return 304, got ${workspaceAnnouncementsNotModified.status}.`
     );
 
+    logStep('Checking display bootstrap endpoint');
+    const displayBootstrap = await request('/api/display/bootstrap');
+    assert(Array.isArray(displayBootstrap?.announcements), 'Display bootstrap announcements are invalid.');
+    assert(Array.isArray(displayBootstrap?.categories), 'Display bootstrap categories are invalid.');
+    assert(displayBootstrap?.liveStatus && typeof displayBootstrap.liveStatus === 'object', 'Display bootstrap liveStatus is invalid.');
+    assert(String(displayBootstrap?.etags?.announcements || '').trim(), 'Display bootstrap announcements ETag is missing.');
+    assert(String(displayBootstrap?.etags?.categories || '').trim(), 'Display bootstrap categories ETag is missing.');
+    assert(String(displayBootstrap?.etags?.liveStatus || '').trim(), 'Display bootstrap liveStatus ETag is missing.');
+
+    logStep('Checking live status and categories conditional request headers');
+    const liveStatusResponse = await fetch(buildUrl('/api/status'), {
+      headers: {
+        Accept: 'application/json'
+      }
+    });
+    assert(liveStatusResponse.ok, 'Live status request failed.');
+    const liveStatusEtag = String(liveStatusResponse.headers.get('etag') || '').trim();
+    assert(liveStatusEtag, 'Live status ETag is missing.');
+    const liveStatusNotModified = await fetch(buildUrl('/api/status'), {
+      headers: {
+        Accept: 'application/json',
+        'If-None-Match': liveStatusEtag
+      }
+    });
+    assert(
+      liveStatusNotModified.status === 304,
+      `Expected live status conditional request to return 304, got ${liveStatusNotModified.status}.`
+    );
+
+    const categoriesResponse = await fetch(buildUrl('/api/categories'), {
+      headers: {
+        Accept: 'application/json'
+      }
+    });
+    assert(categoriesResponse.ok, 'Categories request failed.');
+    const categoriesEtag = String(categoriesResponse.headers.get('etag') || '').trim();
+    assert(categoriesEtag, 'Categories ETag is missing.');
+    const categoriesNotModified = await fetch(buildUrl('/api/categories'), {
+      headers: {
+        Accept: 'application/json',
+        'If-None-Match': categoriesEtag
+      }
+    });
+    assert(
+      categoriesNotModified.status === 304,
+      `Expected categories conditional request to return 304, got ${categoriesNotModified.status}.`
+    );
+
+    logStep('Checking workspace bootstrap endpoint');
+    const workspaceBootstrap = await request('/api/workspace/bootstrap', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(Array.isArray(workspaceBootstrap?.announcements), 'Workspace bootstrap announcements are invalid.');
+    assert(Array.isArray(workspaceBootstrap?.categories), 'Workspace bootstrap categories are invalid.');
+    assert(workspaceBootstrap?.liveStatus && typeof workspaceBootstrap.liveStatus === 'object', 'Workspace bootstrap liveStatus is invalid.');
+    assert(workspaceBootstrap?.uploadCapabilities && typeof workspaceBootstrap.uploadCapabilities === 'object', 'Workspace bootstrap uploadCapabilities are invalid.');
+
+    logStep('Checking combined system dashboard endpoint');
+    const systemDashboard = await request('/api/system/dashboard', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(systemDashboard?.maintenance && typeof systemDashboard.maintenance === 'object', 'System dashboard maintenance payload is invalid.');
+    assert(systemDashboard?.platform && typeof systemDashboard.platform === 'object', 'System dashboard platform payload is invalid.');
+    assert(systemDashboard?.ops && typeof systemDashboard.ops === 'object', 'System dashboard ops payload is invalid.');
+    assert(Array.isArray(systemDashboard?.history?.items), 'System dashboard history payload is invalid.');
+
     logStep('Checking maintenance agent status endpoint');
     const maintenanceAgentStatus = await request('/api/system/maintenance-agent', {
       method: 'GET',
