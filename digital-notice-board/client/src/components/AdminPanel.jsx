@@ -582,6 +582,22 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     [handleAuthFailure]
   );
 
+  const activeUploadMaxSizeBytes = useMemo(() => {
+    const configuredLimit = Number.parseInt(uploadCapabilities?.maxFileSizeBytes, 10);
+    if (Number.isFinite(configuredLimit) && configuredLimit > 0) {
+      return Math.min(configuredLimit, MAX_ATTACHMENT_UPLOAD_BYTES);
+    }
+    return MAX_ATTACHMENT_UPLOAD_BYTES;
+  }, [uploadCapabilities]);
+
+  const activeUploadMaxSizeMb = useMemo(() => {
+    const configuredMb = Number.parseInt(uploadCapabilities?.maxFileSizeMb, 10);
+    if (Number.isFinite(configuredMb) && configuredMb > 0) {
+      return Math.min(configuredMb, MAX_ATTACHMENT_UPLOAD_MB);
+    }
+    return Math.max(1, Math.floor(activeUploadMaxSizeBytes / (1024 * 1024)));
+  }, [activeUploadMaxSizeBytes, uploadCapabilities]);
+
   const uploadAttachmentWithTus = useCallback(
     async ({
       file,
@@ -749,20 +765,6 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const matchedCategory = categories.find((category) => category.id === liveCategory);
     return matchedCategory ? matchedCategory.name : 'Selected category';
   }, [categories, liveCategory]);
-  const activeUploadMaxSizeBytes = useMemo(() => {
-    const configuredLimit = Number.parseInt(uploadCapabilities?.maxFileSizeBytes, 10);
-    if (Number.isFinite(configuredLimit) && configuredLimit > 0) {
-      return Math.min(configuredLimit, MAX_ATTACHMENT_UPLOAD_BYTES);
-    }
-    return MAX_ATTACHMENT_UPLOAD_BYTES;
-  }, [uploadCapabilities]);
-  const activeUploadMaxSizeMb = useMemo(() => {
-    const configuredMb = Number.parseInt(uploadCapabilities?.maxFileSizeMb, 10);
-    if (Number.isFinite(configuredMb) && configuredMb > 0) {
-      return Math.min(configuredMb, MAX_ATTACHMENT_UPLOAD_MB);
-    }
-    return Math.max(1, Math.floor(activeUploadMaxSizeBytes / (1024 * 1024)));
-  }, [activeUploadMaxSizeBytes, uploadCapabilities]);
   const maintenanceAgentDetails = useMemo(
     () => maintenanceAgentPayload?.agent || maintenanceAgentPayload || null,
     [maintenanceAgentPayload]
