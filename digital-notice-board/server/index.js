@@ -542,6 +542,23 @@ function isEmergencyPriorityValue(value) {
   return normalizePriorityValue(value, 1) === 0;
 }
 
+function hasAnnouncementLiveStreamLinks(row) {
+  if (!row) return false;
+  return parseStoredLiveLinks(row.live_stream_links, {
+    maxLinks: MAX_ANNOUNCEMENT_LIVE_LINKS
+  }).length > 0;
+}
+
+function getAnnouncementSortTimestamp(row) {
+  const updatedAt = toDateOrNull(row && row.updated_at);
+  if (updatedAt) {
+    return updatedAt.getTime();
+  }
+
+  const createdAt = toDateOrNull(row && row.created_at);
+  return createdAt ? createdAt.getTime() : 0;
+}
+
 function comparePublicAnnouncements(left, right) {
   const leftEmergency = isEmergencyPriorityValue(left && left.priority);
   const rightEmergency = isEmergencyPriorityValue(right && right.priority);
@@ -550,17 +567,25 @@ function comparePublicAnnouncements(left, right) {
     return leftEmergency ? -1 : 1;
   }
 
+  const leftHasLiveStream = hasAnnouncementLiveStreamLinks(left);
+  const rightHasLiveStream = hasAnnouncementLiveStreamLinks(right);
+  if (leftHasLiveStream !== rightHasLiveStream) {
+    return leftHasLiveStream ? -1 : 1;
+  }
+
   const leftPriority = normalizePriorityValue(left && left.priority, 1);
   const rightPriority = normalizePriorityValue(right && right.priority, 1);
   if (leftPriority !== rightPriority && !leftEmergency && !rightEmergency) {
     return rightPriority - leftPriority;
   }
 
-  const leftCreatedAt = toDateOrNull(left && left.created_at);
-  const rightCreatedAt = toDateOrNull(right && right.created_at);
-  const leftCreatedMs = leftCreatedAt ? leftCreatedAt.getTime() : 0;
-  const rightCreatedMs = rightCreatedAt ? rightCreatedAt.getTime() : 0;
-  return rightCreatedMs - leftCreatedMs;
+  const leftSortTimestamp = getAnnouncementSortTimestamp(left);
+  const rightSortTimestamp = getAnnouncementSortTimestamp(right);
+  if (leftSortTimestamp !== rightSortTimestamp) {
+    return rightSortTimestamp - leftSortTimestamp;
+  }
+
+  return String((right && right.id) || '').localeCompare(String((left && left.id) || ''));
 }
 
 function sanitizeOriginalFileName(value) {
