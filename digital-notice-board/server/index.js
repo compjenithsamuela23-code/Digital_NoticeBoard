@@ -70,6 +70,7 @@ const ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(
   Number.parseInt(process.env.ANNOUNCEMENT_MAINTENANCE_MIN_INTERVAL_MS, 10) || 30 * 1000
 );
 const MAINTENANCE_AGENT_STATUS_PATH = path.resolve(__dirname, '../.runtime/maintenance-agent-status.json');
+const OPS_AGENT_SETTINGS_PATH = path.resolve(__dirname, '../.runtime/ops-agent-settings.json');
 const MAINTENANCE_AGENT_STALE_MS = Math.max(
   30 * 1000,
   Number.parseInt(process.env.MAINTENANCE_AGENT_STALE_MS, 10) || 5 * 60 * 1000
@@ -229,7 +230,8 @@ const GITHUB_ACTIONS_WORKFLOW_ID = String(process.env.GITHUB_ACTIONS_WORKFLOW_ID
 const GITHUB_ACTIONS_REF = String(process.env.GITHUB_ACTIONS_REF || '').trim();
 const OPS_AGENT_RUNTIME_NAME = 'Digital Notice Board Ops Agent';
 const OPS_AGENT_RUNTIME_VERSION = '1.0.0';
-const OPS_AGENT_AUTOFIX_ENABLED = String(process.env.OPS_AGENT_AUTOFIX_ENABLED || 'true').toLowerCase() !== 'false';
+const OPS_AGENT_DEFAULT_AUTOFIX_ENABLED =
+  String(process.env.OPS_AGENT_AUTOFIX_ENABLED || 'true').toLowerCase() !== 'false';
 const OPS_AGENT_INTERVAL_MS = Math.max(
   15000,
   Number.parseInt(process.env.OPS_AGENT_INTERVAL_MS, 10) || 60000
@@ -242,6 +244,13 @@ const OPS_AGENT_ACTION_TIMEOUT_MS = Math.max(
   10000,
   Number.parseInt(process.env.OPS_AGENT_ACTION_TIMEOUT_MS, 10) || 3 * 60 * 1000
 );
+const OPS_AGENT_HISTORY_ACTIONS = [
+  'ops_action_manual',
+  'ops_action_auto',
+  'ops_settings_updated',
+  'ops_diagnostic_snapshot'
+];
+const OPS_AGENT_HISTORY_TYPES = ['system_ops', 'system_ops_success', 'system_ops_error'];
 
 const corsOrigin = configuredOrigins.length > 0 ? configuredOrigins : '*';
 const UPLOAD_DOWNLOAD_ONLY_EXTENSIONS = new Set([
@@ -1976,6 +1985,12 @@ function getMissingColumnForTable(error, tableName) {
   const postgresMatch = message.match(postgresRegex);
   if (postgresMatch) {
     return postgresMatch[1];
+  }
+
+  const qualifiedRegex = new RegExp(`column\\s+${tableName}\\.([a-z0-9_]+)\\s+does not exist`, 'i');
+  const qualifiedMatch = message.match(qualifiedRegex);
+  if (qualifiedMatch) {
+    return qualifiedMatch[1];
   }
 
   return null;
@@ -4271,6 +4286,25 @@ async function readMaintenanceAgentStatus() {
   }
 }
 
+async function readRuntimeJsonFile(filePath) {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeRuntimeJsonFile(filePath, payload) {
+  const normalizedPayload = payload && typeof payload === 'object' ? payload : {};
+  const directory = path.dirname(filePath);
+  await fs.mkdir(directory, { recursive: true });
+  const tempFilePath = `${filePath}.tmp`;
+  await fs.writeFile(tempFilePath, `${JSON.stringify(normalizedPayload, null, 2)}\n`, 'utf8');
+  await fs.rename(tempFilePath, filePath);
+}
+
 function cloneJsonValue(value) {
   if (value === null || value === undefined) {
     return value;
@@ -4280,6 +4314,102 @@ function cloneJsonValue(value) {
   } catch {
     return value;
   }
+}
+
+async function getOpsAgentControlSettings() {
+  const storedSettings = (await readRuntimeJsonFile(OPS_AGENT_SETTINGS_PATH)) || {};
+  const requestedAutoFixEnabled =
+    storedSettings.autoFixEnabled === undefined
+      ? OPS_AGENT_DEFAULT_AUTOFIX_ENABLED
+      : Boolean(storedSettings.autoFixEnabled);
+
+  return {
+    requestedAutoFixEnabled,
+    autoFixEnabled: requestedAutoFixEnabled && !IS_SERVERLESS_RUNTIME,
+    environmentDefaultAutoFixEnabled: OPS_AGENT_DEFAULT_AUTOFIX_ENABLED,
+    intervalMs: IS_SERVERLESS_RUNTIME ? null : OPS_AGENT_INTERVAL_MS,
+    cooldownMs: OPS_AGENT_COOLDOWN_MS,
+    actionTimeoutMs: OPS_AGENT_ACTION_TIMEOUT_MS,
+    serverless: IS_SERVERLESS_RUNTIME,
+    controlledFrom: 'admin-workspace'
+  };
+}
+
+async function updateOpsAgentControlSettings(patch = {}) {
+  const currentSettings = await getOpsAgentControlSettings();
+  const nextRequestedAutoFixEnabled =
+    patch.autoFixEnabled === undefined
+      ? currentSettings.requestedAutoFixEnabled
+      : Boolean(patch.autoFixEnabled);
+
+  await writeRuntimeJsonFile(OPS_AGENT_SETTINGS_PATH, {
+    autoFixEnabled: nextRequestedAutoFixEnabled,
+    updatedAt: new Date().toISOString()
+  });
+
+  invalidatePlatformStatusCache();
+  return getOpsAgentControlSettings();
+}
+
+async function appendOpsAgentEvent(action, details = {}) {
+  const actionAt = details.actionAt || new Date().toISOString();
+  const safeDetails =
+    details.details === null || details.details === undefined
+      ? ''
+      : typeof details.details === 'string'
+        ? details.details
+        : JSON.stringify(details.details, null, 2);
+  const contentParts = [String(details.content || '').trim(), safeDetails.trim()].filter(Boolean);
+
+  try {
+    await appendSystemHistory(action, details.userEmail || null, {
+      title: details.title || 'AI Ops Agent Event',
+      content: contentParts.join('\n\n'),
+      type: details.type || 'system_ops',
+      actionAt
+    });
+  } catch (error) {
+    console.error('⚠️ Ops agent event logging failed:', error.message || String(error));
+  }
+}
+
+function toOpsAgentHistoryDto(row) {
+  const rawType = String(row?.type || '').trim();
+  const inferredType = rawType
+    ? rawType
+    : /failed/i.test(String(row?.title || ''))
+      ? 'system_ops_error'
+      : /completed|succeeded/i.test(String(row?.title || ''))
+        ? 'system_ops_success'
+        : 'system_ops';
+  return {
+    id: row?.row_id || row?.id || randomUUID(),
+    action: String(row?.action || '').trim(),
+    title: String(row?.title || 'AI Ops Agent Event').trim(),
+    content: String(row?.content || '').trim(),
+    type: inferredType,
+    userEmail: String(row?.user_email || 'System').trim(),
+    createdAt: row?.action_at || row?.updated_at || row?.created_at || null
+  };
+}
+
+async function getOpsAgentHistory(limit = 12) {
+  const safeLimit = Math.min(40, Math.max(1, Number.parseInt(limit, 10) || 12));
+  const buildBaseQuery = () =>
+    supabase
+      .from('history')
+      .select('*')
+      .in('action', OPS_AGENT_HISTORY_ACTIONS)
+      .order('action_at', { ascending: false })
+      .limit(safeLimit);
+
+  let { data, error } = await buildBaseQuery().in('type', OPS_AGENT_HISTORY_TYPES);
+  if (error && getMissingColumnForTable(error, 'history') === 'type') {
+    ({ data, error } = await buildBaseQuery());
+  }
+
+  throwSupabaseError('Error loading ops agent history', error);
+  return (data || []).map(toOpsAgentHistoryDto);
 }
 
 function getRuntimeCachedPayload(cacheKey) {
@@ -4801,6 +4931,16 @@ function buildOpsActionCatalog(platformPayload, maintenanceSummary) {
         : 'Unavailable in serverless runtime.'
     },
     {
+      id: 'run_smoke_checks',
+      label: 'Run Smoke Checks',
+      description: 'Run the backend smoke test suite against the live API to catch regressions.',
+      available: !IS_SERVERLESS_RUNTIME,
+      autoEligible: false,
+      reason: !IS_SERVERLESS_RUNTIME
+        ? 'Available in app runtime.'
+        : 'Unavailable in serverless runtime.'
+    },
+    {
       id: 'redeploy_vercel',
       label: 'Redeploy Vercel',
       description: 'Trigger a production redeploy through a Vercel deploy hook.',
@@ -4840,10 +4980,107 @@ function buildOpsRecommendations({ maintenanceSummary, platformPayload, actionCa
   if (integrations.github?.status === 'degraded' && GITHUB_REPO && GITHUB_TOKEN && GITHUB_ACTIONS_WORKFLOW_ID) {
     recommendedActionIds.push('dispatch_github_workflow');
   }
+  if (
+    maintenanceSummary?.status &&
+    maintenanceSummary.status !== 'ok' &&
+    actionCatalog.some((action) => action.id === 'run_smoke_checks' && action.available)
+  ) {
+    recommendedActionIds.push('run_smoke_checks');
+  }
 
-  return recommendedActionIds
+  return [...new Set(recommendedActionIds)]
     .map((actionId) => actionCatalog.find((action) => action.id === actionId))
     .filter(Boolean);
+}
+
+function buildOpsInsights({ maintenanceSummary, platformPayload, recommendations, settings, lastRepair }) {
+  const integrations = platformPayload?.integrations || {};
+  const insights = [];
+
+  if (settings?.autoFixEnabled) {
+    insights.push({
+      id: 'autofix-enabled',
+      severity: 'info',
+      title: 'Autonomous repair mode is active',
+      message: 'The ops agent can automatically run eligible repair actions when diagnostics degrade.'
+    });
+  } else {
+    insights.push({
+      id: 'autofix-manual',
+      severity: 'info',
+      title: 'Human approval mode is active',
+      message: 'Diagnostics keep running, but repair actions only run when an admin approves them.'
+    });
+  }
+
+  if (maintenanceSummary?.status && maintenanceSummary.status !== 'ok') {
+    insights.push({
+      id: 'runtime-degraded',
+      severity: 'warning',
+      title: 'Runtime diagnostics need attention',
+      message: maintenanceSummary.message || 'The AI agent detected a runtime issue and recommends a repair cycle.',
+      actionId: 'refresh_runtime'
+    });
+  }
+
+  if (integrations.supabase?.enabled === true && integrations.supabase?.storageBucketFound === false) {
+    insights.push({
+      id: 'supabase-storage',
+      severity: 'warning',
+      title: 'Supabase storage needs repair',
+      message:
+        integrations.supabase.message ||
+        'The configured Supabase storage bucket is missing, so uploads and media playback can degrade.',
+      actionId: 'repair_storage_bucket'
+    });
+  }
+
+  if (integrations.github?.status === 'not_configured') {
+    insights.push({
+      id: 'github-control',
+      severity: 'info',
+      title: 'Code repair automation is not configured',
+      message:
+        'Add GitHub workflow dispatch credentials to let the AI agent trigger repository and CI repair workflows.'
+    });
+  }
+
+  if (integrations.vercel?.status === 'not_configured') {
+    insights.push({
+      id: 'vercel-control',
+      severity: 'info',
+      title: 'Deployment recovery is not configured',
+      message:
+        'Add a Vercel deploy hook so the AI agent can trigger controlled redeploys after diagnostics or repair actions.'
+    });
+  }
+
+  if (lastRepair?.success) {
+    insights.push({
+      id: 'last-repair-success',
+      severity: 'success',
+      title: 'Recent repair succeeded',
+      message: `${lastRepair.label} completed successfully ${lastRepair.completedAt || 'recently'}.`
+    });
+  } else if (lastRepair && lastRepair.success === false) {
+    insights.push({
+      id: 'last-repair-failed',
+      severity: 'warning',
+      title: 'Recent repair failed',
+      message: `${lastRepair.label} failed and may need another action or manual review.`
+    });
+  }
+
+  if (recommendations.length === 0) {
+    insights.push({
+      id: 'steady-state',
+      severity: 'success',
+      title: 'No repair actions are currently recommended',
+      message: 'Runtime, platform, and agent diagnostics are currently stable.'
+    });
+  }
+
+  return insights.slice(0, 8);
 }
 
 function buildOpsAgentSummary({ maintenanceSummary, platformPayload, recommendations }) {
@@ -4879,9 +5116,10 @@ async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
     invalidatePlatformStatusCache();
   }
 
-  const [maintenanceAgentResolution, platformPayload] = await Promise.all([
+  const [maintenanceAgentResolution, platformPayload, settings] = await Promise.all([
     resolveMaintenanceAgentStatus({ includeNetworkProbe: false }),
-    getPlatformStatusPayload()
+    getPlatformStatusPayload(),
+    getOpsAgentControlSettings()
   ]);
   const maintenanceSummary = buildMaintenanceAgentSummary(maintenanceAgentResolution.agentStatus);
   const actionCatalog = buildOpsActionCatalog(platformPayload, maintenanceSummary);
@@ -4889,6 +5127,13 @@ async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
     maintenanceSummary,
     platformPayload,
     actionCatalog
+  });
+  const insights = buildOpsInsights({
+    maintenanceSummary,
+    platformPayload,
+    recommendations,
+    settings,
+    lastRepair: opsAgentRuntimeState.lastRepair
   });
   const summary = buildOpsAgentSummary({
     maintenanceSummary,
@@ -4904,9 +5149,25 @@ async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
       pid: process.pid,
       startedAt: opsAgentRuntimeState.startedAt,
       intervalMs: IS_SERVERLESS_RUNTIME ? null : OPS_AGENT_INTERVAL_MS,
-      autoFixEnabled: OPS_AGENT_AUTOFIX_ENABLED && !IS_SERVERLESS_RUNTIME,
+      autoFixEnabled: settings.autoFixEnabled,
       serverless: IS_SERVERLESS_RUNTIME
     },
+    settings,
+    capabilities: {
+      diagnostics: true,
+      runtimeRepair: true,
+      smokeChecks: !IS_SERVERLESS_RUNTIME,
+      githubWorkflowDispatch: Boolean(GITHUB_REPO && GITHUB_TOKEN && GITHUB_ACTIONS_WORKFLOW_ID),
+      vercelRedeploy: Boolean(VERCEL_DEPLOY_HOOK_URL),
+      databaseAuditLog: true,
+      codeChangeControl: Boolean(GITHUB_REPO && GITHUB_TOKEN && GITHUB_ACTIONS_WORKFLOW_ID)
+    },
+    guardrails: [
+      'Only admin users can change AI agent settings or run repair actions.',
+      'The AI agent can run only predefined maintenance actions, not arbitrary code execution.',
+      'Every AI agent repair is logged into the database-backed history feed for review.',
+      'Code and deployment changes stay controlled through GitHub workflows or approved server scripts.'
+    ],
     summary: {
       ...summary,
       checksCompleted: opsAgentRuntimeState.checksCompleted,
@@ -4918,6 +5179,7 @@ async function buildOpsAgentStatusPayload({ forceRefresh = false } = {}) {
     platform: platformPayload,
     actions: actionCatalog,
     recommendations,
+    insights,
     lastRepair: opsAgentRuntimeState.lastRepair
   };
 }
@@ -4947,6 +5209,14 @@ async function executeOpsAgentAction(actionId, platformPayload) {
     }
     case 'backfill_media_metadata': {
       const scriptResult = await runServerScript('backfill:media');
+      return {
+        success: scriptResult.ok,
+        message: scriptResult.message,
+        details: scriptResult.output || null
+      };
+    }
+    case 'run_smoke_checks': {
+      const scriptResult = await runServerScript('check:smoke');
       return {
         success: scriptResult.ok,
         message: scriptResult.message,
@@ -5016,7 +5286,7 @@ async function executeOpsAgentAction(actionId, platformPayload) {
   }
 }
 
-async function runOpsAgentAction(actionId, { trigger = 'manual' } = {}) {
+async function runOpsAgentAction(actionId, { trigger = 'manual', userEmail = null } = {}) {
   const platformPayload = await getPlatformStatusPayload();
   const actionCatalog = buildOpsActionCatalog(
     platformPayload,
@@ -5085,6 +5355,18 @@ async function runOpsAgentAction(actionId, { trigger = 'manual' } = {}) {
     invalidatePlatformStatusCache();
   }
 
+  await appendOpsAgentEvent(
+    trigger === 'auto' ? 'ops_action_auto' : 'ops_action_manual',
+    {
+      userEmail,
+      title: `${selectedAction.label} ${result.success ? 'completed' : 'failed'}`,
+      content: result.message,
+      details: result.details,
+      type: result.success ? 'system_ops_success' : 'system_ops_error',
+      actionAt: result.completedAt
+    }
+  );
+
   return {
     result,
     status: await buildOpsAgentStatusPayload({ forceRefresh: true })
@@ -5095,7 +5377,7 @@ async function runOpsAgentCycle() {
   opsAgentRuntimeState.checksCompleted += 1;
   const statusPayload = await buildOpsAgentStatusPayload({ forceRefresh: true });
 
-  if (IS_SERVERLESS_RUNTIME || !OPS_AGENT_AUTOFIX_ENABLED || opsAgentRuntimeState.currentAction) {
+  if (IS_SERVERLESS_RUNTIME || statusPayload.settings?.autoFixEnabled !== true || opsAgentRuntimeState.currentAction) {
     return statusPayload;
   }
 
@@ -5428,6 +5710,52 @@ app.get('/api/system/ops-agent', simpleAuth, requireWorkspaceRole, async (req, r
   }
 });
 
+app.get('/api/system/ops-agent/settings', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const settings = await getOpsAgentControlSettings();
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/system/ops-agent/settings', simpleAuth, requireAdminRole, async (req, res) => {
+  try {
+    if (typeof req.body?.autoFixEnabled !== 'boolean') {
+      return res.status(400).json({ error: 'autoFixEnabled boolean is required.' });
+    }
+
+    const settings = await updateOpsAgentControlSettings({
+      autoFixEnabled: req.body.autoFixEnabled
+    });
+    await appendOpsAgentEvent('ops_settings_updated', {
+      userEmail: (req.user && req.user.email) || null,
+      title: 'AI ops agent settings updated',
+      content: `Auto-fix was ${settings.requestedAutoFixEnabled ? 'enabled' : 'disabled'} by admin control.`,
+      type: 'system_ops',
+      actionAt: new Date().toISOString()
+    });
+
+    return res.json({
+      settings,
+      status: await buildOpsAgentStatusPayload({ forceRefresh: true })
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/system/ops-agent/history', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    const rows = await getOpsAgentHistory(req.query?.limit);
+    res.json({
+      items: rows
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/system/ops-agent/actions/:actionId', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
     const actionId = String(req.params.actionId || '').trim();
@@ -5435,7 +5763,10 @@ app.post('/api/system/ops-agent/actions/:actionId', simpleAuth, requireWorkspace
       return res.status(400).json({ error: 'Action id is required.' });
     }
 
-    const payload = await runOpsAgentAction(actionId, { trigger: 'manual' });
+    const payload = await runOpsAgentAction(actionId, {
+      trigger: 'manual',
+      userEmail: (req.user && req.user.email) || null
+    });
     const httpStatus = payload.result?.success ? 200 : 207;
     return res.status(httpStatus).json(payload);
   } catch (error) {
@@ -5553,6 +5884,8 @@ app.get('/', (req, res) => {
         maintenanceAgent: 'GET /api/system/maintenance-agent',
         platformStatus: 'GET /api/system/platform-status',
         opsAgent: 'GET /api/system/ops-agent',
+        opsSettings: 'GET/PUT /api/system/ops-agent/settings',
+        opsHistory: 'GET /api/system/ops-agent/history',
         opsAction: 'POST /api/system/ops-agent/actions/:actionId'
       },
       displayUsers: {

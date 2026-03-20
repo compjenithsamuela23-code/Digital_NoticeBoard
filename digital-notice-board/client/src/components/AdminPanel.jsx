@@ -351,6 +351,21 @@ const getStatusPillClass = (state) => {
   return 'pill pill--danger';
 };
 
+const getInsightPillClass = (severity) => {
+  const normalized = String(severity || '')
+    .trim()
+    .toLowerCase();
+  if (normalized === 'success') return 'pill pill--success';
+  if (normalized === 'warning' || normalized === 'danger') return 'pill pill--danger';
+  return 'pill pill--info';
+};
+
+const formatAgentTimestamp = (value) => {
+  const parsedMs = Date.parse(String(value || '').trim());
+  if (!Number.isFinite(parsedMs)) return 'Unknown time';
+  return new Date(parsedMs).toLocaleString();
+};
+
 const runSingleFlight = async (pendingRef, task) => {
   if (pendingRef.current) {
     return pendingRef.current;
@@ -425,6 +440,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [platformStatusPayload, setPlatformStatusPayload] = useState(null);
   const [platformStatusError, setPlatformStatusError] = useState('');
   const [opsAgentPayload, setOpsAgentPayload] = useState(null);
+  const [opsAgentSettings, setOpsAgentSettings] = useState(null);
+  const [opsAgentSettingsError, setOpsAgentSettingsError] = useState('');
+  const [opsAgentSettingsPending, setOpsAgentSettingsPending] = useState(false);
+  const [opsAgentHistory, setOpsAgentHistory] = useState([]);
+  const [opsAgentHistoryError, setOpsAgentHistoryError] = useState('');
   const [opsAgentError, setOpsAgentError] = useState('');
   const [opsAgentActionPending, setOpsAgentActionPending] = useState('');
   const [opsAgentActionResult, setOpsAgentActionResult] = useState(null);
@@ -442,6 +462,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const maintenanceAgentRequestRef = useRef(null);
   const platformStatusRequestRef = useRef(null);
   const opsAgentRequestRef = useRef(null);
+  const opsAgentSettingsRequestRef = useRef(null);
+  const opsAgentHistoryRequestRef = useRef(null);
   const opsAgentActionRequestRef = useRef(null);
   const [mediaReplaceIndex, setMediaReplaceIndex] = useState(-1);
   const [documentReplaceIndex, setDocumentReplaceIndex] = useState(-1);
@@ -647,8 +669,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const supabasePlatformState = String(platformIntegrations?.supabase?.status || 'unknown')
     .trim()
     .toLowerCase();
-  const opsAgentDetails = useMemo(() => opsAgentPayload?.agent || null, [opsAgentPayload]);
   const opsAgentSummary = useMemo(() => opsAgentPayload?.summary || null, [opsAgentPayload]);
+  const opsAgentRuntimeSettings = useMemo(
+    () => opsAgentPayload?.settings || opsAgentSettings || null,
+    [opsAgentPayload, opsAgentSettings]
+  );
   const opsAgentActions = useMemo(
     () => (Array.isArray(opsAgentPayload?.actions) ? opsAgentPayload.actions : []),
     [opsAgentPayload]
@@ -658,15 +683,65 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     [opsAgentPayload]
   );
   const opsAgentLastRepair = useMemo(() => opsAgentPayload?.lastRepair || null, [opsAgentPayload]);
+  const opsAgentInsights = useMemo(
+    () => (Array.isArray(opsAgentPayload?.insights) ? opsAgentPayload.insights : []),
+    [opsAgentPayload]
+  );
+  const opsAgentGuardrails = useMemo(
+    () => (Array.isArray(opsAgentPayload?.guardrails) ? opsAgentPayload.guardrails : []),
+    [opsAgentPayload]
+  );
+  const opsAgentCapabilities = useMemo(
+    () => opsAgentPayload?.capabilities || {},
+    [opsAgentPayload]
+  );
   const opsAgentState = String(opsAgentSummary?.state || 'unknown')
     .trim()
     .toLowerCase();
   const opsAgentPillClass = getStatusPillClass(opsAgentState);
-  const opsAgentAutoFixLabel = opsAgentDetails?.serverless
+  const opsAgentAutoFixLabel = opsAgentRuntimeSettings?.serverless
     ? 'MANUAL ONLY'
-    : opsAgentDetails?.autoFixEnabled
+    : opsAgentRuntimeSettings?.autoFixEnabled
       ? 'ENABLED'
       : 'DISABLED';
+  const recommendedActionIds = useMemo(
+    () => new Set(opsAgentRecommendations.map((action) => action.id).filter(Boolean)),
+    [opsAgentRecommendations]
+  );
+  const opsActionCards = useMemo(
+    () =>
+      opsAgentActions.map((action) => ({
+        ...action,
+        recommended: recommendedActionIds.has(action.id)
+      })),
+    [opsAgentActions, recommendedActionIds]
+  );
+  const platformIntegrationCards = useMemo(
+    () => [
+      {
+        id: 'github',
+        label: 'GitHub',
+        status: githubPlatformState,
+        message: platformIntegrations?.github?.message || 'GitHub automation status unavailable.',
+        latencyMs: platformIntegrations?.github?.latencyMs || null
+      },
+      {
+        id: 'vercel',
+        label: 'Vercel',
+        status: vercelPlatformState,
+        message: platformIntegrations?.vercel?.message || 'Vercel deployment status unavailable.',
+        latencyMs: platformIntegrations?.vercel?.latencyMs || null
+      },
+      {
+        id: 'supabase',
+        label: 'Supabase',
+        status: supabasePlatformState,
+        message: platformIntegrations?.supabase?.message || 'Supabase diagnostics unavailable.',
+        latencyMs: platformIntegrations?.supabase?.latencyMs || null
+      }
+    ],
+    [githubPlatformState, platformIntegrations, supabasePlatformState, vercelPlatformState]
+  );
 
   const editingAnnouncementPreview = useMemo(() => {
     if (!editingId) return null;
@@ -861,6 +936,93 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     });
   }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
 
+  const fetchOpsAgentSettings = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    await runSingleFlight(opsAgentSettingsRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/system/ops-agent/settings'), applyWorkspaceAuth());
+        setOpsAgentSettings(response.data || null);
+        setOpsAgentSettingsError('');
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        setOpsAgentSettingsError(extractApiError(error, 'Ops agent settings are unavailable.'));
+      }
+    });
+  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
+
+  const fetchOpsAgentHistory = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    await runSingleFlight(opsAgentHistoryRequestRef, async () => {
+      try {
+        const response = await apiClient.get(
+          apiUrl('/api/system/ops-agent/history'),
+          applyWorkspaceAuth({ params: { limit: 10 } })
+        );
+        setOpsAgentHistory(Array.isArray(response.data?.items) ? response.data.items : []);
+        setOpsAgentHistoryError('');
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        setOpsAgentHistoryError(extractApiError(error, 'Ops agent history is unavailable.'));
+      }
+    });
+  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
+
+  const updateOpsAgentSettings = useCallback(
+    async (autoFixEnabled) => {
+      if (!isAdminWorkspace) {
+        setOpsAgentSettingsError('Only the admin workspace can change AI agent settings.');
+        return;
+      }
+      if (!isOnline) {
+        setOpsAgentSettingsError('Network appears offline. Waiting to reconnect...');
+        return;
+      }
+
+      setOpsAgentSettingsPending(true);
+      setOpsAgentSettingsError('');
+
+      try {
+        const response = await apiClient.put(
+          apiUrl('/api/system/ops-agent/settings'),
+          { autoFixEnabled: Boolean(autoFixEnabled) },
+          applyWorkspaceAuth()
+        );
+        const payload = response.data || {};
+        if (payload.settings) {
+          setOpsAgentSettings(payload.settings);
+        }
+        if (payload.status) {
+          setOpsAgentPayload(payload.status);
+          if (payload.status.platform) {
+            setPlatformStatusPayload(payload.status.platform);
+          }
+        }
+        await fetchOpsAgentHistory();
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        setOpsAgentSettingsError(extractApiError(error, 'Unable to update AI agent settings.'));
+      } finally {
+        setOpsAgentSettingsPending(false);
+      }
+    },
+    [applyWorkspaceAuth, fetchOpsAgentHistory, handleAuthFailure, isAdminWorkspace, isOnline]
+  );
+
   const runOpsAgentAction = useCallback(
     async (action) => {
       const actionId = String(action?.id || '').trim();
@@ -899,8 +1061,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         });
 
         await fetchMaintenanceAgentStatus();
+        await fetchOpsAgentSettings();
         await fetchPlatformStatus();
         await fetchOpsAgentStatus();
+        await fetchOpsAgentHistory();
       } catch (error) {
         if (error.response?.status === 401) {
           handleAuthFailure();
@@ -914,6 +1078,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     [
       applyWorkspaceAuth,
       fetchMaintenanceAgentStatus,
+      fetchOpsAgentHistory,
+      fetchOpsAgentSettings,
       fetchOpsAgentStatus,
       fetchPlatformStatus,
       handleAuthFailure,
@@ -933,8 +1099,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchLiveStatus();
     fetchCategories();
     fetchMaintenanceAgentStatus();
+    fetchOpsAgentSettings();
     fetchPlatformStatus();
     fetchOpsAgentStatus();
+    fetchOpsAgentHistory();
     if (isAdminWorkspace) {
       fetchDisplayUsers();
       fetchStaffUsers();
@@ -945,6 +1113,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchDisplayUsers,
     fetchLiveStatus,
     fetchMaintenanceAgentStatus,
+    fetchOpsAgentHistory,
+    fetchOpsAgentSettings,
     fetchOpsAgentStatus,
     fetchPlatformStatus,
     fetchStaffUsers,
@@ -1004,14 +1174,36 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     offlineIntervalMs: 120000
   });
 
+  useAdaptivePolling(fetchOpsAgentSettings, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: 60000,
+    hiddenIntervalMs: 120000,
+    offlineIntervalMs: 150000
+  });
+
+  useAdaptivePolling(fetchOpsAgentHistory, {
+    enabled: true,
+    online: isOnline,
+    visible: isPageVisible,
+    immediate: false,
+    baseIntervalMs: 60000,
+    hiddenIntervalMs: 120000,
+    offlineIntervalMs: 150000
+  });
+
   useEffect(() => {
     const syncVisibleWorkspace = () => {
       if (!isOnline) return;
       fetchAnnouncements();
       fetchLiveStatus();
       fetchMaintenanceAgentStatus();
+      fetchOpsAgentSettings();
       fetchPlatformStatus();
       fetchOpsAgentStatus();
+      fetchOpsAgentHistory();
     };
     const handleOnline = () => {
       setRequestError('');
@@ -1019,8 +1211,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       fetchLiveStatus();
       fetchCategories();
       fetchMaintenanceAgentStatus();
+      fetchOpsAgentSettings();
       fetchPlatformStatus();
       fetchOpsAgentStatus();
+      fetchOpsAgentHistory();
       if (isAdminWorkspace) {
         fetchDisplayUsers();
         fetchStaffUsers();
@@ -1040,6 +1234,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchDisplayUsers,
     fetchLiveStatus,
     fetchMaintenanceAgentStatus,
+    fetchOpsAgentHistory,
+    fetchOpsAgentSettings,
     fetchOpsAgentStatus,
     fetchPlatformStatus,
     fetchStaffUsers,
@@ -1060,8 +1256,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       fetchAnnouncements();
       fetchLiveStatus();
       fetchMaintenanceAgentStatus();
+      fetchOpsAgentSettings();
       fetchPlatformStatus();
       fetchOpsAgentStatus();
+      fetchOpsAgentHistory();
     };
     const handleDisconnect = () => {
       setSocketConnected(false);
@@ -1092,7 +1290,16 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       socket.off('liveUpdate', handleLiveUpdate);
       socket.off('announcementUpdate', fetchAnnouncements);
     };
-  }, [fetchAnnouncements, fetchLiveStatus, fetchMaintenanceAgentStatus, fetchOpsAgentStatus, fetchPlatformStatus, socket]);
+  }, [
+    fetchAnnouncements,
+    fetchLiveStatus,
+    fetchMaintenanceAgentStatus,
+    fetchOpsAgentHistory,
+    fetchOpsAgentSettings,
+    fetchOpsAgentStatus,
+    fetchPlatformStatus,
+    socket
+  ]);
 
   useEffect(() => {
     return () => {
@@ -2527,91 +2734,88 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         </section>
       ) : null}
 
-      <div className="grid-2">
-        <section className="card section fade-up-delay">
-          <div className="section-title">
-            <div className="section-title__text">
-              <h2>Live Broadcast</h2>
-            </div>
-            <span className={liveStatus === 'ON' ? 'pill pill--success' : 'pill pill--danger'}>
-              <span className="badge-dot" />
-              {liveStatus}
-            </span>
+      <section className="card section fade-up-delay">
+        <div className="section-title">
+          <div className="section-title__text">
+            <h2>AI Agent Control Center</h2>
+            <p>Monitor health, approve safe repairs, and review what the AI agent changed.</p>
           </div>
+          <div className="inline-actions">
+            <span className={maintenanceAgentPillClass}>Runtime {maintenanceAgentState.toUpperCase()}</span>
+            <span className={platformPillClass}>Platform {platformState.toUpperCase()}</span>
+            <span className={opsAgentPillClass}>Ops {opsAgentState.toUpperCase()}</span>
+          </div>
+        </div>
 
-          <div className={`agent-status-banner agent-status-banner--${maintenanceAgentState}`}>
-            <div className="agent-status-banner__head">
-              <h3>AI Operations Agent</h3>
-              <span className={maintenanceAgentPillClass}>
-                {maintenanceAgentState.toUpperCase()}
-              </span>
+        <div className="agent-console">
+          <article className="agent-console__card">
+            <div className="agent-console__head">
+              <div>
+                <h3>Control</h3>
+                <p className="file-help">
+                  The AI agent can monitor the website continuously and run only approved repair actions.
+                </p>
+              </div>
+              <span className="pill pill--info">Auto-fix {opsAgentAutoFixLabel}</span>
             </div>
-            <div className="agent-status-banner__metrics">
+            <div className="agent-console__chips">
               <span className="pill">Mode: {maintenanceAgentMode}</span>
               <span className="pill">API: {formatLatencyLabel(maintenanceAgentChecks?.api?.latencyMs)}</span>
-              <span className="pill">
-                Network: {formatLatencyLabel(maintenanceAgentChecks?.network?.latencyMs)}
-              </span>
-              <span className="pill">DB: {maintenanceAgentDatabaseStatus}</span>
-              <span className="pill">Failures: {maintenanceAgentFailures}</span>
-              {maintenanceAgentSource ? <span className="pill">Source: {maintenanceAgentSource}</span> : null}
-              <span className="pill">Updated: {formatAgentRelativeTime(maintenanceAgentSummary?.updatedAt)}</span>
-            </div>
-            <div className="agent-status-banner__metrics">
-              <span className={platformPillClass}>Platform: {platformState.toUpperCase()}</span>
-              <span className={getStatusPillClass(githubPlatformState)}>
-                GitHub: {githubPlatformState.toUpperCase()}
-              </span>
-              <span className={getStatusPillClass(vercelPlatformState)}>
-                Vercel: {vercelPlatformState.toUpperCase()}
-              </span>
-              <span className={getStatusPillClass(supabasePlatformState)}>
-                Supabase: {supabasePlatformState.toUpperCase()}
-              </span>
-            </div>
-            <div className="agent-status-banner__metrics">
-              <span className={opsAgentPillClass}>Ops: {opsAgentState.toUpperCase()}</span>
-              <span className="pill">Mode: {opsAgentAutoFixLabel}</span>
+              <span className="pill">Network: {formatLatencyLabel(maintenanceAgentChecks?.network?.latencyMs)}</span>
               <span className="pill">Checks: {opsAgentSummary?.checksCompleted || 0}</span>
               <span className="pill">Repairs: {opsAgentSummary?.repairsSucceeded || 0}</span>
-              <span className="pill">Failed: {opsAgentSummary?.repairsFailed || 0}</span>
-              <span className="pill">Updated: {formatAgentRelativeTime(opsAgentPayload?.updatedAt)}</span>
+              <span className="pill">Ops failed: {opsAgentSummary?.repairsFailed || 0}</span>
+              <span className="pill">Runtime failures: {maintenanceAgentFailures}</span>
+              <span className="pill">Cooldown: {opsAgentRuntimeSettings?.cooldownMs || 'n/a'}ms</span>
+              <span className="pill">Interval: {opsAgentRuntimeSettings?.intervalMs || 'manual'}ms</span>
+              <span className="pill">Runtime DB: {maintenanceAgentDatabaseStatus}</span>
+              {maintenanceAgentSource ? <span className="pill">Source: {maintenanceAgentSource}</span> : null}
             </div>
-            {opsAgentSummary?.message ? <p className="file-help">{opsAgentSummary.message}</p> : null}
-            {opsAgentRecommendations.length > 0 ? (
-              <div className="agent-status-banner__metrics">
-                <span className="pill pill--info">Recommended</span>
-                {opsAgentRecommendations.map((action) => (
-                  <span className="pill" key={`ops-recommendation-${action.id}`}>
-                    {action.label}
-                  </span>
-                ))}
-              </div>
-            ) : null}
             <div className="inline-actions">
               <button
                 className="btn btn--ghost btn--tiny"
                 type="button"
-                onClick={fetchOpsAgentStatus}
-                disabled={Boolean(opsAgentActionPending)}
+                onClick={() => {
+                  fetchMaintenanceAgentStatus();
+                  fetchPlatformStatus();
+                  fetchOpsAgentStatus();
+                  fetchOpsAgentSettings();
+                  fetchOpsAgentHistory();
+                }}
+                disabled={Boolean(opsAgentActionPending) || opsAgentSettingsPending}
               >
-                Refresh Ops Status
+                Refresh Diagnostics
               </button>
-              {isAdminWorkspace
-                ? opsAgentActions.map((action) => (
-                    <button
-                      key={action.id}
-                      className="btn btn--ghost btn--tiny"
-                      type="button"
-                      title={action.reason || action.description || action.label}
-                      onClick={() => runOpsAgentAction(action)}
-                      disabled={!action.available || Boolean(opsAgentActionPending)}
-                    >
-                      {opsAgentActionPending === action.id ? `Running ${action.label}...` : action.label}
-                    </button>
-                  ))
-                : null}
+              {isAdminWorkspace ? (
+                <button
+                  className="btn btn--primary btn--tiny"
+                  type="button"
+                  onClick={() =>
+                    updateOpsAgentSettings(!(opsAgentRuntimeSettings?.requestedAutoFixEnabled === true))
+                  }
+                  disabled={opsAgentSettingsPending || opsAgentRuntimeSettings?.serverless === true}
+                  title={
+                    opsAgentRuntimeSettings?.serverless
+                      ? 'Serverless runtime keeps auto-fix in manual mode.'
+                      : 'Toggle AI agent auto-fix mode.'
+                  }
+                >
+                  {opsAgentSettingsPending
+                    ? 'Saving...'
+                    : opsAgentRuntimeSettings?.requestedAutoFixEnabled
+                      ? 'Disable Auto-Fix'
+                      : 'Enable Auto-Fix'}
+                </button>
+              ) : null}
+              <button
+                className="btn btn--ghost btn--tiny"
+                type="button"
+                onClick={() => navigate(workspaceHistoryRoute)}
+              >
+                Open Full History
+              </button>
             </div>
+            {opsAgentSummary?.message ? <p className="file-help">{opsAgentSummary.message}</p> : null}
             {opsAgentLastRepair ? (
               <p className={opsAgentLastRepair.success ? 'file-help' : 'field-error'}>
                 Last repair: {opsAgentLastRepair.label} {opsAgentLastRepair.success ? 'succeeded' : 'failed'}{' '}
@@ -2626,6 +2830,170 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
             {platformStatusError ? <p className="field-error">{platformStatusError}</p> : null}
             {opsAgentError ? <p className="field-error">{opsAgentError}</p> : null}
+            {opsAgentSettingsError ? <p className="field-error">{opsAgentSettingsError}</p> : null}
+            {opsAgentHistoryError ? <p className="field-error">{opsAgentHistoryError}</p> : null}
+          </article>
+
+          <article className="agent-console__card">
+            <div className="agent-console__head">
+              <div>
+                <h3>AI Insights</h3>
+                <p className="file-help">Current recommendations generated from runtime and platform diagnostics.</p>
+              </div>
+            </div>
+            {opsAgentInsights.length > 0 ? (
+              <div className="agent-insight-list">
+                {opsAgentInsights.map((insight) => (
+                  <article className="agent-insight-card" key={insight.id || insight.title}>
+                    <div className="agent-insight-card__head">
+                      <h4>{insight.title}</h4>
+                      <span className={getInsightPillClass(insight.severity)}>{String(insight.severity || 'info').toUpperCase()}</span>
+                    </div>
+                    <p className="agent-action-card__copy">{insight.message}</p>
+                    {insight.actionId ? (
+                      <p className="agent-action-card__meta">Suggested action: {insight.actionId}</p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="file-help">No AI insights are available yet.</p>
+            )}
+          </article>
+
+          <article className="agent-console__card">
+            <div className="agent-console__head">
+              <div>
+                <h3>Repair Actions</h3>
+                <p className="file-help">Each action is controlled, reviewable, and limited to known-safe operations.</p>
+              </div>
+            </div>
+            {opsActionCards.length > 0 ? (
+              <div className="agent-action-grid">
+                {opsActionCards.map((action) => (
+                  <article className="agent-action-card" key={action.id}>
+                    <div className="agent-action-card__head">
+                      <h4>{action.label}</h4>
+                      <span className={action.recommended ? 'pill pill--info' : action.available ? 'pill pill--success' : 'pill'}>
+                        {action.recommended ? 'Recommended' : action.available ? 'Available' : 'Unavailable'}
+                      </span>
+                    </div>
+                    <p className="agent-action-card__copy">{action.description}</p>
+                    <p className="agent-action-card__meta">{action.reason || 'No extra details available.'}</p>
+                    <button
+                      className="btn btn--ghost btn--tiny"
+                      type="button"
+                      onClick={() => runOpsAgentAction(action)}
+                      disabled={!isAdminWorkspace || !action.available || Boolean(opsAgentActionPending)}
+                      title={!isAdminWorkspace ? 'Admin workspace required.' : action.reason || action.description || action.label}
+                    >
+                      {opsAgentActionPending === action.id ? `Running ${action.label}...` : `Run ${action.label}`}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="file-help">No repair actions are available in this environment.</p>
+            )}
+          </article>
+
+          <article className="agent-console__card">
+            <div className="agent-console__head">
+              <div>
+                <h3>Platform Monitoring</h3>
+                <p className="file-help">GitHub, Vercel, and Supabase status the AI agent can watch or use.</p>
+              </div>
+            </div>
+            <div className="agent-integration-list">
+              {platformIntegrationCards.map((integration) => (
+                <article className="agent-integration-card" key={integration.id}>
+                  <div className="agent-integration-card__head">
+                    <h4>{integration.label}</h4>
+                    <span className={getStatusPillClass(integration.status)}>
+                      {String(integration.status || 'unknown').toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="agent-action-card__copy">{integration.message}</p>
+                  <p className="agent-action-card__meta">Latency: {formatLatencyLabel(integration.latencyMs)}</p>
+                </article>
+              ))}
+            </div>
+          </article>
+
+          <article className="agent-console__card">
+            <div className="agent-console__head">
+              <div>
+                <h3>Guardrails</h3>
+                <p className="file-help">The AI agent stays professional by working inside clear safety limits.</p>
+              </div>
+            </div>
+            <div className="agent-console__chips">
+              {Object.entries(opsAgentCapabilities)
+                .filter(([, enabled]) => enabled === true)
+                .map(([key]) => (
+                  <span className="pill pill--success" key={`capability-${key}`}>
+                    {key.replace(/([A-Z])/g, ' $1').replace(/^./, (value) => value.toUpperCase())}
+                  </span>
+                ))}
+            </div>
+            {opsAgentGuardrails.length > 0 ? (
+              <div className="agent-guardrail-list">
+                {opsAgentGuardrails.map((guardrail, index) => (
+                  <div className="agent-guardrail-item" key={`guardrail-${index}`}>
+                    {guardrail}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="file-help">No guardrail details are available.</p>
+            )}
+          </article>
+
+          <article className="agent-console__card">
+            <div className="agent-console__head">
+              <div>
+                <h3>Recent Agent Activity</h3>
+                <p className="file-help">Database-backed log of the AI agent actions and settings changes.</p>
+              </div>
+            </div>
+            {opsAgentHistory.length > 0 ? (
+              <div className="agent-activity-list">
+                {opsAgentHistory.map((item) => (
+                  <article className="agent-activity-item" key={item.id}>
+                    <div className="agent-activity-item__head">
+                      <h4>{item.title}</h4>
+                      <span className={item.type === 'system_ops_error' ? 'pill pill--danger' : item.type === 'system_ops_success' ? 'pill pill--success' : 'pill pill--info'}>
+                        {item.type === 'system_ops_error'
+                          ? 'FAILED'
+                          : item.type === 'system_ops_success'
+                            ? 'SUCCESS'
+                            : 'LOGGED'}
+                      </span>
+                    </div>
+                    {item.content ? <p className="agent-action-card__copy">{item.content}</p> : null}
+                    <p className="agent-action-card__meta">
+                      {item.userEmail || 'System'} • {formatAgentTimestamp(item.createdAt)} • {String(item.action || '').replace(/_/g, ' ')}
+                    </p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="file-help">No AI agent activity has been recorded yet.</p>
+            )}
+          </article>
+        </div>
+      </section>
+
+      <div className="grid-2">
+        <section className="card section fade-up-delay">
+          <div className="section-title">
+            <div className="section-title__text">
+              <h2>Live Broadcast</h2>
+            </div>
+            <span className={liveStatus === 'ON' ? 'pill pill--success' : 'pill pill--danger'}>
+              <span className="badge-dot" />
+              {liveStatus}
+            </span>
           </div>
 
           <div className="field">

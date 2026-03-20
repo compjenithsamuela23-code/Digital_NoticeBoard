@@ -1162,6 +1162,101 @@ textarea {
   animation-duration: 5.5s;
 }
 
+.agent-console {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.agent-console__card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(96, 165, 250, 0.1), transparent 34%),
+    radial-gradient(circle at bottom left, rgba(248, 113, 113, 0.08), transparent 30%),
+    var(--surface-strong);
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.agent-console__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agent-console__head h3,
+.agent-action-card__head h4,
+.agent-integration-card__head h4,
+.agent-activity-item__head h4,
+.agent-insight-card__head h4 {
+  margin: 0;
+}
+
+.agent-console__chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-insight-list,
+.agent-activity-list,
+.agent-guardrail-list,
+.agent-integration-list {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-insight-card,
+.agent-integration-card,
+.agent-activity-item,
+.agent-action-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--ghost-bg);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.agent-insight-card__head,
+.agent-integration-card__head,
+.agent-activity-item__head,
+.agent-action-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.agent-action-card__copy {
+  color: var(--text-soft);
+  line-height: 1.55;
+}
+
+.agent-action-card__meta {
+  color: var(--text-faint);
+  font-size: 0.82rem;
+}
+
+.agent-guardrail-item {
+  border-left: 3px solid color-mix(in srgb, var(--brand) 60%, transparent);
+  padding-left: 10px;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
 .inline-actions {
   display: flex;
   gap: 10px;
@@ -2876,6 +2971,10 @@ textarea {
   }
 
   .grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-console {
     grid-template-columns: 1fr;
   }
 

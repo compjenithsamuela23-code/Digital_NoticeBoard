@@ -186,6 +186,21 @@ async function run() {
     assert(opsAgentStatus && typeof opsAgentStatus === 'object', 'Ops agent response is invalid.');
     assert(String(opsAgentStatus?.summary?.state || '').trim().length > 0, 'Ops agent state is missing.');
 
+    logStep('Checking ops agent settings endpoint');
+    const opsAgentSettings = await request('/api/system/ops-agent/settings', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(opsAgentSettings && typeof opsAgentSettings === 'object', 'Ops agent settings response is invalid.');
+    assert(typeof opsAgentSettings?.autoFixEnabled === 'boolean', 'Ops agent autoFixEnabled is missing.');
+
+    logStep('Checking ops agent history endpoint');
+    const opsAgentHistory = await request('/api/system/ops-agent/history', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(Array.isArray(opsAgentHistory?.items), 'Ops agent history response is invalid.');
+
     logStep('Running ops agent runtime refresh action');
     const opsAgentAction = await request('/api/system/ops-agent/actions/refresh_runtime', {
       method: 'POST',
