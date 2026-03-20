@@ -448,6 +448,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [opsAgentError, setOpsAgentError] = useState('');
   const [opsAgentActionPending, setOpsAgentActionPending] = useState('');
   const [opsAgentActionResult, setOpsAgentActionResult] = useState(null);
+  const [showAgentCenterDetails, setShowAgentCenterDetails] = useState(false);
   const [activeDropZone, setActiveDropZone] = useState('');
   const mediaInputRef = useRef(null);
   const videoInputRef = useRef(null);
@@ -2738,249 +2739,294 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         <div className="section-title">
           <div className="section-title__text">
             <h2>AI Agent Control Center</h2>
-            <p>Monitor health, approve safe repairs, and review what the AI agent changed.</p>
+            <p>Compact monitoring for health, repairs, and AI agent activity.</p>
           </div>
           <div className="inline-actions">
             <span className={maintenanceAgentPillClass}>Runtime {maintenanceAgentState.toUpperCase()}</span>
             <span className={platformPillClass}>Platform {platformState.toUpperCase()}</span>
             <span className={opsAgentPillClass}>Ops {opsAgentState.toUpperCase()}</span>
+            <button
+              className="btn btn--ghost btn--tiny"
+              type="button"
+              onClick={() => setShowAgentCenterDetails((value) => !value)}
+            >
+              {showAgentCenterDetails ? 'Hide AI Details' : 'Show AI Details'}
+            </button>
           </div>
         </div>
 
-        <div className="agent-console">
-          <article className="agent-console__card">
-            <div className="agent-console__head">
-              <div>
-                <h3>Control</h3>
-                <p className="file-help">
-                  The AI agent can monitor the website continuously and run only approved repair actions.
-                </p>
-              </div>
-              <span className="pill pill--info">Auto-fix {opsAgentAutoFixLabel}</span>
-            </div>
-            <div className="agent-console__chips">
-              <span className="pill">Mode: {maintenanceAgentMode}</span>
-              <span className="pill">API: {formatLatencyLabel(maintenanceAgentChecks?.api?.latencyMs)}</span>
-              <span className="pill">Network: {formatLatencyLabel(maintenanceAgentChecks?.network?.latencyMs)}</span>
-              <span className="pill">Checks: {opsAgentSummary?.checksCompleted || 0}</span>
-              <span className="pill">Repairs: {opsAgentSummary?.repairsSucceeded || 0}</span>
-              <span className="pill">Ops failed: {opsAgentSummary?.repairsFailed || 0}</span>
-              <span className="pill">Runtime failures: {maintenanceAgentFailures}</span>
-              <span className="pill">Cooldown: {opsAgentRuntimeSettings?.cooldownMs || 'n/a'}ms</span>
-              <span className="pill">Interval: {opsAgentRuntimeSettings?.intervalMs || 'manual'}ms</span>
-              <span className="pill">Runtime DB: {maintenanceAgentDatabaseStatus}</span>
-              {maintenanceAgentSource ? <span className="pill">Source: {maintenanceAgentSource}</span> : null}
-            </div>
-            <div className="inline-actions">
+        <div className="agent-console agent-console--compact">
+          <div className="agent-console__summary">
+            <article className="agent-console__summary-card">
+              <span className="agent-console__summary-label">Runtime</span>
+              <strong>{maintenanceAgentState.toUpperCase()}</strong>
+              <span className="agent-action-card__meta">
+                API {formatLatencyLabel(maintenanceAgentChecks?.api?.latencyMs)} • DB {maintenanceAgentDatabaseStatus}
+              </span>
+            </article>
+            <article className="agent-console__summary-card">
+              <span className="agent-console__summary-label">Auto-Fix</span>
+              <strong>{opsAgentAutoFixLabel}</strong>
+              <span className="agent-action-card__meta">
+                Interval {opsAgentRuntimeSettings?.intervalMs || 'manual'}ms
+              </span>
+            </article>
+            <article className="agent-console__summary-card">
+              <span className="agent-console__summary-label">Recommendations</span>
+              <strong>{opsAgentRecommendations.length}</strong>
+              <span className="agent-action-card__meta">
+                {opsActionCards.filter((action) => action.available).length} actions available
+              </span>
+            </article>
+            <article className="agent-console__summary-card">
+              <span className="agent-console__summary-label">Last Repair</span>
+              <strong>{opsAgentLastRepair?.label || 'No repairs yet'}</strong>
+              <span className="agent-action-card__meta">
+                {opsAgentLastRepair?.completedAt
+                  ? formatAgentRelativeTime(opsAgentLastRepair.completedAt)
+                  : 'Waiting for first run'}
+              </span>
+            </article>
+          </div>
+
+          <div className="inline-actions">
+            <button
+              className="btn btn--ghost btn--tiny"
+              type="button"
+              onClick={() => {
+                fetchMaintenanceAgentStatus();
+                fetchPlatformStatus();
+                fetchOpsAgentStatus();
+                fetchOpsAgentSettings();
+                fetchOpsAgentHistory();
+              }}
+              disabled={Boolean(opsAgentActionPending) || opsAgentSettingsPending}
+            >
+              Refresh Diagnostics
+            </button>
+            {isAdminWorkspace ? (
               <button
-                className="btn btn--ghost btn--tiny"
+                className="btn btn--primary btn--tiny"
                 type="button"
-                onClick={() => {
-                  fetchMaintenanceAgentStatus();
-                  fetchPlatformStatus();
-                  fetchOpsAgentStatus();
-                  fetchOpsAgentSettings();
-                  fetchOpsAgentHistory();
-                }}
-                disabled={Boolean(opsAgentActionPending) || opsAgentSettingsPending}
+                onClick={() =>
+                  updateOpsAgentSettings(!(opsAgentRuntimeSettings?.requestedAutoFixEnabled === true))
+                }
+                disabled={opsAgentSettingsPending || opsAgentRuntimeSettings?.serverless === true}
+                title={
+                  opsAgentRuntimeSettings?.serverless
+                    ? 'Serverless runtime keeps auto-fix in manual mode.'
+                    : 'Toggle AI agent auto-fix mode.'
+                }
               >
-                Refresh Diagnostics
+                {opsAgentSettingsPending
+                  ? 'Saving...'
+                  : opsAgentRuntimeSettings?.requestedAutoFixEnabled
+                    ? 'Disable Auto-Fix'
+                    : 'Enable Auto-Fix'}
               </button>
-              {isAdminWorkspace ? (
-                <button
-                  className="btn btn--primary btn--tiny"
-                  type="button"
-                  onClick={() =>
-                    updateOpsAgentSettings(!(opsAgentRuntimeSettings?.requestedAutoFixEnabled === true))
-                  }
-                  disabled={opsAgentSettingsPending || opsAgentRuntimeSettings?.serverless === true}
-                  title={
-                    opsAgentRuntimeSettings?.serverless
-                      ? 'Serverless runtime keeps auto-fix in manual mode.'
-                      : 'Toggle AI agent auto-fix mode.'
-                  }
-                >
-                  {opsAgentSettingsPending
-                    ? 'Saving...'
-                    : opsAgentRuntimeSettings?.requestedAutoFixEnabled
-                      ? 'Disable Auto-Fix'
-                      : 'Enable Auto-Fix'}
-                </button>
-              ) : null}
-              <button
-                className="btn btn--ghost btn--tiny"
-                type="button"
-                onClick={() => navigate(workspaceHistoryRoute)}
-              >
-                Open Full History
-              </button>
-            </div>
-            {opsAgentSummary?.message ? <p className="file-help">{opsAgentSummary.message}</p> : null}
-            {opsAgentLastRepair ? (
-              <p className={opsAgentLastRepair.success ? 'file-help' : 'field-error'}>
-                Last repair: {opsAgentLastRepair.label} {opsAgentLastRepair.success ? 'succeeded' : 'failed'}{' '}
-                {formatAgentRelativeTime(opsAgentLastRepair.completedAt)}. {opsAgentLastRepair.message}
-              </p>
             ) : null}
-            {opsAgentActionResult ? (
-              <p className={opsAgentActionResult.success ? 'file-help' : 'field-error'}>
-                Action result: {opsAgentActionResult.message}
-              </p>
-            ) : null}
-            {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
-            {platformStatusError ? <p className="field-error">{platformStatusError}</p> : null}
-            {opsAgentError ? <p className="field-error">{opsAgentError}</p> : null}
-            {opsAgentSettingsError ? <p className="field-error">{opsAgentSettingsError}</p> : null}
-            {opsAgentHistoryError ? <p className="field-error">{opsAgentHistoryError}</p> : null}
-          </article>
+            <button
+              className="btn btn--ghost btn--tiny"
+              type="button"
+              onClick={() => navigate(workspaceHistoryRoute)}
+            >
+              Open Full History
+            </button>
+          </div>
 
-          <article className="agent-console__card">
-            <div className="agent-console__head">
-              <div>
-                <h3>AI Insights</h3>
-                <p className="file-help">Current recommendations generated from runtime and platform diagnostics.</p>
-              </div>
-            </div>
-            {opsAgentInsights.length > 0 ? (
-              <div className="agent-insight-list">
-                {opsAgentInsights.map((insight) => (
-                  <article className="agent-insight-card" key={insight.id || insight.title}>
-                    <div className="agent-insight-card__head">
-                      <h4>{insight.title}</h4>
-                      <span className={getInsightPillClass(insight.severity)}>{String(insight.severity || 'info').toUpperCase()}</span>
-                    </div>
-                    <p className="agent-action-card__copy">{insight.message}</p>
-                    {insight.actionId ? (
-                      <p className="agent-action-card__meta">Suggested action: {insight.actionId}</p>
-                    ) : null}
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="file-help">No AI insights are available yet.</p>
-            )}
-          </article>
+          {opsAgentSummary?.message ? <p className="file-help">{opsAgentSummary.message}</p> : null}
+          {opsAgentActionResult ? (
+            <p className={opsAgentActionResult.success ? 'file-help' : 'field-error'}>
+              Action result: {opsAgentActionResult.message}
+            </p>
+          ) : null}
+          {maintenanceAgentError ? <p className="field-error">{maintenanceAgentError}</p> : null}
+          {platformStatusError ? <p className="field-error">{platformStatusError}</p> : null}
+          {opsAgentError ? <p className="field-error">{opsAgentError}</p> : null}
+          {opsAgentSettingsError ? <p className="field-error">{opsAgentSettingsError}</p> : null}
+          {opsAgentHistoryError ? <p className="field-error">{opsAgentHistoryError}</p> : null}
 
-          <article className="agent-console__card">
-            <div className="agent-console__head">
-              <div>
-                <h3>Repair Actions</h3>
-                <p className="file-help">Each action is controlled, reviewable, and limited to known-safe operations.</p>
-              </div>
-            </div>
-            {opsActionCards.length > 0 ? (
-              <div className="agent-action-grid">
-                {opsActionCards.map((action) => (
-                  <article className="agent-action-card" key={action.id}>
-                    <div className="agent-action-card__head">
-                      <h4>{action.label}</h4>
-                      <span className={action.recommended ? 'pill pill--info' : action.available ? 'pill pill--success' : 'pill'}>
-                        {action.recommended ? 'Recommended' : action.available ? 'Available' : 'Unavailable'}
-                      </span>
-                    </div>
-                    <p className="agent-action-card__copy">{action.description}</p>
-                    <p className="agent-action-card__meta">{action.reason || 'No extra details available.'}</p>
-                    <button
-                      className="btn btn--ghost btn--tiny"
-                      type="button"
-                      onClick={() => runOpsAgentAction(action)}
-                      disabled={!isAdminWorkspace || !action.available || Boolean(opsAgentActionPending)}
-                      title={!isAdminWorkspace ? 'Admin workspace required.' : action.reason || action.description || action.label}
-                    >
-                      {opsAgentActionPending === action.id ? `Running ${action.label}...` : `Run ${action.label}`}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="file-help">No repair actions are available in this environment.</p>
-            )}
-          </article>
-
-          <article className="agent-console__card">
-            <div className="agent-console__head">
-              <div>
-                <h3>Platform Monitoring</h3>
-                <p className="file-help">GitHub, Vercel, and Supabase status the AI agent can watch or use.</p>
-              </div>
-            </div>
-            <div className="agent-integration-list">
-              {platformIntegrationCards.map((integration) => (
-                <article className="agent-integration-card" key={integration.id}>
-                  <div className="agent-integration-card__head">
-                    <h4>{integration.label}</h4>
-                    <span className={getStatusPillClass(integration.status)}>
-                      {String(integration.status || 'unknown').toUpperCase()}
-                    </span>
+          {showAgentCenterDetails ? (
+            <div className="agent-console__details">
+              <details className="agent-disclosure" open>
+                <summary className="agent-disclosure__summary">
+                  <span>Control</span>
+                  <span className="pill pill--info">Auto-fix {opsAgentAutoFixLabel}</span>
+                </summary>
+                <div className="agent-disclosure__body">
+                  <div className="agent-console__chips">
+                    <span className="pill">Mode: {maintenanceAgentMode}</span>
+                    <span className="pill">API: {formatLatencyLabel(maintenanceAgentChecks?.api?.latencyMs)}</span>
+                    <span className="pill">Network: {formatLatencyLabel(maintenanceAgentChecks?.network?.latencyMs)}</span>
+                    <span className="pill">Checks: {opsAgentSummary?.checksCompleted || 0}</span>
+                    <span className="pill">Repairs: {opsAgentSummary?.repairsSucceeded || 0}</span>
+                    <span className="pill">Ops failed: {opsAgentSummary?.repairsFailed || 0}</span>
+                    <span className="pill">Runtime failures: {maintenanceAgentFailures}</span>
+                    <span className="pill">Cooldown: {opsAgentRuntimeSettings?.cooldownMs || 'n/a'}ms</span>
+                    <span className="pill">Interval: {opsAgentRuntimeSettings?.intervalMs || 'manual'}ms</span>
+                    <span className="pill">Runtime DB: {maintenanceAgentDatabaseStatus}</span>
+                    {maintenanceAgentSource ? <span className="pill">Source: {maintenanceAgentSource}</span> : null}
                   </div>
-                  <p className="agent-action-card__copy">{integration.message}</p>
-                  <p className="agent-action-card__meta">Latency: {formatLatencyLabel(integration.latencyMs)}</p>
-                </article>
-              ))}
-            </div>
-          </article>
-
-          <article className="agent-console__card">
-            <div className="agent-console__head">
-              <div>
-                <h3>Guardrails</h3>
-                <p className="file-help">The AI agent stays professional by working inside clear safety limits.</p>
-              </div>
-            </div>
-            <div className="agent-console__chips">
-              {Object.entries(opsAgentCapabilities)
-                .filter(([, enabled]) => enabled === true)
-                .map(([key]) => (
-                  <span className="pill pill--success" key={`capability-${key}`}>
-                    {key.replace(/([A-Z])/g, ' $1').replace(/^./, (value) => value.toUpperCase())}
-                  </span>
-                ))}
-            </div>
-            {opsAgentGuardrails.length > 0 ? (
-              <div className="agent-guardrail-list">
-                {opsAgentGuardrails.map((guardrail, index) => (
-                  <div className="agent-guardrail-item" key={`guardrail-${index}`}>
-                    {guardrail}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="file-help">No guardrail details are available.</p>
-            )}
-          </article>
-
-          <article className="agent-console__card">
-            <div className="agent-console__head">
-              <div>
-                <h3>Recent Agent Activity</h3>
-                <p className="file-help">Database-backed log of the AI agent actions and settings changes.</p>
-              </div>
-            </div>
-            {opsAgentHistory.length > 0 ? (
-              <div className="agent-activity-list">
-                {opsAgentHistory.map((item) => (
-                  <article className="agent-activity-item" key={item.id}>
-                    <div className="agent-activity-item__head">
-                      <h4>{item.title}</h4>
-                      <span className={item.type === 'system_ops_error' ? 'pill pill--danger' : item.type === 'system_ops_success' ? 'pill pill--success' : 'pill pill--info'}>
-                        {item.type === 'system_ops_error'
-                          ? 'FAILED'
-                          : item.type === 'system_ops_success'
-                            ? 'SUCCESS'
-                            : 'LOGGED'}
-                      </span>
-                    </div>
-                    {item.content ? <p className="agent-action-card__copy">{item.content}</p> : null}
-                    <p className="agent-action-card__meta">
-                      {item.userEmail || 'System'} • {formatAgentTimestamp(item.createdAt)} • {String(item.action || '').replace(/_/g, ' ')}
+                  {opsAgentLastRepair ? (
+                    <p className={opsAgentLastRepair.success ? 'file-help' : 'field-error'}>
+                      Last repair: {opsAgentLastRepair.label} {opsAgentLastRepair.success ? 'succeeded' : 'failed'}{' '}
+                      {formatAgentRelativeTime(opsAgentLastRepair.completedAt)}. {opsAgentLastRepair.message}
                     </p>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="file-help">No AI agent activity has been recorded yet.</p>
-            )}
-          </article>
+                  ) : null}
+                </div>
+              </details>
+
+              <details className="agent-disclosure">
+                <summary className="agent-disclosure__summary">
+                  <span>AI Insights</span>
+                  <span className="pill">{opsAgentInsights.length}</span>
+                </summary>
+                <div className="agent-disclosure__body">
+                  {opsAgentInsights.length > 0 ? (
+                    <div className="agent-insight-list">
+                      {opsAgentInsights.map((insight) => (
+                        <article className="agent-insight-card" key={insight.id || insight.title}>
+                          <div className="agent-insight-card__head">
+                            <h4>{insight.title}</h4>
+                            <span className={getInsightPillClass(insight.severity)}>
+                              {String(insight.severity || 'info').toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="agent-action-card__copy">{insight.message}</p>
+                          {insight.actionId ? (
+                            <p className="agent-action-card__meta">Suggested action: {insight.actionId}</p>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="file-help">No AI insights are available yet.</p>
+                  )}
+                </div>
+              </details>
+
+              <details className="agent-disclosure">
+                <summary className="agent-disclosure__summary">
+                  <span>Repair Actions</span>
+                  <span className="pill">{opsActionCards.length}</span>
+                </summary>
+                <div className="agent-disclosure__body">
+                  {opsActionCards.length > 0 ? (
+                    <div className="agent-action-grid">
+                      {opsActionCards.map((action) => (
+                        <article className="agent-action-card" key={action.id}>
+                          <div className="agent-action-card__head">
+                            <h4>{action.label}</h4>
+                            <span className={action.recommended ? 'pill pill--info' : action.available ? 'pill pill--success' : 'pill'}>
+                              {action.recommended ? 'Recommended' : action.available ? 'Available' : 'Unavailable'}
+                            </span>
+                          </div>
+                          <p className="agent-action-card__copy">{action.description}</p>
+                          <p className="agent-action-card__meta">{action.reason || 'No extra details available.'}</p>
+                          <button
+                            className="btn btn--ghost btn--tiny"
+                            type="button"
+                            onClick={() => runOpsAgentAction(action)}
+                            disabled={!isAdminWorkspace || !action.available || Boolean(opsAgentActionPending)}
+                            title={!isAdminWorkspace ? 'Admin workspace required.' : action.reason || action.description || action.label}
+                          >
+                            {opsAgentActionPending === action.id ? `Running ${action.label}...` : `Run ${action.label}`}
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="file-help">No repair actions are available in this environment.</p>
+                  )}
+                </div>
+              </details>
+
+              <details className="agent-disclosure">
+                <summary className="agent-disclosure__summary">
+                  <span>Platform Monitoring</span>
+                  <span className="pill">{platformIntegrationCards.length}</span>
+                </summary>
+                <div className="agent-disclosure__body">
+                  <div className="agent-integration-list">
+                    {platformIntegrationCards.map((integration) => (
+                      <article className="agent-integration-card" key={integration.id}>
+                        <div className="agent-integration-card__head">
+                          <h4>{integration.label}</h4>
+                          <span className={getStatusPillClass(integration.status)}>
+                            {String(integration.status || 'unknown').toUpperCase()}
+                          </span>
+                        </div>
+                        <p className="agent-action-card__copy">{integration.message}</p>
+                        <p className="agent-action-card__meta">Latency: {formatLatencyLabel(integration.latencyMs)}</p>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              </details>
+
+              <details className="agent-disclosure">
+                <summary className="agent-disclosure__summary">
+                  <span>Guardrails</span>
+                  <span className="pill">{opsAgentGuardrails.length}</span>
+                </summary>
+                <div className="agent-disclosure__body">
+                  <div className="agent-console__chips">
+                    {Object.entries(opsAgentCapabilities)
+                      .filter(([, enabled]) => enabled === true)
+                      .map(([key]) => (
+                        <span className="pill pill--success" key={`capability-${key}`}>
+                          {key.replace(/([A-Z])/g, ' $1').replace(/^./, (value) => value.toUpperCase())}
+                        </span>
+                      ))}
+                  </div>
+                  {opsAgentGuardrails.length > 0 ? (
+                    <div className="agent-guardrail-list">
+                      {opsAgentGuardrails.map((guardrail, index) => (
+                        <div className="agent-guardrail-item" key={`guardrail-${index}`}>
+                          {guardrail}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="file-help">No guardrail details are available.</p>
+                  )}
+                </div>
+              </details>
+
+              <details className="agent-disclosure">
+                <summary className="agent-disclosure__summary">
+                  <span>Recent Agent Activity</span>
+                  <span className="pill">{opsAgentHistory.length}</span>
+                </summary>
+                <div className="agent-disclosure__body">
+                  {opsAgentHistory.length > 0 ? (
+                    <div className="agent-activity-list">
+                      {opsAgentHistory.map((item) => (
+                        <article className="agent-activity-item" key={item.id}>
+                          <div className="agent-activity-item__head">
+                            <h4>{item.title}</h4>
+                            <span className={item.type === 'system_ops_error' ? 'pill pill--danger' : item.type === 'system_ops_success' ? 'pill pill--success' : 'pill pill--info'}>
+                              {item.type === 'system_ops_error'
+                                ? 'FAILED'
+                                : item.type === 'system_ops_success'
+                                  ? 'SUCCESS'
+                                  : 'LOGGED'}
+                            </span>
+                          </div>
+                          {item.content ? <p className="agent-action-card__copy">{item.content}</p> : null}
+                          <p className="agent-action-card__meta">
+                            {item.userEmail || 'System'} • {formatAgentTimestamp(item.createdAt)} • {String(item.action || '').replace(/_/g, ' ')}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="file-help">No AI agent activity has been recorded yet.</p>
+                  )}
+                </div>
+              </details>
+            </div>
+          ) : null}
         </div>
       </section>
 
