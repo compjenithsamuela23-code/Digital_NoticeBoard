@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { SocketProvider } from './contexts/SocketContext';
 import RouteLoader from './components/RouteLoader';
+import RouteErrorBoundary from './components/RouteErrorBoundary';
 import { hasAdminSession } from './config/auth';
 import { hasDisplaySession } from './config/displayAuth';
 import { hasStaffSession } from './config/staffAuth';
@@ -47,61 +48,63 @@ function App() {
   return (
     <SocketProvider>
       <Router>
-        <Routes>
-          <Route
-            path="/display/login"
-            element={withRouteSuspense(<DisplayLogin />, 'Loading display access...')}
-          />
-          <Route
-            path="/"
-            element={
-              <ProtectedDisplayRoute>
-                {withRouteSuspense(<DisplayBoard />, 'Loading notice display...')}
-              </ProtectedDisplayRoute>
-            }
-          />
-          <Route
-            path="/admin/login"
-            element={withRouteSuspense(<AdminLogin />, 'Loading admin login...')}
-          />
-          <Route
-            path="/staff/login"
-            element={withRouteSuspense(<StaffLogin />, 'Loading staff login...')}
-          />
-          <Route
-            path="/admin"
-            element={
-              <ProtectedAdminRoute>
-                {withRouteSuspense(<AdminPanel workspaceRole="admin" />, 'Loading admin workspace...')}
-              </ProtectedAdminRoute>
-            }
-          />
-          <Route
-            path="/staff"
-            element={
-              <ProtectedStaffRoute>
-                {withRouteSuspense(<AdminPanel workspaceRole="staff" />, 'Loading staff workspace...')}
-              </ProtectedStaffRoute>
-            }
-          />
-          <Route
-            path="/admin/history"
-            element={
-              <ProtectedAdminRoute>
-                {withRouteSuspense(<AdminHistory workspaceRole="admin" />, 'Loading history...')}
-              </ProtectedAdminRoute>
-            }
-          />
-          <Route
-            path="/staff/history"
-            element={
-              <ProtectedStaffRoute>
-                {withRouteSuspense(<AdminHistory workspaceRole="staff" />, 'Loading history...')}
-              </ProtectedStaffRoute>
-            }
-          />
-          <Route path="*" element={<Navigate to="/display/login" />} />
-        </Routes>
+        <RouteErrorBoundary>
+          <Routes>
+            <Route
+              path="/display/login"
+              element={withRouteSuspense(<DisplayLogin />, 'Loading display access...')}
+            />
+            <Route
+              path="/"
+              element={
+                <ProtectedDisplayRoute>
+                  {withRouteSuspense(<DisplayBoard />, 'Loading notice display...')}
+                </ProtectedDisplayRoute>
+              }
+            />
+            <Route
+              path="/admin/login"
+              element={withRouteSuspense(<AdminLogin />, 'Loading admin login...')}
+            />
+            <Route
+              path="/staff/login"
+              element={withRouteSuspense(<StaffLogin />, 'Loading staff login...')}
+            />
+            <Route
+              path="/admin"
+              element={
+                <ProtectedAdminRoute>
+                  {withRouteSuspense(<AdminPanel workspaceRole="admin" />, 'Loading admin workspace...')}
+                </ProtectedAdminRoute>
+              }
+            />
+            <Route
+              path="/staff"
+              element={
+                <ProtectedStaffRoute>
+                  {withRouteSuspense(<AdminPanel workspaceRole="staff" />, 'Loading staff workspace...')}
+                </ProtectedStaffRoute>
+              }
+            />
+            <Route
+              path="/admin/history"
+              element={
+                <ProtectedAdminRoute>
+                  {withRouteSuspense(<AdminHistory workspaceRole="admin" />, 'Loading history...')}
+                </ProtectedAdminRoute>
+              }
+            />
+            <Route
+              path="/staff/history"
+              element={
+                <ProtectedStaffRoute>
+                  {withRouteSuspense(<AdminHistory workspaceRole="staff" />, 'Loading history...')}
+                </ProtectedStaffRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to="/display/login" />} />
+          </Routes>
+        </RouteErrorBoundary>
       </Router>
     </SocketProvider>
   );

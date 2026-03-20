@@ -1967,6 +1967,56 @@ textarea {
   color: var(--text-soft);
 }
 
+.route-error {
+  padding: 28px;
+}
+
+.route-error__shell {
+  width: min(680px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  box-shadow: var(--shadow-lg);
+  padding: clamp(24px, 4vw, 38px);
+  display: grid;
+  gap: 16px;
+}
+
+.route-error__eyebrow {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.route-error__shell h1 {
+  font-size: clamp(1.5rem, 3vw, 2.3rem);
+  line-height: 1.12;
+}
+
+.route-error__message {
+  color: var(--text-soft);
+  line-height: 1.65;
+}
+
+.route-error__details {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--empty-bg);
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  word-break: break-word;
+}
+
+.route-error__actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .auth-shell {
   width: min(560px, 100%);
   display: grid;
