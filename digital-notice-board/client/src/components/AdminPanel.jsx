@@ -2883,7 +2883,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 <div className="upload-dropzone__copy">
                   <p className="upload-dropzone__title">Drag and drop image files here</p>
                   <p className="upload-dropzone__hint">
-                    JPG, PNG, WEBP, HEIC and other image formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file.
+                    JPG, PNG, WEBP, HEIC and other image formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file
+                    when storage plan allows it.
                   </p>
                 </div>
                 <div className="upload-dropzone__actions">
@@ -2934,7 +2935,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 <div className="upload-dropzone__copy">
                   <p className="upload-dropzone__title">Drag and drop video files here</p>
                   <p className="upload-dropzone__hint">
-                    MP4, MOV, WEBM, MKV and other video formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file.
+                    MP4, MOV, WEBM, MKV and other video formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file
+                    when storage plan allows it.
                   </p>
                 </div>
                 <div className="upload-dropzone__actions">
@@ -2994,7 +2996,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 <div className="upload-dropzone__copy">
                   <p className="upload-dropzone__title">Drag and drop document files here</p>
                   <p className="upload-dropzone__hint">
-                    PDF, Word, PowerPoint, Excel and archive files. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file.
+                    PDF, Word, PowerPoint, Excel and archive files. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file
+                    when storage plan allows it.
                   </p>
                 </div>
                 <div className="upload-dropzone__actions">

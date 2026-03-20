@@ -97,6 +97,7 @@ let runtimeInitPromise = null;
 let maintenanceIntervalHandle = null;
 let opsAgentIntervalHandle = null;
 let storageBucketReadyPromise = null;
+let runtimeDirectUploadMaxSizeBytes = 150 * 1024 * 1024;
 let runtimeMaintenanceChecksCompleted = 0;
 const opsAgentRuntimeState = {
   startedAt: new Date().toISOString(),
@@ -171,9 +172,10 @@ const IS_SERVERLESS_RUNTIME = IS_VERCEL || String(process.env.SERVERLESS || '').
 const SUPABASE_STORAGE_BUCKET =
   String(process.env.SUPABASE_STORAGE_BUCKET || 'notice-board-uploads').trim() || 'notice-board-uploads';
 const SUPABASE_STORAGE_PUBLIC_URL_MARKER = `/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/`;
-const DIRECT_UPLOAD_MAX_SIZE_BYTES = 150 * 1024 * 1024;
-const DIRECT_UPLOAD_MAX_SIZE_MB = Math.floor(DIRECT_UPLOAD_MAX_SIZE_BYTES / (1024 * 1024));
-const LOCAL_MAX_UPLOAD_SIZE_BYTES = DIRECT_UPLOAD_MAX_SIZE_BYTES;
+const DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES = 150 * 1024 * 1024;
+const DESIRED_DIRECT_UPLOAD_MAX_SIZE_MB = Math.floor(DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES / (1024 * 1024));
+const SUPABASE_FREE_PLAN_FALLBACK_MAX_SIZE_BYTES = 50 * 1024 * 1024;
+const LOCAL_MAX_UPLOAD_SIZE_BYTES = DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES;
 const SERVERLESS_MAX_UPLOAD_SIZE_BYTES = 4 * 1024 * 1024;
 const MAX_UPLOAD_SIZE_BYTES = IS_SERVERLESS_RUNTIME
   ? SERVERLESS_MAX_UPLOAD_SIZE_BYTES
@@ -836,6 +838,32 @@ async function waitForStorageAttachmentAvailability(
   return false;
 }
 
+function getDirectUploadMaxSizeBytes() {
+  return runtimeDirectUploadMaxSizeBytes;
+}
+
+function getDirectUploadMaxSizeMb() {
+  return Math.floor(getDirectUploadMaxSizeBytes() / (1024 * 1024));
+}
+
+function setDirectUploadMaxSizeBytes(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return;
+  }
+  runtimeDirectUploadMaxSizeBytes = parsed;
+}
+
+function getStorageBucketFileLimitBytes(bucket) {
+  const parsed = Number.parseInt(bucket?.fileSizeLimit ?? bucket?.file_size_limit, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isStorageLimitConstraintError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('maximum allowed size') || message.includes('file size limit');
+}
+
 async function ensureStorageBucketReady() {
   if (storageBucketReadyPromise) {
     return storageBucketReadyPromise;
@@ -848,26 +876,36 @@ async function ensureStorageBucketReady() {
     }
 
     const existingBucket = (buckets || []).find((bucket) => bucket && bucket.name === SUPABASE_STORAGE_BUCKET);
-    const existingFileLimitBytes = Number.parseInt(
-      existingBucket?.fileSizeLimit ?? existingBucket?.file_size_limit,
-      10
-    );
+    const existingFileLimitBytes = getStorageBucketFileLimitBytes(existingBucket);
+    const fallbackLimitBytes = existingFileLimitBytes || SUPABASE_FREE_PLAN_FALLBACK_MAX_SIZE_BYTES;
     const shouldUpdateBucket =
       Boolean(existingBucket) &&
       (existingBucket.public !== true ||
         !Number.isFinite(existingFileLimitBytes) ||
-        existingFileLimitBytes < DIRECT_UPLOAD_MAX_SIZE_BYTES);
+        existingFileLimitBytes < DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES);
 
     if (shouldUpdateBucket) {
       const { error: updateError } = await supabase.storage.updateBucket(SUPABASE_STORAGE_BUCKET, {
         public: true,
-        fileSizeLimit: DIRECT_UPLOAD_MAX_SIZE_BYTES
+        fileSizeLimit: DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES
       });
       if (updateError) {
-        throw new Error(
-          `Error updating Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}": ${updateError.message}`
+        if (!isStorageLimitConstraintError(updateError)) {
+          throw new Error(
+            `Error updating Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}": ${updateError.message}`
+          );
+        }
+
+        setDirectUploadMaxSizeBytes(fallbackLimitBytes);
+        console.warn(
+          `Supabase bucket "${SUPABASE_STORAGE_BUCKET}" could not be raised to ${DESIRED_DIRECT_UPLOAD_MAX_SIZE_MB}MB. ` +
+            `Keeping the live limit at ${getDirectUploadMaxSizeMb()}MB for this project.`
         );
+      } else {
+        setDirectUploadMaxSizeBytes(DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES);
       }
+    } else {
+      setDirectUploadMaxSizeBytes(DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES);
     }
 
     const hasBucket = Boolean(existingBucket);
@@ -877,19 +915,42 @@ async function ensureStorageBucketReady() {
 
     const { error: createError } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
       public: true,
-      fileSizeLimit: DIRECT_UPLOAD_MAX_SIZE_BYTES
+      fileSizeLimit: DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES
     });
 
     if (createError) {
       const message = String(createError.message || '').toLowerCase();
-      if (!message.includes('already exists')) {
+      if (!message.includes('already exists') && !isStorageLimitConstraintError(createError)) {
         throw new Error(
           `Error creating Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}": ${createError.message}`
         );
       }
+
+      if (isStorageLimitConstraintError(createError)) {
+        const { error: fallbackCreateError } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
+          public: true
+        });
+        const fallbackMessage = String(fallbackCreateError?.message || '').toLowerCase();
+        if (fallbackCreateError && !fallbackMessage.includes('already exists')) {
+          throw new Error(
+            `Error creating Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}": ${fallbackCreateError.message}`
+          );
+        }
+        setDirectUploadMaxSizeBytes(SUPABASE_FREE_PLAN_FALLBACK_MAX_SIZE_BYTES);
+        console.warn(
+          `Supabase bucket "${SUPABASE_STORAGE_BUCKET}" was created with the project storage limit. ` +
+            `Direct uploads are capped at ${getDirectUploadMaxSizeMb()}MB until the global storage limit is increased.`
+        );
+      } else {
+        setDirectUploadMaxSizeBytes(DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES);
+      }
+    } else {
+      setDirectUploadMaxSizeBytes(DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES);
     }
 
-    console.log(`✅ Supabase storage bucket ready: ${SUPABASE_STORAGE_BUCKET}`);
+    console.log(
+      `✅ Supabase storage bucket ready: ${SUPABASE_STORAGE_BUCKET} (direct upload limit ${getDirectUploadMaxSizeMb()}MB)`
+    );
   })().catch((error) => {
     storageBucketReadyPromise = null;
     throw error;
@@ -2809,9 +2870,11 @@ app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, r
       return res.status(400).json({ error: 'fileSizeBytes is required.' });
     }
 
-    if (fileSizeBytes > DIRECT_UPLOAD_MAX_SIZE_BYTES) {
+    const directUploadMaxSizeBytes = getDirectUploadMaxSizeBytes();
+    const directUploadMaxSizeMb = getDirectUploadMaxSizeMb();
+    if (fileSizeBytes > directUploadMaxSizeBytes) {
       return res.status(413).json({
-        error: `File exceeds ${DIRECT_UPLOAD_MAX_SIZE_MB}MB upload limit for direct storage upload.`
+        error: `File exceeds ${directUploadMaxSizeMb}MB upload limit for direct storage upload.`
       });
     }
 
@@ -2835,8 +2898,10 @@ app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, r
       fileName,
       mimeType,
       fileSizeBytes,
-      maxFileSizeBytes: DIRECT_UPLOAD_MAX_SIZE_BYTES,
-      maxFileSizeMb: DIRECT_UPLOAD_MAX_SIZE_MB
+      maxFileSizeBytes: directUploadMaxSizeBytes,
+      maxFileSizeMb: directUploadMaxSizeMb,
+      targetMaxFileSizeBytes: DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES,
+      targetMaxFileSizeMb: DESIRED_DIRECT_UPLOAD_MAX_SIZE_MB
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
