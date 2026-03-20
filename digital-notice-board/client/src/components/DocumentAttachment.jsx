@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { assetUrl } from '../config/api';
 import * as mammoth from 'mammoth/mammoth.browser';
 import * as XLSX from 'xlsx';
@@ -73,10 +73,10 @@ const SHEET_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 ]);
 const PRESENTATION_MIME_TYPES = new Set([
-  'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'application/vnd.openxmlformats-officedocument.presentationml.slideshow'
 ]);
+const LEGACY_PRESENTATION_MIME_TYPES = new Set(['application/vnd.ms-powerpoint']);
 const ODF_MIME_TYPES = new Set([
   'application/vnd.oasis.opendocument.text',
   'application/vnd.oasis.opendocument.spreadsheet',
@@ -95,6 +95,9 @@ const MAX_SLIDESHOW_PARSE_BYTES = 50 * 1024 * 1024;
 const TEXT_SLIDE_MAX_CHARS = 2600;
 const TEXT_SLIDE_MAX_LINES = 26;
 const DEFAULT_SLIDESHOW_INTERVAL_MS = 6000;
+const DEFAULT_PRESENTATION_BASE_WIDTH = 960;
+const DEFAULT_PRESENTATION_BASE_HEIGHT = 540;
+let pptxRendererPromise = null;
 
 function getExtension(value) {
   const file = String(value || '').split('/').pop() || '';
@@ -233,6 +236,56 @@ function extractPptxOrderNumber(pathname) {
   return match ? Number.parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
 }
 
+async function getPptxToHtmlRenderer() {
+  if (!pptxRendererPromise) {
+    pptxRendererPromise = import('@jvmr/pptx-to-html').then((module) => {
+      if (typeof module.pptxToHtml !== 'function') {
+        throw new Error('Presentation renderer is unavailable.');
+      }
+      return module.pptxToHtml;
+    });
+  }
+
+  return pptxRendererPromise;
+}
+
+function extractPresentationViewportFromHtml(slideHtml) {
+  const match = String(slideHtml || '').match(
+    /<div class="(?:slide-container|slide)"[^>]*style="[^"]*width:\s*([0-9.]+)px;[^"]*height:\s*([0-9.]+)px;/i
+  );
+  const width = Number.parseFloat(match?.[1] || '');
+  const height = Number.parseFloat(match?.[2] || '');
+
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : DEFAULT_PRESENTATION_BASE_WIDTH,
+    height: Number.isFinite(height) && height > 0 ? height : DEFAULT_PRESENTATION_BASE_HEIGHT
+  };
+}
+
+async function renderPptxSlides(arrayBuffer) {
+  const pptxToHtml = await getPptxToHtmlRenderer();
+  const htmlSlides = await pptxToHtml(arrayBuffer);
+
+  return (Array.isArray(htmlSlides) ? htmlSlides : [])
+    .map((html, index) => {
+      const normalizedHtml = String(html || '').trim();
+      if (!normalizedHtml) {
+        return null;
+      }
+
+      const viewport = extractPresentationViewportFromHtml(normalizedHtml);
+      return {
+        id: `presentation-${index + 1}`,
+        type: 'presentation-html',
+        html: normalizedHtml,
+        baseWidth: viewport.width,
+        baseHeight: viewport.height,
+        label: `Slide ${index + 1}`
+      };
+    })
+    .filter(Boolean);
+}
+
 async function extractPptxSlides(arrayBuffer) {
   const zip = await JSZip.loadAsync(arrayBuffer);
   const slidePaths = Object.keys(zip.files)
@@ -369,6 +422,84 @@ function normalizeSlideshowInterval(value) {
   return Math.max(1500, Math.min(parsed, 30000));
 }
 
+const PresentationHtmlSlide = ({ slide, title }) => {
+  const containerRef = useRef(null);
+  const [bounds, setBounds] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return undefined;
+
+    const updateBounds = () => {
+      const rect = element.getBoundingClientRect();
+      setBounds((previous) => {
+        const next = {
+          width: Math.max(0, Math.round(rect.width)),
+          height: Math.max(0, Math.round(rect.height))
+        };
+        if (previous.width === next.width && previous.height === next.height) {
+          return previous;
+        }
+        return next;
+      });
+    };
+
+    updateBounds();
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver === 'function') {
+      resizeObserver = new ResizeObserver(() => {
+        updateBounds();
+      });
+      resizeObserver.observe(element);
+    }
+
+    window.addEventListener('resize', updateBounds);
+    return () => {
+      window.removeEventListener('resize', updateBounds);
+      resizeObserver?.disconnect();
+    };
+  }, []);
+
+  const baseWidth = Math.max(
+    1,
+    Number.parseFloat(slide?.baseWidth) || DEFAULT_PRESENTATION_BASE_WIDTH
+  );
+  const baseHeight = Math.max(
+    1,
+    Number.parseFloat(slide?.baseHeight) || DEFAULT_PRESENTATION_BASE_HEIGHT
+  );
+
+  const availableWidth = bounds.width || baseWidth;
+  const availableHeight = bounds.height || baseHeight;
+  const scale = Math.min(availableWidth / baseWidth, availableHeight / baseHeight);
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const scaledWidth = baseWidth * safeScale;
+  const scaledHeight = baseHeight * safeScale;
+  const offsetX = Math.max(0, (availableWidth - scaledWidth) / 2);
+  const offsetY = Math.max(0, (availableHeight - scaledHeight) / 2);
+
+  return (
+    <div
+      className="document-preview__rendered-slide"
+      ref={containerRef}
+      style={{ aspectRatio: `${baseWidth} / ${baseHeight}` }}
+      role="img"
+      aria-label={`${title} - ${slide?.label || 'Slide preview'}`}
+    >
+      <div
+        className="document-preview__rendered-slide-stage"
+        style={{
+          width: `${baseWidth}px`,
+          height: `${baseHeight}px`,
+          transform: `translate(${offsetX}px, ${offsetY}px) scale(${safeScale})`
+        }}
+        dangerouslySetInnerHTML={{ __html: slide?.html || '' }}
+      />
+    </div>
+  );
+};
+
 const DocumentAttachment = ({
   filePath,
   fileUrl,
@@ -428,9 +559,6 @@ const DocumentAttachment = ({
   const previewMode = useMemo(() => {
     if (!preview) return 'none';
     if (extension === 'pdf' || PDF_MIME_TYPES.has(normalizedMimeType)) return 'pdf';
-    if (OFFICE_ONLINE_PREVIEW_EXTENSIONS.has(extension) && isPublicHttpUrl(sourceUrl)) {
-      return 'office-online';
-    }
     if (TEXT_PREVIEW_EXTENSIONS.has(extension) || isLikelyTextMime(normalizedMimeType)) return 'text';
     if (WORD_PREVIEW_EXTENSIONS.has(extension) || WORD_MIME_TYPES.has(normalizedMimeType)) return 'word';
     if (SHEET_PREVIEW_EXTENSIONS.has(extension) || SHEET_MIME_TYPES.has(normalizedMimeType)) return 'sheet';
@@ -439,8 +567,18 @@ const DocumentAttachment = ({
     }
     if (ODF_PREVIEW_EXTENSIONS.has(extension) || ODF_MIME_TYPES.has(normalizedMimeType)) return 'odf';
     if (ZIP_PREVIEW_EXTENSIONS.has(extension) || ZIP_MIME_TYPES.has(normalizedMimeType)) return 'zip';
-    if (LEGACY_OFFICE_PREVIEW_EXTENSIONS.has(extension) && isPublicHttpUrl(sourceUrl)) return 'office-online';
-    if (LEGACY_OFFICE_PREVIEW_EXTENSIONS.has(extension) || ARCHIVE_BINARY_EXTENSIONS.has(extension)) {
+    if (
+      (OFFICE_ONLINE_PREVIEW_EXTENSIONS.has(extension) ||
+        LEGACY_PRESENTATION_MIME_TYPES.has(normalizedMimeType)) &&
+      isPublicHttpUrl(sourceUrl)
+    ) {
+      return 'office-online';
+    }
+    if (
+      LEGACY_OFFICE_PREVIEW_EXTENSIONS.has(extension) ||
+      ARCHIVE_BINARY_EXTENSIONS.has(extension) ||
+      LEGACY_PRESENTATION_MIME_TYPES.has(normalizedMimeType)
+    ) {
       return 'binary-text';
     }
     return 'binary-text';
@@ -676,11 +814,24 @@ const DocumentAttachment = ({
         }
 
         if (previewMode === 'presentation') {
+          let renderedPresentationSlides = [];
+          try {
+            renderedPresentationSlides = await renderPptxSlides(arrayBuffer);
+          } catch {
+            renderedPresentationSlides = [];
+          }
+
+          if (!active) return;
+          if (renderedPresentationSlides.length > 0) {
+            setSlides(renderedPresentationSlides);
+            return;
+          }
+
           const presentationSlides = await extractPptxSlides(arrayBuffer);
           if (!active) return;
           if (presentationSlides.length === 0) {
             setTextError('No readable slide text found in this presentation.');
-          } else if (isSlideshowEnabled) {
+          } else {
             setSlides(
               presentationSlides.map((text, index) => ({
                 id: `presentation-${index + 1}`,
@@ -689,12 +840,6 @@ const DocumentAttachment = ({
                 label: `Slide ${index + 1}`
               }))
             );
-          } else {
-            const formatted = presentationSlides
-              .slice(0, 200)
-              .map((text, index) => `Slide ${index + 1}\n${text}`)
-              .join('\n\n');
-            setTextContent(truncateText(formatted));
           }
           return;
         }
@@ -773,25 +918,30 @@ const DocumentAttachment = ({
               }
 
               if (hasPptxLayout) {
+                let renderedPresentationSlides = [];
+                try {
+                  renderedPresentationSlides = await renderPptxSlides(arrayBuffer);
+                } catch {
+                  renderedPresentationSlides = [];
+                }
+
+                if (!active) return;
+                if (renderedPresentationSlides.length > 0) {
+                  setSlides(renderedPresentationSlides);
+                  return;
+                }
+
                 const presentationSlides = await extractPptxSlides(arrayBuffer);
                 if (!active) return;
                 if (presentationSlides.length > 0) {
-                  if (isSlideshowEnabled) {
-                    setSlides(
-                      presentationSlides.map((text, index) => ({
-                        id: `presentation-${index + 1}`,
-                        type: 'text',
-                        content: text,
-                        label: `Slide ${index + 1}`
-                      }))
-                    );
-                  } else {
-                    const formatted = presentationSlides
-                      .slice(0, 200)
-                      .map((text, index) => `Slide ${index + 1}\n${text}`)
-                      .join('\n\n');
-                    setTextContent(truncateText(formatted));
-                  }
+                  setSlides(
+                    presentationSlides.map((text, index) => ({
+                      id: `presentation-${index + 1}`,
+                      type: 'text',
+                      content: text,
+                      label: `Slide ${index + 1}`
+                    }))
+                  );
                   return;
                 }
               }
@@ -881,11 +1031,12 @@ const DocumentAttachment = ({
 
   if (!sourceUrl) return null;
 
-  const hasSlides = isSlideshowEnabled && slides.length > 0;
-  const clampedSlideIndex = hasSlides ? Math.min(activeSlideIndex, slides.length - 1) : 0;
-  const activeSlide = hasSlides ? slides[clampedSlideIndex] : null;
+  const hasPresentationDeck = previewMode === 'presentation' && slides.length > 0;
+  const hasSlideDeck = slides.length > 0 && (isSlideshowEnabled || hasPresentationDeck);
+  const clampedSlideIndex = hasSlideDeck ? Math.min(activeSlideIndex, slides.length - 1) : 0;
+  const activeSlide = hasSlideDeck ? slides[clampedSlideIndex] : null;
   const slideshowStatusLabel =
-    hasSlides && activeSlide
+    hasSlideDeck && activeSlide
       ? `${activeSlide.label || `Page ${clampedSlideIndex + 1}`} • ${clampedSlideIndex + 1} of ${slides.length}`
       : textLoading
         ? 'Preparing pages...'
@@ -894,7 +1045,7 @@ const DocumentAttachment = ({
           : 'Single page';
 
   const slideIndicatorIndexes = (() => {
-    if (!hasSlides) return [];
+    if (!hasSlideDeck) return [];
     if (slides.length <= 12) {
       return Array.from({ length: slides.length }, (_, index) => index);
     }
@@ -904,18 +1055,18 @@ const DocumentAttachment = ({
   })();
 
   const goToSlide = (index) => {
-    if (!hasSlides) return;
+    if (!hasSlideDeck) return;
     const target = Math.max(0, Math.min(Number.parseInt(index, 10) || 0, slides.length - 1));
     setActiveSlideIndex(target);
   };
 
   const goToNextSlide = () => {
-    if (!hasSlides || slides.length <= 1) return;
+    if (!hasSlideDeck || slides.length <= 1) return;
     setActiveSlideIndex((previous) => (previous + 1) % slides.length);
   };
 
   const goToPreviousSlide = () => {
-    if (!hasSlides || slides.length <= 1) return;
+    if (!hasSlideDeck || slides.length <= 1) return;
     setActiveSlideIndex((previous) => (previous - 1 + slides.length) % slides.length);
   };
 
@@ -946,15 +1097,19 @@ const DocumentAttachment = ({
       );
     }
 
+    if (slide.type === 'presentation-html') {
+      return <PresentationHtmlSlide slide={slide} title={title} />;
+    }
+
     return <pre className="document-preview__text document-preview__text--slide">{slide.content || ''}</pre>;
   };
 
   const showTextPreview =
     (previewMode === 'text' ||
-      previewMode === 'presentation' ||
       previewMode === 'odf' ||
       previewMode === 'zip' ||
-      previewMode === 'binary-text') &&
+      previewMode === 'binary-text' ||
+      (previewMode === 'presentation' && slides.length === 0)) &&
     !isSlideshowEnabled &&
     (textLoading || Boolean(textError) || Boolean(textContent));
 
@@ -964,13 +1119,13 @@ const DocumentAttachment = ({
         <div className="document-preview__header">
           <p className="document-preview__name">{resolvedName}</p>
           <p className="document-preview__meta">{metaLabel}</p>
-          {isSlideshowEnabled ? (
+          {isSlideshowEnabled || hasPresentationDeck ? (
             <p className="document-preview__meta document-preview__meta--slideshow">{slideshowStatusLabel}</p>
           ) : null}
         </div>
       ) : null}
 
-      {isSlideshowEnabled ? (
+      {isSlideshowEnabled || hasPresentationDeck ? (
         <div className="document-preview__slideshow">
           {textLoading && !activeSlide ? (
             <p className="document-preview__hint">Loading document pages...</p>
@@ -980,7 +1135,7 @@ const DocumentAttachment = ({
 
           {activeSlide ? renderSlideFrame(activeSlide) : null}
 
-          {hasSlides ? (
+          {hasSlideDeck ? (
             <div className="document-preview__slideshow-controls">
               <button
                 type="button"
@@ -990,14 +1145,16 @@ const DocumentAttachment = ({
               >
                 Prev
               </button>
-              <button
-                type="button"
-                className="btn btn--ghost btn--tiny"
-                onClick={() => setIsAutoplayActive((value) => !value)}
-                disabled={slides.length <= 1}
-              >
-                {isAutoplayActive ? 'Pause' : 'Play'}
-              </button>
+              {isSlideshowEnabled ? (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--tiny"
+                  onClick={() => setIsAutoplayActive((value) => !value)}
+                  disabled={slides.length <= 1}
+                >
+                  {isAutoplayActive ? 'Pause' : 'Play'}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn btn--ghost btn--tiny"

@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@jvmr/pptx-to-html": "^1.0.1",
     "axios": "^1.13.6",
     "framer-motion": "^12.31.0",
     "jszip": "^3.10.1",
