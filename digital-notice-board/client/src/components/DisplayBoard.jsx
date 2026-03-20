@@ -202,13 +202,6 @@ const buildAnnouncementTextSlides = (title, content) => {
   }));
 };
 
-const getStageMediaKindLabel = (value) => {
-  if (value === 'image') return 'Image';
-  if (value === 'video') return 'Video';
-  if (value === 'document') return 'Document';
-  return 'Media';
-};
-
 const safeUrl = (value) => {
   try {
     return new URL(String(value || '').trim());
@@ -419,9 +412,11 @@ const DisplayBoard = () => {
   const [requestError, setRequestError] = useState('');
   const [documentSlideCount, setDocumentSlideCount] = useState(1);
   const [documentSlideIndex, setDocumentSlideIndex] = useState(1);
+  const [currentAnnouncementTextPage, setCurrentAnnouncementTextPage] = useState(0);
   const [liveReconnectToken, setLiveReconnectToken] = useState(0);
   const [takeoverQueue, setTakeoverQueue] = useState([]);
   const previousDocumentSlideIndexRef = useRef(1);
+  const documentCycleCountRef = useRef(0);
   const takeoverResumeSlideIdRef = useRef('');
   const knownTakeoverVersionsRef = useRef(new Map());
   const hasHydratedTakeoversRef = useRef(false);
@@ -823,10 +818,24 @@ const DisplayBoard = () => {
     [currentSlide]
   );
   const currentAnnouncementMediaGroupCount = currentAnnouncementMediaGroup.length;
+  const announcementMediaPageCount = Math.max(
+    1,
+    Math.ceil(currentAnnouncementMediaGroupCount / MAX_VISIBLE_SPLIT_ITEMS)
+  );
+  const activeAnnouncementMediaPage = Math.min(
+    currentMediaGroupPage,
+    Math.max(0, announcementMediaPageCount - 1)
+  );
+  const currentAnnouncementMediaGroupPageItems = useMemo(() => {
+    if (currentAnnouncementMediaGroupCount === 0) return [];
+    const startIndex = activeAnnouncementMediaPage * MAX_VISIBLE_SPLIT_ITEMS;
+    return currentAnnouncementMediaGroup.slice(startIndex, startIndex + MAX_VISIBLE_SPLIT_ITEMS);
+  }, [activeAnnouncementMediaPage, currentAnnouncementMediaGroup, currentAnnouncementMediaGroupCount]);
+
   const currentAnnouncementId = currentAnnouncement ? String(currentAnnouncement.id || '') : '';
-  const currentAnnouncementPrimaryMedia = currentAnnouncementMediaGroup[0] || currentAnnouncement || null;
-  const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncementPrimaryMedia);
-  const currentAnnouncementIsPresentation = isPresentationMedia(currentAnnouncementPrimaryMedia);
+  const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
+  const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
+  const currentAnnouncementIsPresentation = isPresentationMedia(currentAnnouncement);
   const currentAnnouncementHasAnyMedia = currentAnnouncementMediaGroupCount > 0;
   const currentAnnouncementTitle = String((currentAnnouncement && currentAnnouncement.title) || '').trim();
   const currentAnnouncementContent = String((currentAnnouncement && currentAnnouncement.content) || '').trim();
@@ -834,33 +843,40 @@ const DisplayBoard = () => {
     () => buildAnnouncementTextSlides(currentAnnouncementTitle, currentAnnouncementContent),
     [currentAnnouncementContent, currentAnnouncementTitle]
   );
+  const announcementTextPageCount = announcementTextSlides.length;
+  const activeAnnouncementTextPage = Math.min(
+    currentAnnouncementTextPage,
+    Math.max(0, announcementTextPageCount - 1)
+  );
+  const currentAnnouncementTextSlide =
+    announcementTextSlides[activeAnnouncementTextPage] || null;
   const currentAnnouncementHasText = Boolean(currentAnnouncementTitle || currentAnnouncementContent);
   const shouldShowEmergencyContent = currentAnnouncementHasText || !currentAnnouncementHasAnyMedia;
-  const emergencyMediaWidth = Number.parseInt(currentAnnouncementPrimaryMedia?.mediaWidth, 10);
-  const emergencyMediaHeight = Number.parseInt(currentAnnouncementPrimaryMedia?.mediaHeight, 10);
-  const hasEmergencyMediaDimensions =
-    Number.isFinite(emergencyMediaWidth) &&
-    emergencyMediaWidth > 0 &&
-    Number.isFinite(emergencyMediaHeight) &&
-    emergencyMediaHeight > 0;
-  const emergencyMediaAspectStyle = useMemo(() => {
+  const currentAnnouncementMediaWidth = Number.parseInt(currentAnnouncement && currentAnnouncement.mediaWidth, 10);
+  const currentAnnouncementMediaHeight = Number.parseInt(currentAnnouncement && currentAnnouncement.mediaHeight, 10);
+  const hasMediaDimensions =
+    Number.isFinite(currentAnnouncementMediaWidth) &&
+    currentAnnouncementMediaWidth > 0 &&
+    Number.isFinite(currentAnnouncementMediaHeight) &&
+    currentAnnouncementMediaHeight > 0;
+  const mediaAspectStyle = useMemo(() => {
     if (!currentAnnouncementHasAnyMedia) {
       return undefined;
     }
     if (!currentAnnouncementHasDocument) {
       return undefined;
     }
-    if (hasEmergencyMediaDimensions) {
-      return { aspectRatio: `${emergencyMediaWidth} / ${emergencyMediaHeight}` };
+    if (hasMediaDimensions) {
+      return { aspectRatio: `${currentAnnouncementMediaWidth} / ${currentAnnouncementMediaHeight}` };
     }
     return { aspectRatio: currentAnnouncementIsPresentation ? '16 / 9' : '16 / 10' };
   }, [
     currentAnnouncementHasAnyMedia,
     currentAnnouncementHasDocument,
     currentAnnouncementIsPresentation,
-    emergencyMediaHeight,
-    emergencyMediaWidth,
-    hasEmergencyMediaDimensions
+    currentAnnouncementMediaHeight,
+    currentAnnouncementMediaWidth,
+    hasMediaDimensions
   ]);
   const globalLiveLinks = useMemo(() => {
     const sourceLinks =
@@ -880,92 +896,11 @@ const DisplayBoard = () => {
   const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
   const hasAnnouncementStreams = announcementLiveLinks.length > 0;
   const showLivePanel = isLiveOn || hasAnnouncementStreams;
-  const orderedAnnouncementStageMediaItems = useMemo(() => {
-    const imageItems = currentAnnouncementMediaGroup.filter((item) => isImageMedia(item));
-    const videoItems = currentAnnouncementMediaGroup.filter(
-      (item) => isVideoMedia(item) && !isImageMedia(item)
-    );
-    const documentItems = currentAnnouncementMediaGroup.filter(
-      (item) => isDocumentMedia(item) && !isImageMedia(item) && !isVideoMedia(item)
-    );
-
-    return [...imageItems, ...videoItems, ...documentItems];
-  }, [currentAnnouncementMediaGroup, isDocumentMedia, isImageMedia, isVideoMedia]);
-  const announcementStagePages = useMemo(() => {
-    const counters = {
-      image: 0,
-      video: 0,
-      document: 0
-    };
-    const mediaPages = orderedAnnouncementStageMediaItems.map((item) => {
-      let mediaKind = 'document';
-      if (isImageMedia(item)) {
-        mediaKind = 'image';
-      } else if (isVideoMedia(item)) {
-        mediaKind = 'video';
-      }
-
-      counters[mediaKind] += 1;
-      const count = counters[mediaKind];
-      return {
-        id: `stage-media-${item.id || `${mediaKind}-${count}`}`,
-        kind: 'media',
-        mediaKind,
-        stageLabel: `${getStageMediaKindLabel(mediaKind)} ${count}`,
-        mediaItem: item
-      };
-    });
-    const textPages = announcementTextSlides.map((slide, index) => ({
-      id: `stage-text-${slide.id || index + 1}`,
-      kind: 'text',
-      stageLabel: `Text ${index + 1}`,
-      textSlide: slide
-    }));
-
-    return [...mediaPages, ...textPages];
-  }, [announcementTextSlides, isImageMedia, isVideoMedia, orderedAnnouncementStageMediaItems]);
-  const announcementStagePageCount = announcementStagePages.length;
-  const activeAnnouncementStagePageIndex = Math.min(
-    currentMediaGroupPage,
-    Math.max(0, announcementStagePageCount - 1)
-  );
-  const currentAnnouncementStagePage =
-    announcementStagePages[activeAnnouncementStagePageIndex] || null;
-  const currentAnnouncementStageKind = currentAnnouncementStagePage?.kind || null;
-  const currentAnnouncementStageMediaItem = currentAnnouncementStagePage?.mediaItem || null;
-  const currentAnnouncementStageMediaKind = currentAnnouncementStagePage?.mediaKind || null;
-  const currentAnnouncementStageIsDocument = currentAnnouncementStageMediaKind === 'document';
-  const currentAnnouncementStageIsPresentation = isPresentationMedia(currentAnnouncementStageMediaItem);
-  const currentAnnouncementStageTextSlide = currentAnnouncementStagePage?.textSlide || null;
-  const currentAnnouncementStageTitle =
-    currentAnnouncementStageTextSlide?.title ||
-    String(currentAnnouncementStageMediaItem?.title || '').trim() ||
-    currentAnnouncementTitle ||
-    (currentAnnouncementStageIsPresentation ? 'Presentation' : 'Announcement');
-  const currentAnnouncementStageContent = currentAnnouncementStageTextSlide?.content || '';
-  const currentStageMediaWidth = Number.parseInt(currentAnnouncementStageMediaItem?.mediaWidth, 10);
-  const currentStageMediaHeight = Number.parseInt(currentAnnouncementStageMediaItem?.mediaHeight, 10);
-  const hasStageMediaDimensions =
-    Number.isFinite(currentStageMediaWidth) &&
-    currentStageMediaWidth > 0 &&
-    Number.isFinite(currentStageMediaHeight) &&
-    currentStageMediaHeight > 0;
-  const stageMediaAspectStyle = useMemo(() => {
-    if (!currentAnnouncementStageMediaItem || !currentAnnouncementStageIsDocument) {
-      return undefined;
-    }
-    if (hasStageMediaDimensions) {
-      return { aspectRatio: `${currentStageMediaWidth} / ${currentStageMediaHeight}` };
-    }
-    return { aspectRatio: currentAnnouncementStageIsPresentation ? '16 / 9' : '16 / 10' };
-  }, [
-    currentAnnouncementStageIsDocument,
-    currentAnnouncementStageIsPresentation,
-    currentAnnouncementStageMediaItem,
-    currentStageMediaHeight,
-    currentStageMediaWidth,
-    hasStageMediaDimensions
-  ]);
+  const shouldUsePresentationFocusLayout =
+    !showLivePanel &&
+    currentAnnouncementMediaGroupCount <= 1 &&
+    currentAnnouncementIsPresentation &&
+    !currentAnnouncementHasText;
   const activeLiveStreamEmbeds = useMemo(() => {
     const parentHost =
       typeof window !== 'undefined' && window.location && window.location.hostname
@@ -1004,9 +939,13 @@ const DisplayBoard = () => {
     if (!showLivePanel) return [];
     return liveSourceTiles;
   }, [liveSourceTiles, showLivePanel]);
-  const isSingleColumnLayout = true;
-  const activePanelPageCount = showLivePanel ? 1 : Math.max(1, announcementStagePageCount);
-  const activePanelPageIndex = showLivePanel ? 0 : activeAnnouncementStagePageIndex;
+  const showAnnouncementMediaPanel =
+    !showLivePanel && currentAnnouncementMediaGroupCount > 0 && !shouldUsePresentationFocusLayout;
+  const isAnnouncementMediaShownInLivePanel = false;
+  const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
+  const isSingleColumnLayout = !showSecondaryPanel;
+  const activePanelPageCount = showLivePanel ? 1 : announcementMediaPageCount;
+  const activePanelPageIndex = showLivePanel ? 0 : activeAnnouncementMediaPage;
 
   useEffect(() => {
     const maxPageIndex = Math.max(0, activePanelPageCount - 1);
@@ -1016,15 +955,39 @@ const DisplayBoard = () => {
     setCurrentMediaGroupPage(maxPageIndex);
   }, [activePanelPageCount, currentMediaGroupPage]);
 
+  const announcementMediaStatusLabel =
+    currentAnnouncementMediaGroupCount > 1
+      ? `Posted ${currentAnnouncementMediaGroupCount} attachments${
+          announcementMediaPageCount > 1
+            ? ` • Panel ${activeAnnouncementMediaPage + 1} of ${announcementMediaPageCount}`
+            : ''
+        }`
+      : currentAnnouncementHasVideo
+        ? 'Posted video'
+        : currentAnnouncementHasDocument
+          ? 'Posted document'
+          : 'Posted image';
   const liveTileCount = combinedLiveTiles.length;
   const liveSplitColumns = getSplitColumnCount(liveTileCount);
   const liveSplitRows = getSplitRowCount(liveTileCount, liveSplitColumns);
+  const mediaSplitColumns = getSplitColumnCount(currentAnnouncementMediaGroupPageItems.length);
+  const mediaSplitRows = getSplitRowCount(
+    currentAnnouncementMediaGroupPageItems.length,
+    mediaSplitColumns
+  );
   const liveGridStyle = useMemo(
     () => ({
       gridTemplateColumns: `repeat(${liveSplitColumns}, minmax(0, 1fr))`,
       gridTemplateRows: `repeat(${liveSplitRows}, minmax(0, 1fr))`
     }),
     [liveSplitColumns, liveSplitRows]
+  );
+  const mediaGridStyle = useMemo(
+    () => ({
+      gridTemplateColumns: `repeat(${mediaSplitColumns}, minmax(0, 1fr))`,
+      gridTemplateRows: `repeat(${mediaSplitRows}, minmax(0, 1fr))`
+    }),
+    [mediaSplitColumns, mediaSplitRows]
   );
   const liveStreamsStatusText = useMemo(() => {
     const visibleCount = liveSourceTiles.length;
@@ -1036,47 +999,30 @@ const DisplayBoard = () => {
     }
     return `${visibleCount} ${visibleCount === 1 ? 'stream' : 'streams'} live`;
   }, [activeLiveStreamEmbeds.length, hiddenLiveStreamCount, liveSourceTiles.length]);
-  const announcementStageHeading = currentAnnouncementStagePage
-    ? currentAnnouncementStagePage.kind === 'text'
-      ? 'Announcement Text'
-      : 'Announcement Preview'
-    : 'Current Announcement';
-  const announcementStageStatusText = useMemo(() => {
-    if (!currentAnnouncementStagePage) {
-      return 'No previewable content';
+  const showAnnouncementFallbackText =
+    currentAnnouncementHasAnyMedia && !currentAnnouncementHasText && !shouldUsePresentationFocusLayout;
+  const shouldShowTextSlideHero =
+    !showLivePanel && !currentAnnouncementHasAnyMedia && announcementTextPageCount > 0;
+  const shouldTreatTextSlidesAsPrimaryPages =
+    !showLivePanel && !showAnnouncementMediaPanel && announcementTextPageCount > 1;
+  const shouldUseAnnouncementStageLayout =
+    shouldUsePresentationFocusLayout || shouldShowTextSlideHero;
+  const announcementPanelTitle =
+    currentAnnouncementTextSlide?.title ||
+    currentAnnouncementTitle ||
+    (currentAnnouncementIsPresentation ? 'Presentation' : 'Notice Attachment');
+  const announcementPanelContent =
+    currentAnnouncementTextSlide?.content ||
+    currentAnnouncementContent ||
+    'Media has been posted without additional text content.';
+
+  useEffect(() => {
+    const maxPageIndex = Math.max(0, announcementTextPageCount - 1);
+    if (currentAnnouncementTextPage <= maxPageIndex) {
+      return;
     }
-
-    const positionLabel =
-      announcementStagePageCount > 1
-        ? `Page ${activeAnnouncementStagePageIndex + 1} of ${announcementStagePageCount}`
-        : 'Single stage';
-
-    if (currentAnnouncementStagePage.kind === 'text') {
-      return `${currentAnnouncementStagePage.stageLabel} • ${positionLabel}`;
-    }
-
-    return `${currentAnnouncementStagePage.stageLabel} • ${getStageMediaKindLabel(
-      currentAnnouncementStageMediaKind
-    )} preview • ${positionLabel}`;
-  }, [
-    activeAnnouncementStagePageIndex,
-    announcementStagePageCount,
-    currentAnnouncementStageMediaKind,
-    currentAnnouncementStagePage
-  ]);
-  const dotPagerItems = useMemo(() => {
-    if (!showLivePanel && activePanelPageCount > 1) {
-      return Array.from({ length: activePanelPageCount }, (_, index) => ({
-        id: `stage-page-${index + 1}`,
-        active: index === activePanelPageIndex
-      }));
-    }
-
-    return displaySlides.slice(0, 12).map((item, index) => ({
-      id: `${item.id}-${index}`,
-      active: index === activeSlideIndex
-    }));
-  }, [activePanelPageCount, activePanelPageIndex, activeSlideIndex, displaySlides, showLivePanel]);
+    setCurrentAnnouncementTextPage(maxPageIndex);
+  }, [announcementTextPageCount, currentAnnouncementTextPage]);
 
   const getAdjacentSlideId = useCallback(
     (baseSlideId, direction = 1) => {
@@ -1131,9 +1077,11 @@ const DisplayBoard = () => {
 
     const shouldPauseAnnouncementRotation =
       !showLivePanel &&
-      currentAnnouncementStageIsDocument &&
+      currentAnnouncementMediaGroupCount <= 1 &&
+      currentAnnouncementHasDocument &&
       documentSlideCount > 1;
-    if (shouldPauseAnnouncementRotation) {
+    const shouldPauseAnnouncementRotationForText = shouldTreatTextSlidesAsPrimaryPages;
+    if (shouldPauseAnnouncementRotation || shouldPauseAnnouncementRotationForText) {
       return;
     }
 
@@ -1153,10 +1101,12 @@ const DisplayBoard = () => {
   }, [
     activePanelPageCount,
     advanceScheduledSequence,
-    currentAnnouncementStageIsDocument,
+    currentAnnouncementHasDocument,
+    currentAnnouncementMediaGroupCount,
     displaySlides.length,
     documentSlideCount,
     isPlaying,
+    shouldTreatTextSlidesAsPrimaryPages,
     showLivePanel
   ]);
 
@@ -1173,14 +1123,46 @@ const DisplayBoard = () => {
     setCurrentMediaGroupPage(0);
     setDocumentSlideCount(1);
     setDocumentSlideIndex(1);
+    setCurrentAnnouncementTextPage(0);
     previousDocumentSlideIndexRef.current = 1;
+    documentCycleCountRef.current = 0;
   }, [currentAnnouncementId]);
+
+  useEffect(() => {
+    if (!isPlaying || announcementTextPageCount <= 1) {
+      return undefined;
+    }
+
+    const interval = setInterval(() => {
+      setCurrentAnnouncementTextPage((previous) => {
+        if (previous < announcementTextPageCount - 1) {
+          return previous + 1;
+        }
+
+        if (shouldTreatTextSlidesAsPrimaryPages && displaySlides.length > 1) {
+          advanceScheduledSequence(1);
+        }
+
+        return 0;
+      });
+    }, DISPLAY_ROTATION_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [
+    advanceScheduledSequence,
+    announcementTextPageCount,
+    displaySlides.length,
+    isPlaying,
+    shouldTreatTextSlidesAsPrimaryPages
+  ]);
 
   useEffect(() => {
     if (
       !isPlaying ||
       showLivePanel ||
-      !currentAnnouncementStageIsDocument ||
+      displaySlides.length <= 1 ||
+      currentAnnouncementMediaGroupCount > 1 ||
+      !currentAnnouncementHasDocument ||
       documentSlideCount <= 1
     ) {
       previousDocumentSlideIndexRef.current = documentSlideIndex;
@@ -1189,18 +1171,19 @@ const DisplayBoard = () => {
 
     const previousIndex = previousDocumentSlideIndexRef.current;
     if (previousIndex === documentSlideCount && documentSlideIndex === 1) {
-      if (activePanelPageCount > 1 && activePanelPageIndex < activePanelPageCount - 1) {
-        setCurrentMediaGroupPage((previous) => Math.min(previous + 1, activePanelPageCount - 1));
-      } else if (displaySlides.length > 1) {
+      documentCycleCountRef.current += 1;
+
+      // Let each document complete at least one full loop and restart from page 1.
+      if (documentCycleCountRef.current >= 2) {
         advanceScheduledSequence(1);
+        documentCycleCountRef.current = 0;
       }
     }
 
     previousDocumentSlideIndexRef.current = documentSlideIndex;
   }, [
-    activePanelPageCount,
-    activePanelPageIndex,
-    currentAnnouncementStageIsDocument,
+    currentAnnouncementMediaGroupCount,
+    currentAnnouncementHasDocument,
     displaySlides.length,
     documentSlideCount,
     documentSlideIndex,
@@ -1235,35 +1218,40 @@ const DisplayBoard = () => {
       }
       return `${announcementLabel} • Live always on (${liveSourceTiles.length} ${liveSourceTiles.length === 1 ? 'stream' : 'streams'})`;
     }
-    if (currentAnnouncementStageIsDocument && documentSlideCount > 1) {
-      const slideLabel = currentAnnouncementStageIsPresentation ? 'Slide' : 'Page';
-      const suffix = currentAnnouncementStageIsPresentation ? ' • Presentation loop active' : '';
-      return `${announcementLabel} • ${currentAnnouncementStagePage?.stageLabel || 'Document'} • ${slideLabel} ${
-        documentSlideIndex
-      } of ${documentSlideCount}${suffix}`;
+    if (shouldTreatTextSlidesAsPrimaryPages) {
+      return `${announcementLabel} • Text slide ${activeAnnouncementTextPage + 1} of ${announcementTextPageCount}`;
     }
-    if (currentAnnouncementStagePage) {
-      const stageSuffix =
-        activePanelPageCount > 1
-          ? ` • Page ${activePanelPageIndex + 1} of ${activePanelPageCount}`
-          : '';
-      return `${announcementLabel} • ${currentAnnouncementStagePage.stageLabel}${stageSuffix}`;
+    if (currentAnnouncementMediaGroupCount > 1) {
+      if (announcementMediaPageCount > 1) {
+        return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments) • Panel ${
+          activeAnnouncementMediaPage + 1
+        } of ${announcementMediaPageCount}`;
+      }
+      return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments)`;
+    }
+    if (!showLivePanel && currentAnnouncementHasDocument && documentSlideCount > 1) {
+      const slideLabel = currentAnnouncementIsPresentation ? 'Slide' : 'Page';
+      const suffix = currentAnnouncementIsPresentation ? ' • Presentation loop active' : '';
+      return `${announcementLabel} • ${slideLabel} ${documentSlideIndex} of ${documentSlideCount}${suffix}`;
     }
     return announcementLabel;
   }, [
     activeLiveStreamEmbeds.length,
-    activePanelPageCount,
-    activePanelPageIndex,
+    activeAnnouncementMediaPage,
+    activeAnnouncementTextPage,
     activeSlideIndex,
     activeTakeover,
-    currentAnnouncementStageIsDocument,
-    currentAnnouncementStageIsPresentation,
-    currentAnnouncementStagePage,
+    announcementMediaPageCount,
+    announcementTextPageCount,
+    currentAnnouncementMediaGroupCount,
+    currentAnnouncementHasDocument,
+    currentAnnouncementIsPresentation,
     displaySlides.length,
     documentSlideCount,
     documentSlideIndex,
     hiddenLiveStreamCount,
     liveSourceTiles.length,
+    shouldTreatTextSlidesAsPrimaryPages,
     showLivePanel
   ]);
   const rotationControlLabel = isPlaying ? 'Pause Auto-Rotate' : 'Resume Auto-Rotate';
@@ -1283,11 +1271,21 @@ const DisplayBoard = () => {
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages && activeAnnouncementTextPage < announcementTextPageCount - 1) {
+      setCurrentAnnouncementTextPage((previous) =>
+        Math.min(previous + 1, Math.max(0, announcementTextPageCount - 1))
+      );
+      return;
+    }
+
     if (activePanelPageCount > 1 && activePanelPageIndex < activePanelPageCount - 1) {
       setCurrentMediaGroupPage((previous) => Math.min(previous + 1, activePanelPageCount - 1));
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages) {
+      setCurrentAnnouncementTextPage(0);
+    }
     setCurrentMediaGroupPage(0);
     advanceScheduledSequence(1);
   };
@@ -1301,11 +1299,19 @@ const DisplayBoard = () => {
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages && activeAnnouncementTextPage > 0) {
+      setCurrentAnnouncementTextPage((previous) => Math.max(previous - 1, 0));
+      return;
+    }
+
     if (activePanelPageCount > 1 && activePanelPageIndex > 0) {
       setCurrentMediaGroupPage((previous) => Math.max(previous - 1, 0));
       return;
     }
 
+    if (shouldTreatTextSlidesAsPrimaryPages) {
+      setCurrentAnnouncementTextPage(Math.max(0, announcementTextPageCount - 1));
+    }
     setCurrentMediaGroupPage(0);
     advanceScheduledSequence(-1);
   };
@@ -1545,10 +1551,7 @@ const DisplayBoard = () => {
             >
               {currentAnnouncementHasAnyMedia ? (
                 <section className="emergency-override-main__media">
-                  <div
-                    className="announcement-media-frame announcement-media-frame--emergency"
-                    style={emergencyMediaAspectStyle}
-                  >
+                  <div className="announcement-media-frame announcement-media-frame--emergency" style={mediaAspectStyle}>
                     <AttachmentPreview
                       filePath={currentAnnouncement.image}
                       fileName={currentAnnouncement.fileName}
@@ -1684,89 +1687,217 @@ const DisplayBoard = () => {
             </section>
           ) : null}
 
-          {!showLivePanel ? (
-            <section className={`announcement-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`.trim()}>
+          {showAnnouncementMediaPanel ? (
+            <section className={`live-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
               <div className="panel-head">
-                <h2>{announcementStageHeading}</h2>
+                <h2>Announcement Media</h2>
                 <div className="inline-actions">
-                  <p className="topbar__subtitle">{announcementStageStatusText}</p>
-                  <span className="pill pill--info">Priority {currentAnnouncement.priority || 1}</span>
-                  {categoryLabel ? <span className="pill">{categoryLabel}</span> : null}
+                  <p className="topbar__subtitle">
+                    {announcementMediaStatusLabel}
+                  </p>
                 </div>
               </div>
-
-              {currentAnnouncementStageKind === 'text' ? (
-                <div className="announcement-body announcement-body--text-stage">
-                  <div className="announcement-text-stage">
-                    <div className="announcement-text-stage__chrome">
-                      <p className="announcement-kicker">
-                        {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
-                      </p>
-                      {announcementStagePageCount > 1 ? (
-                        <span className="pill">{currentAnnouncementStagePage?.stageLabel}</span>
-                      ) : null}
+              <div className="live-body">
+                <div
+                  className={`announcement-media-frame announcement-media-frame--panel ${
+                    currentAnnouncementMediaGroupCount > 1 ? 'announcement-media-frame--split' : ''
+                  }`.trim()}
+                  style={
+                    currentAnnouncementMediaGroupCount > 1
+                      ? { aspectRatio: 'auto' }
+                      : mediaAspectStyle
+                  }
+                >
+                  {currentAnnouncementMediaGroupCount > 1 ? (
+                    <div
+                      className="announcement-media-split-grid"
+                      style={mediaGridStyle}
+                    >
+                      {currentAnnouncementMediaGroupPageItems.map((item, index) => (
+                        <div className="announcement-media-split-grid__item" key={item.id || `split-${index}`}>
+                          <AttachmentPreview
+                            filePath={item.image}
+                            fileName={item.fileName}
+                            typeHint={item.fileMimeType || item.type}
+                            fileSizeBytes={item.fileSizeBytes}
+                            className="media-preview--full media-preview--display media-preview--display-panel media-preview--split-item"
+                            documentPreview
+                            documentHideHeader
+                            documentShowActions={false}
+                            documentSlideshow
+                            documentSlideshowAutoplay={isPlaying}
+                            documentSlideshowIntervalMs={6000}
+                            documentSlideshowShowControls={false}
+                            documentSlideshowShowDots={false}
+                            title={item.title || `Attachment ${index + 1}`}
+                            imageAlt={item.title || `Attachment ${index + 1}`}
+                            showActions={false}
+                          />
+                        </div>
+                      ))}
                     </div>
-                    <div className="announcement-text-stage__inner">
-                      <h3 className="announcement-title announcement-title--stage">
-                        {currentAnnouncementStageTitle || currentAnnouncementTitle || 'Announcement'}
-                      </h3>
-                      <p className="announcement-content announcement-content--stage">
-                        {currentAnnouncementStageContent || currentAnnouncementContent || 'No additional text content.'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : currentAnnouncementStageMediaItem ? (
-                <div className="announcement-body announcement-body--media-only">
-                  <div
-                    className="announcement-media-frame announcement-media-frame--fullscreen"
-                    style={stageMediaAspectStyle}
-                  >
+                  ) : (
                     <AttachmentPreview
-                      filePath={currentAnnouncementStageMediaItem.image}
-                      fileName={currentAnnouncementStageMediaItem.fileName}
-                      typeHint={
-                        currentAnnouncementStageMediaItem.fileMimeType || currentAnnouncementStageMediaItem.type
+                      filePath={
+                        currentAnnouncementMediaGroupPageItems[0]?.image ||
+                        currentAnnouncementMediaGroup[0]?.image ||
+                        currentAnnouncement.image
                       }
-                      fileSizeBytes={currentAnnouncementStageMediaItem.fileSizeBytes}
-                      className={`media-preview--full media-preview--display media-preview--display-fullscreen ${
-                        currentAnnouncementStageIsPresentation ? 'media-preview--presentation-stage' : ''
+                      fileName={
+                        currentAnnouncementMediaGroupPageItems[0]?.fileName ||
+                        currentAnnouncementMediaGroup[0]?.fileName ||
+                        currentAnnouncement.fileName
+                      }
+                      typeHint={
+                        currentAnnouncementMediaGroupPageItems[0]?.fileMimeType ||
+                        currentAnnouncementMediaGroupPageItems[0]?.type ||
+                        currentAnnouncementMediaGroup[0]?.fileMimeType ||
+                        currentAnnouncementMediaGroup[0]?.type ||
+                        currentAnnouncement.fileMimeType ||
+                        currentAnnouncement.type
+                      }
+                      fileSizeBytes={
+                        currentAnnouncementMediaGroupPageItems[0]?.fileSizeBytes ||
+                        currentAnnouncementMediaGroup[0]?.fileSizeBytes ||
+                        currentAnnouncement.fileSizeBytes
+                      }
+                      className={`media-preview--full media-preview--display media-preview--display-panel ${
+                        currentAnnouncementIsPresentation ? 'media-preview--presentation-stage' : ''
                       }`.trim()}
                       documentPreview
                       documentHideHeader
                       documentShowActions={false}
-                      documentSlideshow={currentAnnouncementStageIsDocument}
+                      documentSlideshow
                       documentSlideshowAutoplay={isPlaying}
                       documentSlideshowIntervalMs={6000}
                       documentSlideshowShowControls={false}
                       documentSlideshowShowDots={false}
                       onDocumentSlideCountChange={
-                        currentAnnouncementStageIsDocument ? handleDocumentSlideCountChange : undefined
+                        currentAnnouncementHasDocument && currentAnnouncementMediaGroupCount <= 1
+                          ? handleDocumentSlideCountChange
+                          : undefined
                       }
                       onDocumentSlideIndexChange={
-                        currentAnnouncementStageIsDocument ? handleDocumentSlideIndexChange : undefined
+                        currentAnnouncementHasDocument && currentAnnouncementMediaGroupCount <= 1
+                          ? handleDocumentSlideIndexChange
+                          : undefined
                       }
-                      videoAutoPlay={currentAnnouncementStageMediaKind === 'video'}
-                      videoMuted={currentAnnouncementStageMediaKind === 'video'}
-                      videoLoop={currentAnnouncementStageMediaKind === 'video'}
-                      videoControls={false}
-                      title={currentAnnouncementStageTitle}
-                      imageAlt={currentAnnouncementStageTitle}
+                      title={announcementPanelTitle}
+                      imageAlt={announcementPanelTitle}
                       showActions={false}
                     />
-                  </div>
+                  )}
                 </div>
-              ) : (
-                <div className="announcement-body">
-                  <p className="announcement-kicker">Scheduled Notice</p>
-                  {currentAnnouncementTitle ? <h3 className="announcement-title">{currentAnnouncementTitle}</h3> : null}
-                  <p className="announcement-content">
-                    {currentAnnouncementContent || 'This announcement is published without previewable media or text.'}
-                  </p>
-                </div>
-              )}
+              </div>
             </section>
           ) : null}
+
+          <section
+            className={`announcement-panel display-panel ${
+              shouldUseAnnouncementStageLayout ? 'display-panel--media-only' : ''
+            } ${isEmergency ? 'emergency-frame' : ''}`.trim()}
+          >
+            {!shouldUseAnnouncementStageLayout ? (
+              <div className="panel-head">
+                <h2>Current Announcement</h2>
+                <div className="inline-actions">
+                  <span className="pill pill--info">Priority {currentAnnouncement.priority || 1}</span>
+                  {categoryLabel ? <span className="pill">{categoryLabel}</span> : null}
+                  {announcementTextPageCount > 1 ? (
+                    <span className="pill">
+                      Text {activeAnnouncementTextPage + 1}/{announcementTextPageCount}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            <div
+              className={`announcement-body ${
+                shouldUsePresentationFocusLayout ? 'announcement-body--media-only' : ''
+              } ${shouldShowTextSlideHero ? 'announcement-body--text-stage' : ''}`.trim()}
+            >
+              {shouldShowTextSlideHero ? (
+                <div className="announcement-text-stage">
+                  <div className="announcement-text-stage__chrome">
+                    <p className="announcement-kicker">
+                      {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
+                    </p>
+                    {announcementTextPageCount > 1 ? (
+                      <span className="pill">
+                        Text {activeAnnouncementTextPage + 1}/{announcementTextPageCount}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="announcement-text-stage__inner">
+                    {announcementPanelTitle ? (
+                      <h3 className="announcement-title announcement-title--stage">
+                        {announcementPanelTitle}
+                      </h3>
+                    ) : null}
+                    {announcementPanelContent ? (
+                      <p className="announcement-content announcement-content--stage">
+                        {announcementPanelContent}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              {!shouldUseAnnouncementStageLayout ? (
+                <p className="announcement-kicker">
+                  {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
+                </p>
+              ) : null}
+              {!shouldUseAnnouncementStageLayout && (announcementPanelTitle || showAnnouncementFallbackText) ? (
+                <h3 className="announcement-title">{announcementPanelTitle}</h3>
+              ) : null}
+
+              {currentAnnouncementHasAnyMedia &&
+              !showAnnouncementMediaPanel &&
+              !isAnnouncementMediaShownInLivePanel &&
+              (!currentAnnouncementHasVideo || !showLivePanel) ? (
+                <div
+                  className={`announcement-media-frame ${
+                    shouldUsePresentationFocusLayout
+                      ? 'announcement-media-frame--fullscreen'
+                      : 'announcement-media-frame--inline'
+                  }`.trim()}
+                  style={mediaAspectStyle}
+                >
+                  <AttachmentPreview
+                    filePath={currentAnnouncement.image}
+                    fileName={currentAnnouncement.fileName}
+                    typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
+                    fileSizeBytes={currentAnnouncement.fileSizeBytes}
+                    className={`media-preview--full media-preview--display ${
+                      shouldUsePresentationFocusLayout ? 'media-preview--display-fullscreen' : ''
+                    } ${currentAnnouncementIsPresentation ? 'media-preview--presentation-stage' : ''}`.trim()}
+                    documentPreview
+                    documentHideHeader
+                    documentShowActions={false}
+                    documentSlideshow
+                    documentSlideshowAutoplay={isPlaying}
+                    documentSlideshowIntervalMs={6000}
+                    documentSlideshowShowControls={false}
+                    documentSlideshowShowDots={false}
+                    onDocumentSlideCountChange={
+                      currentAnnouncementHasDocument ? handleDocumentSlideCountChange : undefined
+                    }
+                    onDocumentSlideIndexChange={
+                      currentAnnouncementHasDocument ? handleDocumentSlideIndexChange : undefined
+                    }
+                    title={announcementPanelTitle}
+                    imageAlt={announcementPanelTitle}
+                    showActions={false}
+                  />
+                </div>
+              ) : null}
+
+              {!shouldUseAnnouncementStageLayout && (announcementPanelContent || showAnnouncementFallbackText) ? (
+                <p className="announcement-content">{announcementPanelContent}</p>
+              ) : null}
+            </div>
+          </section>
         </main>
 
         <footer className="display-footer">
@@ -1791,8 +1922,8 @@ const DisplayBoard = () => {
           </div>
 
           <div className="dot-pager">
-            {dotPagerItems.map((item) => (
-              <span key={item.id} className={item.active ? 'is-active' : ''} />
+            {displaySlides.slice(0, 12).map((item, index) => (
+              <span key={`${item.id}-${index}`} className={index === activeSlideIndex ? 'is-active' : ''} />
             ))}
           </div>
         </footer>
