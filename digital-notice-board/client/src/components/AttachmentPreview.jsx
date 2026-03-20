@@ -154,6 +154,10 @@ const AttachmentPreview = ({
   documentSlideshowShowDots = true,
   onDocumentSlideCountChange,
   onDocumentSlideIndexChange,
+  videoAutoPlay = false,
+  videoMuted = false,
+  videoLoop = false,
+  videoControls = true,
   showActions = true,
   title = 'Attachment',
   imageAlt = 'Attachment'
@@ -292,7 +296,10 @@ const AttachmentPreview = ({
       <div className={`media-preview ${className}`.trim()}>
         <video
           src={resolvedSourceUrl}
-          controls
+          autoPlay={videoAutoPlay}
+          muted={videoMuted}
+          loop={videoLoop}
+          controls={videoControls}
           preload="metadata"
           playsInline
           onLoadedData={() => setLoadedSourceKey(sourceKey)}

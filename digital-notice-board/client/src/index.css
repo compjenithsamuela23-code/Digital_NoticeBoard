@@ -2434,6 +2434,19 @@ textarea {
   object-position: center;
 }
 
+.document-preview.media-preview--display.media-preview--display-fullscreen {
+  min-height: 0;
+  padding: clamp(10px, 1.2vw, 16px);
+}
+
+.document-preview.media-preview--display.media-preview--display-fullscreen .document-preview__frame,
+.document-preview.media-preview--display.media-preview--display-fullscreen .document-preview__rendered-slide,
+.document-preview.media-preview--display.media-preview--display-fullscreen .document-preview__text,
+.document-preview.media-preview--display.media-preview--display-fullscreen .document-preview__text--slide {
+  min-height: min(72vh, 780px);
+  max-height: 100%;
+}
+
 .display-panel--media-only .document-preview {
   width: 100%;
   height: 100%;
