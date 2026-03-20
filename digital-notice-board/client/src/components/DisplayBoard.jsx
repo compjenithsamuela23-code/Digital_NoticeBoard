@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import { apiUrl } from '../config/api';
 import { clearAdminSession, hasAdminSession, withAuthConfig } from '../config/auth';
-import { apiClient, extractApiError } from '../config/http';
+import { apiClient, buildConditionalGetConfig, extractApiError, getResponseEtag } from '../config/http';
 import {
   clearDisplaySession,
   getDisplayCategoryId,
@@ -15,6 +15,7 @@ import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { usePageVisibility } from '../hooks/usePageVisibility';
 import { usePerformanceMode } from '../hooks/usePerformanceMode';
+import { applyAnnouncementSocketEvent } from '../utils/announcementSync';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
 
@@ -423,6 +424,7 @@ const DisplayBoard = () => {
   const knownTakeoverVersionsRef = useRef(new Map());
   const hasHydratedTakeoversRef = useRef(false);
   const announcementsRef = useRef(announcements);
+  const announcementsEtagRef = useRef('');
   const categoriesRef = useRef(categories);
   const liveStateRef = useRef({
     link: liveLink,
@@ -451,6 +453,10 @@ const DisplayBoard = () => {
   useEffect(() => {
     announcementsRef.current = announcements;
   }, [announcements]);
+
+  useEffect(() => {
+    announcementsEtagRef.current = '';
+  }, [displayCategoryId]);
 
   useEffect(() => {
     categoriesRef.current = categories;
@@ -522,8 +528,16 @@ const DisplayBoard = () => {
     return category ? category.name : null;
   };
 
+  const syncAnnouncements = useCallback(
+    (nextAnnouncements) => {
+      const safeAnnouncements = Array.isArray(nextAnnouncements) ? nextAnnouncements : [];
+      setAnnouncements(safeAnnouncements);
+      writeCachedDisplayPayload(getDisplayAnnouncementsCacheKey(displayCategoryId), safeAnnouncements);
+    },
+    [displayCategoryId]
+  );
+
   const fetchAnnouncements = useCallback(async () => {
-    const cacheKey = getDisplayAnnouncementsCacheKey(displayCategoryId);
     if (!isOnline) {
       setRequestError(
         withCachedContentNotice('Network appears offline. Waiting to reconnect...', announcementsRef.current.length > 0)
@@ -533,12 +547,19 @@ const DisplayBoard = () => {
 
     try {
       const categoryFilter = String(displayCategoryId || 'all').trim();
-      const response = await apiClient.get(apiUrl('/api/announcements/public'), {
-        params: categoryFilter && categoryFilter !== 'all' ? { category: categoryFilter } : {}
-      });
+      const response = await apiClient.get(
+        apiUrl('/api/announcements/public'),
+        buildConditionalGetConfig(announcementsEtagRef.current, {
+          params: categoryFilter && categoryFilter !== 'all' ? { category: categoryFilter } : {}
+        })
+      );
+      if (response.status === 304) {
+        setRequestError('');
+        return;
+      }
+      announcementsEtagRef.current = getResponseEtag(response) || announcementsEtagRef.current;
       const nextAnnouncements = Array.isArray(response.data) ? response.data : [];
-      setAnnouncements(nextAnnouncements);
-      writeCachedDisplayPayload(cacheKey, nextAnnouncements);
+      syncAnnouncements(nextAnnouncements);
       setRequestError('');
     } catch (error) {
       console.error('Error fetching announcements:', error);
@@ -549,7 +570,7 @@ const DisplayBoard = () => {
         )
       );
     }
-  }, [displayCategoryId, isOnline]);
+  }, [displayCategoryId, isOnline, syncAnnouncements]);
 
   const fetchCategories = useCallback(async () => {
     if (!isOnline) {
@@ -715,19 +736,34 @@ const DisplayBoard = () => {
       setLiveCategory(nextLivePayload.category);
       writeCachedDisplayPayload(DISPLAY_CACHE_KEYS.live, nextLivePayload);
     };
+    const handleAnnouncementUpdate = (payload) => {
+      const nextAnnouncements = applyAnnouncementSocketEvent(announcementsRef.current, payload, {
+        scope: 'public',
+        category: displayCategoryId
+      });
+
+      if (!nextAnnouncements) {
+        fetchAnnouncements();
+        return;
+      }
+
+      announcementsEtagRef.current = '';
+      syncAnnouncements(nextAnnouncements);
+      setRequestError('');
+    };
 
     socket.on('connect', syncOnConnect);
     socket.on('disconnect', handleDisconnect);
-    socket.on('announcementUpdate', fetchAnnouncements);
+    socket.on('announcementUpdate', handleAnnouncementUpdate);
     socket.on('liveUpdate', handleLiveUpdate);
 
     return () => {
       socket.off('connect', syncOnConnect);
       socket.off('disconnect', handleDisconnect);
-      socket.off('announcementUpdate', fetchAnnouncements);
+      socket.off('announcementUpdate', handleAnnouncementUpdate);
       socket.off('liveUpdate', handleLiveUpdate);
     };
-  }, [fetchAnnouncements, fetchLiveStatus, socket]);
+  }, [displayCategoryId, fetchAnnouncements, fetchLiveStatus, socket, syncAnnouncements]);
 
   const displaySlides = useMemo(() => toDisplaySlides(announcements), [announcements]);
 

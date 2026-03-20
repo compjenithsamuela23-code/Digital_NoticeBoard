@@ -10,7 +10,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const dns = require('dns').promises;
 const multer = require('multer');
-const { randomUUID } = require('crypto');
+const { randomUUID, createHash } = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
@@ -2983,11 +2983,15 @@ app.get('/api/announcements/public', async (req, res) => {
   try {
     const requestedCategory = normalizeCategoryFilter(req.query.category);
     const cacheKey = `public-announcements:${requestedCategory}`;
-    const cachedPayload = getRuntimeCachedPayload(cacheKey);
-    if (cachedPayload) {
+    const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
+    if (cachedEntry) {
       res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
+      res.setHeader('ETag', cachedEntry.etag);
       res.setHeader('X-Runtime-Cache', 'HIT');
-      return res.json(cachedPayload);
+      if (requestHasFreshEtag(req, cachedEntry.etag)) {
+        return res.status(304).end();
+      }
+      return res.json(cachedEntry.payload);
     }
 
     await runAnnouncementMaintenance();
@@ -3014,10 +3018,14 @@ app.get('/api/announcements/public', async (req, res) => {
         : (data || []).filter((row) => isAnnouncementVisibleForDisplayCategory(row, requestedCategory));
     const sortedRows = [...scopedRows].sort(comparePublicAnnouncements);
     const dtoPayload = sortedRows.map(toAnnouncementDto);
-    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_PUBLIC_ANNOUNCEMENTS_TTL_MS);
+    const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_PUBLIC_ANNOUNCEMENTS_TTL_MS);
     res.setHeader('Cache-Control', CACHE_CONTROL_SHORT_PUBLIC);
+    res.setHeader('ETag', nextCacheEntry.etag);
     res.setHeader('X-Runtime-Cache', 'MISS');
-    res.json(dtoPayload);
+    if (requestHasFreshEtag(req, nextCacheEntry.etag)) {
+      return res.status(304).end();
+    }
+    res.json(nextCacheEntry.payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3026,10 +3034,14 @@ app.get('/api/announcements/public', async (req, res) => {
 app.get('/api/announcements', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
     const cacheKey = 'workspace-announcements';
-    const cachedPayload = getRuntimeCachedPayload(cacheKey);
-    if (cachedPayload) {
+    const cachedEntry = getRuntimeCachedPayloadEntry(cacheKey);
+    if (cachedEntry) {
+      res.setHeader('ETag', cachedEntry.etag);
       res.setHeader('X-Runtime-Cache', 'HIT');
-      return res.json(cachedPayload);
+      if (requestHasFreshEtag(req, cachedEntry.etag)) {
+        return res.status(304).end();
+      }
+      return res.json(cachedEntry.payload);
     }
 
     await runAnnouncementMaintenance();
@@ -3043,9 +3055,13 @@ app.get('/api/announcements', simpleAuth, requireWorkspaceRole, async (req, res)
 
     throwSupabaseError('Error fetching announcements', error);
     const dtoPayload = (data || []).map(toAnnouncementDto);
-    setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_WORKSPACE_ANNOUNCEMENTS_TTL_MS);
+    const nextCacheEntry = setRuntimeCachedPayload(cacheKey, dtoPayload, API_RUNTIME_CACHE_WORKSPACE_ANNOUNCEMENTS_TTL_MS);
+    res.setHeader('ETag', nextCacheEntry.etag);
     res.setHeader('X-Runtime-Cache', 'MISS');
-    res.json(dtoPayload);
+    if (requestHasFreshEtag(req, nextCacheEntry.etag)) {
+      return res.status(304).end();
+    }
+    res.json(nextCacheEntry.payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3296,6 +3312,7 @@ app.post('/api/announcements/batch', simpleAuth, requireWorkspaceRole, async (re
       action: 'batch_create',
       batchId: normalizedDisplayBatchId,
       count: insertedRows.length,
+      announcements: insertedRows.map(toAnnouncementDto),
       timestamp: new Date().toISOString()
     });
 
@@ -3517,6 +3534,7 @@ app.put(
         action: 'batch_update',
         batchId: existingBatchId,
         count: (updatedRows || []).length,
+        announcements: (updatedRows || []).map(toAnnouncementDto),
         timestamp: new Date().toISOString()
       });
 
@@ -3708,6 +3726,7 @@ app.delete('/api/announcements/:id', simpleAuth, requireWorkspaceRole, async (re
         action: 'batch_delete',
         batchId: existingBatchId,
         count: batchRows.length,
+        ids: batchRows.map((row) => row.id).filter(Boolean),
         timestamp: new Date().toISOString()
       });
 
@@ -4443,7 +4462,13 @@ async function getOpsAgentHistory(limit = 12) {
   return (data || []).map(toOpsAgentHistoryDto);
 }
 
-function getRuntimeCachedPayload(cacheKey) {
+function buildJsonEtag(payload) {
+  const serializedPayload = JSON.stringify(payload);
+  const payloadHash = createHash('sha1').update(serializedPayload).digest('hex').slice(0, 16);
+  return `W/"${Buffer.byteLength(serializedPayload)}-${payloadHash}"`;
+}
+
+function getRuntimeCachedPayloadEntry(cacheKey) {
   if (!API_RUNTIME_CACHE_ENABLED) {
     return null;
   }
@@ -4458,19 +4483,52 @@ function getRuntimeCachedPayload(cacheKey) {
     return null;
   }
   runtimeApiCacheStats.hits += 1;
-  return cloneJsonValue(entry.payload);
+  return {
+    payload: cloneJsonValue(entry.payload),
+    etag: entry.etag || buildJsonEtag(entry.payload)
+  };
+}
+
+function getRuntimeCachedPayload(cacheKey) {
+  const entry = getRuntimeCachedPayloadEntry(cacheKey);
+  return entry ? entry.payload : null;
+}
+
+function requestHasFreshEtag(req, etag) {
+  const rawHeader = req.headers['if-none-match'];
+  if (!etag || rawHeader === undefined || rawHeader === null) {
+    return false;
+  }
+
+  return String(rawHeader)
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .some((candidate) => candidate === '*' || candidate === etag);
 }
 
 function setRuntimeCachedPayload(cacheKey, payload, ttlMs) {
   if (!API_RUNTIME_CACHE_ENABLED) {
-    return;
+    return {
+      payload: cloneJsonValue(payload),
+      etag: buildJsonEtag(payload),
+      expiresAtMs: Date.now() + Math.max(500, Number.parseInt(ttlMs, 10) || 1000)
+    };
   }
   const safeTtlMs = Math.max(500, Number.parseInt(ttlMs, 10) || 1000);
-  runtimeApiResponseCache.set(cacheKey, {
-    payload: cloneJsonValue(payload),
+  const safePayload = cloneJsonValue(payload);
+  const entry = {
+    payload: safePayload,
+    etag: buildJsonEtag(safePayload),
     expiresAtMs: Date.now() + safeTtlMs
-  });
+  };
+  runtimeApiResponseCache.set(cacheKey, entry);
   runtimeApiCacheStats.sets += 1;
+  return {
+    payload: cloneJsonValue(entry.payload),
+    etag: entry.etag,
+    expiresAtMs: entry.expiresAtMs
+  };
 }
 
 function invalidatePlatformStatusCache() {

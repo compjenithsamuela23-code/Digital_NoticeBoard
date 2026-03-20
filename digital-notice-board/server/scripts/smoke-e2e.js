@@ -162,6 +162,49 @@ async function run() {
     adminToken = String(adminLogin?.token || '');
     assert(adminToken, 'Admin token not received.');
 
+    logStep('Checking announcement conditional request headers');
+    const publicAnnouncementsResponse = await fetch(buildUrl('/api/announcements/public'), {
+      headers: {
+        Accept: 'application/json'
+      }
+    });
+    assert(publicAnnouncementsResponse.ok, 'Public announcements request failed.');
+    const publicAnnouncementsEtag = String(publicAnnouncementsResponse.headers.get('etag') || '').trim();
+    assert(publicAnnouncementsEtag, 'Public announcements ETag is missing.');
+
+    const publicAnnouncementsNotModified = await fetch(buildUrl('/api/announcements/public'), {
+      headers: {
+        Accept: 'application/json',
+        'If-None-Match': publicAnnouncementsEtag
+      }
+    });
+    assert(
+      publicAnnouncementsNotModified.status === 304,
+      `Expected public announcements conditional request to return 304, got ${publicAnnouncementsNotModified.status}.`
+    );
+
+    const workspaceAnnouncementsResponse = await fetch(buildUrl('/api/announcements'), {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      }
+    });
+    assert(workspaceAnnouncementsResponse.ok, 'Workspace announcements request failed.');
+    const workspaceAnnouncementsEtag = String(workspaceAnnouncementsResponse.headers.get('etag') || '').trim();
+    assert(workspaceAnnouncementsEtag, 'Workspace announcements ETag is missing.');
+
+    const workspaceAnnouncementsNotModified = await fetch(buildUrl('/api/announcements'), {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+        'If-None-Match': workspaceAnnouncementsEtag
+      }
+    });
+    assert(
+      workspaceAnnouncementsNotModified.status === 304,
+      `Expected workspace announcements conditional request to return 304, got ${workspaceAnnouncementsNotModified.status}.`
+    );
+
     logStep('Checking maintenance agent status endpoint');
     const maintenanceAgentStatus = await request('/api/system/maintenance-agent', {
       method: 'GET',

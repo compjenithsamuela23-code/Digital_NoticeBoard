@@ -82,6 +82,26 @@ export function getNetworkErrorMessage() {
   return `Cannot connect to backend at ${API_BASE_URL}. Check internet/network/server and retry.`;
 }
 
+export function buildConditionalGetConfig(etag, config = {}) {
+  const nextHeaders = {
+    ...(config.headers || {})
+  };
+
+  if (etag) {
+    nextHeaders['If-None-Match'] = etag;
+  }
+
+  return {
+    ...config,
+    headers: nextHeaders,
+    validateStatus: (status) => (status >= 200 && status < 300) || status === 304
+  };
+}
+
+export function getResponseEtag(response) {
+  return String(response?.headers?.etag || '').trim();
+}
+
 export function extractApiError(error, fallbackMessage = 'Request failed. Please try again.') {
   const payload = error?.response?.data;
   if (payload && typeof payload === 'object') {

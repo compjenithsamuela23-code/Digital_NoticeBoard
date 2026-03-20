@@ -5,12 +5,13 @@ import { useSocket } from '../hooks/useSocket';
 import { apiUrl } from '../config/api';
 import { clearAdminSession, hasAdminSession, withAuthConfig } from '../config/auth';
 import { clearStaffSession, hasStaffSession, withStaffAuthConfig } from '../config/staffAuth';
-import { apiClient, extractApiError } from '../config/http';
+import { apiClient, buildConditionalGetConfig, extractApiError, getResponseEtag } from '../config/http';
 import { useTheme } from '../hooks/useTheme';
 import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { usePageVisibility } from '../hooks/usePageVisibility';
 import { usePerformanceMode } from '../hooks/usePerformanceMode';
+import { applyAnnouncementSocketEvent } from '../utils/announcementSync';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
 
@@ -105,6 +106,7 @@ const RESUMABLE_UPLOAD_RETRY_DELAYS_MS = [0, 1000, 3000, 5000, 10000, 20000];
 const DROP_ZONE_KEYS = ['image', 'video', 'document'];
 const FILE_DRAG_TRANSFER_TYPES = new Set(['files', 'application/x-moz-file']);
 const SLOW_NETWORK_TYPES = new Set(['slow-2g', '2g', '3g']);
+const CONSTRAINED_UPLOAD_DOWNLINK_MBPS = 1.5;
 const MAX_LIVE_LINKS = 24;
 const LIVE_LINK_SPLIT_PATTERN = /[\s\n,;]+/;
 const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
@@ -344,14 +346,30 @@ const extractDroppedFiles = (dataTransfer) => {
 const isSlowUploadNetwork = (effectiveType) =>
   SLOW_NETWORK_TYPES.has(String(effectiveType || '').trim().toLowerCase());
 
-const shouldUseResumableUpload = ({ fileSizeBytes, effectiveType, token, objectPath, bucketName, resumableUploadUrl }) =>
+const isConstrainedUploadNetwork = ({ effectiveType, downlink, saveData }) =>
+  Boolean(
+    saveData ||
+      isSlowUploadNetwork(effectiveType) ||
+      (Number.isFinite(downlink) && downlink > 0 && downlink <= CONSTRAINED_UPLOAD_DOWNLINK_MBPS)
+  );
+
+const shouldUseResumableUpload = ({
+  fileSizeBytes,
+  effectiveType,
+  downlink,
+  saveData,
+  token,
+  objectPath,
+  bucketName,
+  resumableUploadUrl
+}) =>
   Boolean(
     token &&
       objectPath &&
       bucketName &&
       resumableUploadUrl &&
       (fileSizeBytes > RESUMABLE_UPLOAD_THRESHOLD_BYTES ||
-        (isSlowUploadNetwork(effectiveType) && fileSizeBytes >= 1024 * 1024))
+        (isConstrainedUploadNetwork({ effectiveType, downlink, saveData }) && fileSizeBytes >= 1024 * 1024))
   );
 
 const createDisplayBatchId = () => {
@@ -509,6 +527,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const mediaReplaceInputRef = useRef(null);
   const documentInputRef = useRef(null);
   const documentReplaceInputRef = useRef(null);
+  const announcementsRef = useRef(announcements);
+  const announcementsEtagRef = useRef('');
   const announcementsRequestRef = useRef(null);
   const liveStatusRequestRef = useRef(null);
   const categoriesRequestRef = useRef(null);
@@ -533,7 +553,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const navigate = useNavigate();
   const { socket } = useSocket();
   const { isDark, toggleTheme } = useTheme();
-  const { isOnline, effectiveType } = useNetworkStatus();
+  const { isOnline, effectiveType, downlink, saveData } = useNetworkStatus();
   const { shouldUseSummaryPreviews } = usePerformanceMode();
   const isPageVisible = usePageVisibility();
   const [socketConnected, setSocketConnected] = useState(Boolean(socket?.connected));
@@ -554,6 +574,14 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
   const workspaceLoginRoute = isStaffWorkspace ? '/staff/login' : '/admin/login';
   const workspaceHistoryRoute = isStaffWorkspace ? '/staff/history' : '/admin/history';
+
+  useEffect(() => {
+    announcementsRef.current = announcements;
+  }, [announcements]);
+
+  useEffect(() => {
+    announcementsEtagRef.current = '';
+  }, [workspaceRole]);
   const getBatchAttachmentCount = useCallback(
     (announcement) => {
       const batchId = String(announcement?.displayBatchId || '').trim();
@@ -692,6 +720,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         shouldUseResumableUpload({
           fileSizeBytes,
           effectiveType,
+          downlink,
+          saveData,
           token,
           objectPath,
           bucketName,
@@ -734,7 +764,15 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         attachmentFileSizeBytes: fileSizeBytes
       };
     },
-    [activeUploadMaxSizeBytes, activeUploadMaxSizeMb, applyWorkspaceAuth, effectiveType, uploadAttachmentWithTus]
+    [
+      activeUploadMaxSizeBytes,
+      activeUploadMaxSizeMb,
+      applyWorkspaceAuth,
+      downlink,
+      effectiveType,
+      saveData,
+      uploadAttachmentWithTus
+    ]
   );
 
   const validateUploadSize = useCallback((files = []) => {
@@ -927,6 +965,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     !hasSelectedEditAttachmentReplacement;
   const canRemoveEditingAttachment = !isEditingBatchGroup;
 
+  const syncAnnouncements = useCallback((nextAnnouncements) => {
+    setAnnouncements(Array.isArray(nextAnnouncements) ? nextAnnouncements : []);
+  }, []);
+
   const fetchAnnouncements = useCallback(async () => {
     if (!isOnline) {
       setRequestError('Network appears offline. Waiting to reconnect...');
@@ -935,15 +977,23 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
     await runSingleFlight(announcementsRequestRef, async () => {
       try {
-        const response = await apiClient.get(apiUrl('/api/announcements'), applyWorkspaceAuth());
-        setAnnouncements(response.data || []);
+        const response = await apiClient.get(
+          apiUrl('/api/announcements'),
+          buildConditionalGetConfig(announcementsEtagRef.current, applyWorkspaceAuth())
+        );
+        if (response.status === 304) {
+          setRequestError('');
+          return;
+        }
+        announcementsEtagRef.current = getResponseEtag(response) || announcementsEtagRef.current;
+        syncAnnouncements(response.data || []);
         setRequestError('');
       } catch (error) {
         if (handleRequestError(error, 'Unable to load announcements.')) return;
         console.error('Error fetching announcements:', error);
       }
     });
-  }, [applyWorkspaceAuth, handleRequestError, isOnline]);
+  }, [applyWorkspaceAuth, handleRequestError, isOnline, syncAnnouncements]);
 
   const fetchLiveStatus = useCallback(async () => {
     if (!isOnline) {
@@ -1468,17 +1518,31 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       );
       setLiveCategory(normalizeLiveCategory(payload?.category));
     };
+    const handleAnnouncementUpdate = (payload) => {
+      const nextAnnouncements = applyAnnouncementSocketEvent(announcementsRef.current, payload, {
+        scope: 'workspace'
+      });
+
+      if (!nextAnnouncements) {
+        fetchAnnouncements();
+        return;
+      }
+
+      announcementsEtagRef.current = '';
+      syncAnnouncements(nextAnnouncements);
+      setRequestError('');
+    };
 
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('liveUpdate', handleLiveUpdate);
-    socket.on('announcementUpdate', fetchAnnouncements);
+    socket.on('announcementUpdate', handleAnnouncementUpdate);
 
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('liveUpdate', handleLiveUpdate);
-      socket.off('announcementUpdate', fetchAnnouncements);
+      socket.off('announcementUpdate', handleAnnouncementUpdate);
     };
   }, [
     fetchAnnouncements,
@@ -1488,6 +1552,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchOpsAgentSettings,
     fetchOpsAgentStatus,
     fetchPlatformStatus,
+    syncAnnouncements,
     socket
   ]);
 
