@@ -10,6 +10,7 @@ import { useTheme } from '../hooks/useTheme';
 import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { usePageVisibility } from '../hooks/usePageVisibility';
+import { usePerformanceMode } from '../hooks/usePerformanceMode';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
 
@@ -533,6 +534,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const { socket } = useSocket();
   const { isDark, toggleTheme } = useTheme();
   const { isOnline, effectiveType } = useNetworkStatus();
+  const { shouldUseSummaryPreviews } = usePerformanceMode();
   const isPageVisible = usePageVisibility();
   const [socketConnected, setSocketConnected] = useState(Boolean(socket?.connected));
   const preferSocket = Boolean(socket) && socketConnected;
@@ -4010,7 +4012,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     typeHint={announcement.fileMimeType || announcement.type}
                     fileSizeBytes={announcement.fileSizeBytes}
                     className="media-preview--full"
+                    preview={!shouldUseSummaryPreviews}
                     documentPreview={false}
+                    showActions={false}
                     title={cardTitle}
                     imageAlt={cardTitle}
                   />

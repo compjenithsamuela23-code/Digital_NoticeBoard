@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-const WEATHER_REFRESH_MS = 15 * 60 * 1000;
+const DEFAULT_WEATHER_REFRESH_MS = 15 * 60 * 1000;
 const WEATHER_TIMEOUT_MS = 7000;
+const WEATHER_CACHE_KEY = 'dnb.clock-weather.cache';
 const FALLBACK_COORDS = {
   latitude: 40.7128,
   longitude: -74.006
@@ -31,14 +32,56 @@ function getBrowserCoords() {
   });
 }
 
-export function useClockWeather() {
+function readCachedWeather(maxAgeMs) {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(WEATHER_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const fetchedAtMs = Number.parseInt(parsed?.fetchedAtMs, 10);
+    if (!Number.isFinite(fetchedAtMs) || Date.now() - fetchedAtMs > maxAgeMs) {
+      return null;
+    }
+    return parsed?.weather || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedWeather(weather) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      WEATHER_CACHE_KEY,
+      JSON.stringify({
+        fetchedAtMs: Date.now(),
+        weather
+      })
+    );
+  } catch {
+    // Ignore storage quota/privacy failures.
+  }
+}
+
+export function useClockWeather(options = {}) {
+  const showSeconds = options.showSeconds !== false;
+  const clockTickMs = Math.max(1000, Number.parseInt(options.clockTickMs, 10) || 1000);
+  const weatherRefreshMs =
+    Math.max(60 * 1000, Number.parseInt(options.weatherRefreshMs, 10) || DEFAULT_WEATHER_REFRESH_MS);
   const [now, setNow] = useState(new Date());
-  const [weather, setWeather] = useState(null);
+  const [weather, setWeather] = useState(() => readCachedWeather(weatherRefreshMs));
+  const coordsRef = useRef(null);
 
   useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
+    const timer = setInterval(() => setNow(new Date()), clockTickMs);
     return () => clearInterval(timer);
-  }, []);
+  }, [clockTickMs]);
 
   useEffect(() => {
     let active = true;
@@ -46,7 +89,10 @@ export function useClockWeather() {
 
     const fetchWeather = async () => {
       try {
-        const coords = (await getBrowserCoords()) || FALLBACK_COORDS;
+        if (!coordsRef.current) {
+          coordsRef.current = (await getBrowserCoords()) || FALLBACK_COORDS;
+        }
+        const coords = coordsRef.current || FALLBACK_COORDS;
         const { latitude, longitude } = coords;
 
         if (pendingController) {
@@ -73,14 +119,18 @@ export function useClockWeather() {
         const payload = await weatherResponse.json();
 
         if (!active) return;
-        setWeather(payload?.current_weather || null);
+        const nextWeather = payload?.current_weather || null;
+        setWeather(nextWeather);
+        writeCachedWeather(nextWeather);
       } catch {
         if (active) setWeather(null);
       }
     };
 
-    fetchWeather();
-    const refresh = setInterval(fetchWeather, WEATHER_REFRESH_MS);
+    if (!weather) {
+      fetchWeather();
+    }
+    const refresh = setInterval(fetchWeather, weatherRefreshMs);
 
     return () => {
       active = false;
@@ -89,17 +139,17 @@ export function useClockWeather() {
       }
       clearInterval(refresh);
     };
-  }, []);
+  }, [weather, weatherRefreshMs]);
 
   const timeLabel = useMemo(
     () =>
       now.toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit',
-        second: '2-digit',
+        ...(showSeconds ? { second: '2-digit' } : {}),
         hour12: false
       }),
-    [now]
+    [now, showSeconds]
   );
 
   const dateLabel = useMemo(() => now.toLocaleDateString('en-GB'), [now]);

@@ -28,6 +28,31 @@ function getNetworkSlowdownMultiplier() {
   return 1;
 }
 
+function getDeviceSlowdownMultiplier() {
+  if (typeof navigator === 'undefined') {
+    return 1;
+  }
+
+  const deviceMemory = Number.parseFloat(navigator.deviceMemory);
+  const hardwareConcurrency = Number.parseInt(navigator.hardwareConcurrency, 10);
+
+  if (
+    (Number.isFinite(deviceMemory) && deviceMemory > 0 && deviceMemory <= 4) ||
+    (Number.isFinite(hardwareConcurrency) && hardwareConcurrency > 0 && hardwareConcurrency <= 4)
+  ) {
+    return 1.9;
+  }
+
+  if (
+    (Number.isFinite(deviceMemory) && deviceMemory > 0 && deviceMemory <= 8) ||
+    (Number.isFinite(hardwareConcurrency) && hardwareConcurrency > 0 && hardwareConcurrency <= 8)
+  ) {
+    return 1.35;
+  }
+
+  return 1;
+}
+
 export function useAdaptivePolling(task, options = {}) {
   const {
     enabled = true,
@@ -56,7 +81,7 @@ export function useAdaptivePolling(task, options = {}) {
     let timerId = null;
 
     const computeNextInterval = () => {
-      const slowdownMultiplier = getNetworkSlowdownMultiplier();
+      const slowdownMultiplier = Math.max(getNetworkSlowdownMultiplier(), getDeviceSlowdownMultiplier());
       if (!online) {
         return Math.round(offlineIntervalMs * slowdownMultiplier);
       }

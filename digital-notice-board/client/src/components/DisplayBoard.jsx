@@ -14,6 +14,7 @@ import { useTheme } from '../hooks/useTheme';
 import { useAdaptivePolling } from '../hooks/useAdaptivePolling';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { usePageVisibility } from '../hooks/usePageVisibility';
+import { usePerformanceMode } from '../hooks/usePerformanceMode';
 import AttachmentPreview from './AttachmentPreview';
 import TopbarStatus from './TopbarStatus';
 
@@ -29,6 +30,7 @@ const MAX_VISIBLE_SPLIT_ITEMS = 4;
 const MAX_ANNOUNCEMENT_STREAM_LINKS = 24;
 const MAX_GLOBAL_STREAM_LINKS = 24;
 const DISPLAY_ROTATION_INTERVAL_MS = 8000;
+const DISPLAY_ROTATION_INTERVAL_LITE_MS = 12000;
 const ANNOUNCEMENT_TEXT_SLIDE_MAX_CHARS = 520;
 const ANNOUNCEMENT_TEXT_SLIDE_MAX_LINES = 7;
 const DISPLAY_CACHE_KEYS = {
@@ -430,6 +432,7 @@ const DisplayBoard = () => {
   const navigate = useNavigate();
   const { socket } = useSocket();
   const { isDark, toggleTheme } = useTheme();
+  const { shouldLimitConcurrentMedia } = usePerformanceMode();
   const { isOnline } = useNetworkStatus();
   const isPageVisible = usePageVisibility();
   const wasOnlineRef = useRef(isOnline);
@@ -439,6 +442,11 @@ const DisplayBoard = () => {
   const displayCategoryId = getDisplayCategoryId();
   const displayCategoryLabel = getDisplayCategoryLabel();
   const preferSocket = Boolean(socket) && socketConnected;
+  const maxVisibleMediaItems = shouldLimitConcurrentMedia ? 1 : MAX_VISIBLE_SPLIT_ITEMS;
+  const displayRotationIntervalMs = shouldLimitConcurrentMedia
+    ? DISPLAY_ROTATION_INTERVAL_LITE_MS
+    : DISPLAY_ROTATION_INTERVAL_MS;
+  const documentSlideshowIntervalMs = shouldLimitConcurrentMedia ? 9000 : 6000;
 
   useEffect(() => {
     announcementsRef.current = announcements;
@@ -820,7 +828,7 @@ const DisplayBoard = () => {
   const currentAnnouncementMediaGroupCount = currentAnnouncementMediaGroup.length;
   const announcementMediaPageCount = Math.max(
     1,
-    Math.ceil(currentAnnouncementMediaGroupCount / MAX_VISIBLE_SPLIT_ITEMS)
+    Math.ceil(currentAnnouncementMediaGroupCount / maxVisibleMediaItems)
   );
   const activeAnnouncementMediaPage = Math.min(
     currentMediaGroupPage,
@@ -828,9 +836,9 @@ const DisplayBoard = () => {
   );
   const currentAnnouncementMediaGroupPageItems = useMemo(() => {
     if (currentAnnouncementMediaGroupCount === 0) return [];
-    const startIndex = activeAnnouncementMediaPage * MAX_VISIBLE_SPLIT_ITEMS;
-    return currentAnnouncementMediaGroup.slice(startIndex, startIndex + MAX_VISIBLE_SPLIT_ITEMS);
-  }, [activeAnnouncementMediaPage, currentAnnouncementMediaGroup, currentAnnouncementMediaGroupCount]);
+    const startIndex = activeAnnouncementMediaPage * maxVisibleMediaItems;
+    return currentAnnouncementMediaGroup.slice(startIndex, startIndex + maxVisibleMediaItems);
+  }, [activeAnnouncementMediaPage, currentAnnouncementMediaGroup, currentAnnouncementMediaGroupCount, maxVisibleMediaItems]);
 
   const currentAnnouncementId = currentAnnouncement ? String(currentAnnouncement.id || '') : '';
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
@@ -923,8 +931,8 @@ const DisplayBoard = () => {
       });
   }, [announcementLiveLinks, globalLiveLinks, isAudioMuted, isLiveOn]);
   const visibleLiveStreamEmbeds = useMemo(
-    () => activeLiveStreamEmbeds.slice(0, MAX_VISIBLE_SPLIT_ITEMS),
-    [activeLiveStreamEmbeds]
+    () => activeLiveStreamEmbeds.slice(0, maxVisibleMediaItems),
+    [activeLiveStreamEmbeds, maxVisibleMediaItems]
   );
   const hiddenLiveStreamCount = Math.max(0, activeLiveStreamEmbeds.length - visibleLiveStreamEmbeds.length);
   const liveSourceTiles = useMemo(() => {
@@ -1095,7 +1103,7 @@ const DisplayBoard = () => {
         }
         return 0;
       });
-    }, DISPLAY_ROTATION_INTERVAL_MS);
+    }, displayRotationIntervalMs);
 
     return () => clearInterval(interval);
   }, [
@@ -1103,6 +1111,7 @@ const DisplayBoard = () => {
     advanceScheduledSequence,
     currentAnnouncementHasDocument,
     currentAnnouncementMediaGroupCount,
+    displayRotationIntervalMs,
     displaySlides.length,
     documentSlideCount,
     isPlaying,
@@ -1145,12 +1154,13 @@ const DisplayBoard = () => {
 
         return 0;
       });
-    }, DISPLAY_ROTATION_INTERVAL_MS);
+    }, displayRotationIntervalMs);
 
     return () => clearInterval(interval);
   }, [
     advanceScheduledSequence,
     announcementTextPageCount,
+    displayRotationIntervalMs,
     displaySlides.length,
     isPlaying,
     shouldTreatTextSlidesAsPrimaryPages
@@ -1563,7 +1573,7 @@ const DisplayBoard = () => {
                     documentShowActions={false}
                     documentSlideshow
                     documentSlideshowAutoplay={isPlaying}
-                    documentSlideshowIntervalMs={6000}
+                    documentSlideshowIntervalMs={documentSlideshowIntervalMs}
                     documentSlideshowShowControls={false}
                     documentSlideshowShowDots={false}
                     showActions={false}
@@ -1726,7 +1736,7 @@ const DisplayBoard = () => {
                             documentShowActions={false}
                             documentSlideshow
                             documentSlideshowAutoplay={isPlaying}
-                            documentSlideshowIntervalMs={6000}
+                            documentSlideshowIntervalMs={documentSlideshowIntervalMs}
                             documentSlideshowShowControls={false}
                             documentSlideshowShowDots={false}
                             title={item.title || `Attachment ${index + 1}`}
@@ -1769,7 +1779,7 @@ const DisplayBoard = () => {
                       documentShowActions={false}
                       documentSlideshow
                       documentSlideshowAutoplay={isPlaying}
-                      documentSlideshowIntervalMs={6000}
+                      documentSlideshowIntervalMs={documentSlideshowIntervalMs}
                       documentSlideshowShowControls={false}
                       documentSlideshowShowDots={false}
                       onDocumentSlideCountChange={
@@ -1877,7 +1887,7 @@ const DisplayBoard = () => {
                     documentShowActions={false}
                     documentSlideshow
                     documentSlideshowAutoplay={isPlaying}
-                    documentSlideshowIntervalMs={6000}
+                    documentSlideshowIntervalMs={documentSlideshowIntervalMs}
                     documentSlideshowShowControls={false}
                     documentSlideshowShowDots={false}
                     onDocumentSlideCountChange={

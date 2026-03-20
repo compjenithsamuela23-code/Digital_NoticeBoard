@@ -233,6 +233,31 @@ const AttachmentPreview = ({
 
   if (!sourceUrl) return null;
 
+  if (!preview) {
+    const fileTypeLabel =
+      kind === 'image' ? 'Image file' : kind === 'video' ? 'Video file' : 'Document file';
+
+    return (
+      <div className={`document-preview document-preview--summary ${className}`.trim()}>
+        <div className="document-preview__header">
+          <p className="document-preview__name">{resolvedName}</p>
+          <p className="document-preview__meta">{extension ? extension.toUpperCase() : 'FILE'}</p>
+        </div>
+        <p className="document-preview__hint">{fileTypeLabel} preview is disabled in low-power mode.</p>
+        {showActions ? (
+          <div className="inline-actions">
+            <a className="btn btn--ghost btn--tiny" href={sourceUrl} target="_blank" rel="noreferrer">
+              Open
+            </a>
+            <a className="btn btn--ghost btn--tiny" href={sourceUrl} download={resolvedName}>
+              Download
+            </a>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   if (kind === 'document') {
     return (
       <Suspense
@@ -271,7 +296,7 @@ const AttachmentPreview = ({
         <img
           src={resolvedSourceUrl}
           alt={imageAlt}
-          loading="eager"
+          loading="lazy"
           decoding="async"
           onLoad={() => setLoadedSourceKey(sourceKey)}
           onError={handleMediaError}

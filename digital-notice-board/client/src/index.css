@@ -1560,6 +1560,11 @@ textarea {
   width: 100%;
 }
 
+.document-preview--summary {
+  width: 100%;
+  min-height: 0;
+}
+
 .document-preview__name {
   font-weight: 700;
   color: var(--text);
@@ -3022,6 +3027,101 @@ textarea {
   .btn::after {
     display: none;
   }
+}
+
+:root[data-performance='lite'] {
+  --body-bg: var(--bg);
+  --display-bg: var(--bg);
+  --display-bg-emergency: linear-gradient(180deg, #3a0d17 0%, #17060b 100%);
+  --top-glow-brand: transparent;
+  --top-glow-accent: transparent;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --panel-head-bg: var(--surface-strong);
+  --card-soft-bg: var(--surface-strong);
+  --empty-bg: var(--surface-strong);
+  --stat-card-bg: var(--surface-strong);
+  --pill-bg: var(--surface-strong);
+}
+
+:root[data-performance='lite'] body {
+  transition: none;
+}
+
+:root[data-performance='lite'] .app-shell::before,
+:root[data-performance='lite'] .app-shell::after,
+:root[data-performance='lite'] .auth-page::before,
+:root[data-performance='lite'] .auth-page::after,
+:root[data-performance='lite'] .display-page::before,
+:root[data-performance='lite'] .display-page::after,
+:root[data-performance='lite'] .card::after,
+:root[data-performance='lite'] .btn::after {
+  display: none !important;
+}
+
+:root[data-performance='lite'] .card,
+:root[data-performance='lite'] .btn,
+:root[data-performance='lite'] .notice-card,
+:root[data-performance='lite'] .history-card,
+:root[data-performance='lite'] .stat-card,
+:root[data-performance='lite'] .live-panel,
+:root[data-performance='lite'] .announcement-panel,
+:root[data-performance='lite'] .display-footer,
+:root[data-performance='lite'] .topbar-status,
+:root[data-performance='lite'] .upload-dropzone,
+:root[data-performance='lite'] .document-preview,
+:root[data-performance='lite'] .announcement-text-stage,
+:root[data-performance='lite'] .agent-status-banner {
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  transition: none !important;
+}
+
+:root[data-performance='lite'] .card,
+:root[data-performance='lite'] .notice-card,
+:root[data-performance='lite'] .btn,
+:root[data-performance='lite'] .upload-dropzone {
+  transform: none !important;
+}
+
+:root[data-performance='lite'] .card:hover,
+:root[data-performance='lite'] .notice-card:hover,
+:root[data-performance='lite'] .btn:hover,
+:root[data-performance='lite'] .upload-dropzone:hover,
+:root[data-performance='lite'] .upload-dropzone.is-active {
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+:root[data-performance='lite'] .announcement-text-stage {
+  background: var(--surface-strong) !important;
+  border-color: var(--line) !important;
+}
+
+:root[data-performance='lite'] .notice-card,
+:root[data-performance='lite'] .history-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 280px;
+}
+
+:root[data-performance='lite'] .stat-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
+
+:root[data-performance='lite'] .emergency-frame,
+:root[data-performance='lite'] .emergency-banner--strong {
+  box-shadow: none !important;
+}
+
+:root[data-performance='lite'] .fade-up,
+:root[data-performance='lite'] .fade-up-delay,
+:root[data-performance='lite'] .emergency-banner,
+:root[data-performance='lite'] .route-loader__pulse,
+:root[data-performance='lite'] .agent-status-banner,
+:root[data-performance='lite'] .topbar-status__network.is-offline {
+  animation: none !important;
 }
 
 @media (max-width: 1200px) {

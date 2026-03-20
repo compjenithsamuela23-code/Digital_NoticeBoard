@@ -1,12 +1,20 @@
 import React from 'react';
 import { useClockWeather } from '../hooks/useClockWeather';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
+import { usePerformanceMode } from '../hooks/usePerformanceMode';
 
 const TopbarStatus = ({ className = '' }) => {
-  const { timeLabel, dateLabel, dayLabel, weatherLabel } = useClockWeather();
-  const { isOnline, effectiveType } = useNetworkStatus();
+  const { isLiteMode, showClockSeconds, clockTickMs, weatherRefreshMs } = usePerformanceMode();
+  const { timeLabel, dateLabel, dayLabel, weatherLabel } = useClockWeather({
+    showSeconds: showClockSeconds,
+    clockTickMs,
+    weatherRefreshMs
+  });
+  const { isOnline, effectiveType, saveData } = useNetworkStatus();
   const networkLabel = isOnline
-    ? `Online${effectiveType && effectiveType !== 'unknown' ? ` • ${effectiveType}` : ''}`
+    ? `Online${effectiveType && effectiveType !== 'unknown' ? ` • ${effectiveType}` : ''}${
+        saveData ? ' • Saver' : isLiteMode ? ' • Lite' : ''
+      }`
     : 'Offline';
 
   return (

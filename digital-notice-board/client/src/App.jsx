@@ -6,6 +6,7 @@ import RouteErrorBoundary from './components/RouteErrorBoundary';
 import { hasAdminSession } from './config/auth';
 import { hasDisplaySession } from './config/displayAuth';
 import { hasStaffSession } from './config/staffAuth';
+import { usePerformanceMode } from './hooks/usePerformanceMode';
 
 const DisplayBoard = lazy(() => import('./components/DisplayBoard'));
 const DisplayLogin = lazy(() => import('./components/DisplayLogin'));
@@ -39,6 +40,8 @@ const ProtectedStaffRoute = ({ children }) => {
 };
 
 function App() {
+  usePerformanceMode();
+
   const withRouteSuspense = (node, message) => (
     <Suspense fallback={<RouteLoader message={message} />}>
       {node}

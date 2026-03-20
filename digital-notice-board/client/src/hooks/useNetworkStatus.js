@@ -4,7 +4,8 @@ function readConnectionMeta() {
   if (typeof navigator === 'undefined') {
     return {
       effectiveType: 'unknown',
-      downlink: null
+      downlink: null,
+      saveData: false
     };
   }
 
@@ -13,13 +14,15 @@ function readConnectionMeta() {
   if (!connection) {
     return {
       effectiveType: 'unknown',
-      downlink: null
+      downlink: null,
+      saveData: false
     };
   }
 
   return {
     effectiveType: String(connection.effectiveType || 'unknown'),
-    downlink: Number.isFinite(connection.downlink) ? connection.downlink : null
+    downlink: Number.isFinite(connection.downlink) ? connection.downlink : null,
+    saveData: Boolean(connection.saveData)
   };
 }
 
@@ -55,6 +58,7 @@ export function useNetworkStatus() {
   return {
     isOnline,
     effectiveType: connectionMeta.effectiveType,
-    downlink: connectionMeta.downlink
+    downlink: connectionMeta.downlink,
+    saveData: connectionMeta.saveData
   };
 }
