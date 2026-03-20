@@ -1054,6 +1054,13 @@ textarea {
   transform: translateY(-1px);
 }
 
+.upload-dropzone.is-file-drag {
+  border-color: color-mix(in srgb, var(--focus-border) 55%, var(--line-strong));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.015) 100%),
+    var(--control-bg);
+}
+
 .upload-dropzone__copy {
   display: grid;
   gap: 6px;

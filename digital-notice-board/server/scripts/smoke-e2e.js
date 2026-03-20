@@ -335,6 +335,63 @@ async function run() {
       'https://youtu.be/dQw4w9WgXcQ'
     )}`;
 
+    logStep('Creating direct-upload announcement');
+    const directUploadBlob = new Blob(['smoke direct upload file'], { type: 'text/plain' });
+    const directUploadFileName = `smoke-direct-${runId}.txt`;
+    const directUploadPresign = await request('/api/uploads/presign', {
+      method: 'POST',
+      token: adminToken,
+      jsonBody: {
+        fileName: directUploadFileName,
+        mimeType: 'text/plain',
+        fileSizeBytes: directUploadBlob.size
+      }
+    });
+    assert(String(directUploadPresign?.signedUrl || '').trim().length > 0, 'Signed upload URL was not returned.');
+    assert(String(directUploadPresign?.publicUrl || '').trim().length > 0, 'Public upload URL was not returned.');
+
+    const directUploadResponse = await fetch(String(directUploadPresign.signedUrl), {
+      method: 'PUT',
+      headers: {
+        'content-type': 'text/plain',
+        'x-upsert': 'false'
+      },
+      body: directUploadBlob
+    });
+
+    if (!directUploadResponse.ok) {
+      const failureBody = await directUploadResponse.text().catch(() => '');
+      throw new Error(
+        `Direct signed upload failed (${directUploadResponse.status}): ${summarizePayload(failureBody)}`
+      );
+    }
+
+    const directUploadAnnouncement = await request('/api/announcements', {
+      method: 'POST',
+      token: adminToken,
+      jsonBody: {
+        title: `Smoke Direct ${runId}`,
+        content: 'Smoke direct upload announcement',
+        priority: 1,
+        duration: 1,
+        active: true,
+        category: createdCategoryId,
+        startAt,
+        endAt,
+        attachmentUrl: directUploadPresign.publicUrl,
+        attachmentFileName: directUploadFileName,
+        attachmentMimeType: 'text/plain',
+        attachmentFileSizeBytes: directUploadBlob.size
+      }
+    });
+    const directUploadAnnouncementId = String(directUploadAnnouncement?.id || '');
+    assert(directUploadAnnouncementId, 'Direct-upload announcement creation failed.');
+    createdAnnouncementIds.push(directUploadAnnouncementId);
+    assert(
+      String(directUploadAnnouncement?.image || '').trim().length > 0,
+      'Direct-upload announcement attachment is missing.'
+    );
+
     logStep('Creating text announcement');
     const textAnnouncement = await request('/api/announcements', {
       method: 'POST',

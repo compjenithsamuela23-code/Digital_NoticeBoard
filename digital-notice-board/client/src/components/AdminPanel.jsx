@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as tus from 'tus-js-client';
 import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import { apiUrl } from '../config/api';
@@ -97,6 +98,12 @@ const MAX_ATTACHMENT_UPLOAD_BYTES = 150 * 1024 * 1024;
 const MAX_ATTACHMENT_UPLOAD_MB = Math.floor(MAX_ATTACHMENT_UPLOAD_BYTES / (1024 * 1024));
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 const MAX_BATCH_ATTACHMENTS = 24;
+const RESUMABLE_UPLOAD_THRESHOLD_BYTES = 6 * 1024 * 1024;
+const RESUMABLE_UPLOAD_CHUNK_BYTES = 6 * 1024 * 1024;
+const RESUMABLE_UPLOAD_RETRY_DELAYS_MS = [0, 1000, 3000, 5000, 10000, 20000];
+const DROP_ZONE_KEYS = ['image', 'video', 'document'];
+const FILE_DRAG_TRANSFER_TYPES = new Set(['files', 'application/x-moz-file']);
+const SLOW_NETWORK_TYPES = new Set(['slow-2g', '2g', '3g']);
 const MAX_LIVE_LINKS = 24;
 const LIVE_LINK_SPLIT_PATTERN = /[\s\n,;]+/;
 const LIVE_LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/gi;
@@ -305,6 +312,47 @@ const getMediaKindLabel = (file) => {
   return 'Media';
 };
 
+const hasFileDragPayload = (dataTransfer) =>
+  Array.from(dataTransfer?.types || []).some((type) =>
+    FILE_DRAG_TRANSFER_TYPES.has(String(type || '').trim().toLowerCase())
+  );
+
+const extractDroppedFiles = (dataTransfer) => {
+  if (!dataTransfer) return [];
+
+  const fileMap = new Map();
+  const registerFile = (file) => {
+    if (!(file instanceof File)) return;
+    const identity = getFileIdentity(file);
+    if (!identity || fileMap.has(identity)) return;
+    fileMap.set(identity, file);
+  };
+
+  Array.from(dataTransfer.items || []).forEach((item) => {
+    if (String(item?.kind || '').toLowerCase() !== 'file') return;
+    const file = item.getAsFile?.();
+    if (file) {
+      registerFile(file);
+    }
+  });
+
+  Array.from(dataTransfer.files || []).forEach(registerFile);
+  return [...fileMap.values()];
+};
+
+const isSlowUploadNetwork = (effectiveType) =>
+  SLOW_NETWORK_TYPES.has(String(effectiveType || '').trim().toLowerCase());
+
+const shouldUseResumableUpload = ({ fileSizeBytes, effectiveType, token, objectPath, bucketName, resumableUploadUrl }) =>
+  Boolean(
+    token &&
+      objectPath &&
+      bucketName &&
+      resumableUploadUrl &&
+      (fileSizeBytes > RESUMABLE_UPLOAD_THRESHOLD_BYTES ||
+        (isSlowUploadNetwork(effectiveType) && fileSizeBytes >= 1024 * 1024))
+  );
+
 const createDisplayBatchId = () => {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') {
     return window.crypto.randomUUID().replace(/-/g, '_');
@@ -450,6 +498,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [opsAgentActionResult, setOpsAgentActionResult] = useState(null);
   const [showAgentCenterDetails, setShowAgentCenterDetails] = useState(false);
   const [activeDropZone, setActiveDropZone] = useState('');
+  const [isFileDragActive, setIsFileDragActive] = useState(false);
   const mediaInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const mediaReplaceInputRef = useRef(null);
@@ -466,13 +515,19 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const opsAgentSettingsRequestRef = useRef(null);
   const opsAgentHistoryRequestRef = useRef(null);
   const opsAgentActionRequestRef = useRef(null);
+  const windowFileDragDepthRef = useRef(0);
+  const dropZoneDragDepthRef = useRef({
+    image: 0,
+    video: 0,
+    document: 0
+  });
   const [mediaReplaceIndex, setMediaReplaceIndex] = useState(-1);
   const [documentReplaceIndex, setDocumentReplaceIndex] = useState(-1);
 
   const navigate = useNavigate();
   const { socket } = useSocket();
   const { isDark, toggleTheme } = useTheme();
-  const { isOnline } = useNetworkStatus();
+  const { isOnline, effectiveType } = useNetworkStatus();
   const isPageVisible = usePageVisibility();
   const [socketConnected, setSocketConnected] = useState(Boolean(socket?.connected));
   const preferSocket = Boolean(socket) && socketConnected;
@@ -522,6 +577,59 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     [handleAuthFailure]
   );
 
+  const uploadAttachmentWithTus = useCallback(
+    async ({
+      file,
+      mimeType,
+      objectPath,
+      bucketName,
+      token,
+      resumableUploadUrl
+    }) =>
+      new Promise((resolve, reject) => {
+        const upload = new tus.Upload(file, {
+          endpoint: resumableUploadUrl,
+          retryDelays: RESUMABLE_UPLOAD_RETRY_DELAYS_MS,
+          headers: {
+            'x-signature': token,
+            'x-upsert': 'false'
+          },
+          metadata: {
+            bucketName,
+            objectName: objectPath,
+            contentType: mimeType,
+            cacheControl: '3600'
+          },
+          uploadDataDuringCreation: true,
+          removeFingerprintOnSuccess: true,
+          chunkSize: RESUMABLE_UPLOAD_CHUNK_BYTES,
+          fingerprint: () =>
+            Promise.resolve(
+              ['notice-board', objectPath, file.name || '', file.size || 0, file.lastModified || 0].join(':')
+            ),
+          onError: (error) => {
+            reject(error);
+          },
+          onSuccess: () => {
+            resolve();
+          }
+        });
+
+        upload
+          .findPreviousUploads()
+          .then((previousUploads) => {
+            if (Array.isArray(previousUploads) && previousUploads.length > 0) {
+              upload.resumeFromPreviousUpload(previousUploads[0]);
+            }
+            upload.start();
+          })
+          .catch((error) => {
+            reject(error);
+          });
+      }),
+    []
+  );
+
   const uploadAttachmentToStorage = useCallback(
     async (file) => {
       if (!file) return null;
@@ -549,27 +657,51 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       const presignPayload = presignResponse?.data || {};
       const signedUrl = String(presignPayload.signedUrl || '').trim();
       const publicUrl = String(presignPayload.publicUrl || '').trim();
+      const bucketName = String(presignPayload.bucketName || '').trim();
+      const objectPath = String(presignPayload.objectPath || '').trim();
+      const token = String(presignPayload.token || '').trim();
+      const resumableUploadUrl = String(presignPayload.resumableUploadUrl || '').trim();
       if (!signedUrl || !publicUrl) {
         throw new Error('Upload URL could not be generated for this file.');
       }
 
-      const uploadResponse = await fetch(signedUrl, {
-        method: 'PUT',
-        headers: {
-          'content-type': mimeType,
-          'x-upsert': 'false'
-        },
-        body: file
-      });
+      if (
+        shouldUseResumableUpload({
+          fileSizeBytes,
+          effectiveType,
+          token,
+          objectPath,
+          bucketName,
+          resumableUploadUrl
+        })
+      ) {
+        await uploadAttachmentWithTus({
+          file,
+          mimeType,
+          objectPath,
+          bucketName,
+          token,
+          resumableUploadUrl
+        });
+      } else {
+        const uploadResponse = await fetch(signedUrl, {
+          method: 'PUT',
+          headers: {
+            'content-type': mimeType,
+            'x-upsert': 'false'
+          },
+          body: file
+        });
 
-      if (!uploadResponse.ok) {
-        const failureBody = await uploadResponse.text().catch(() => '');
-        const failureDetail = String(failureBody || '').trim().slice(0, 180);
-        throw new Error(
-          `Direct upload failed (${uploadResponse.status}).${
-            failureDetail ? ` ${failureDetail}` : ''
-          }`
-        );
+        if (!uploadResponse.ok) {
+          const failureBody = await uploadResponse.text().catch(() => '');
+          const failureDetail = String(failureBody || '').trim().slice(0, 180);
+          throw new Error(
+            `Direct upload failed (${uploadResponse.status}).${
+              failureDetail ? ` ${failureDetail}` : ''
+            }`
+          );
+        }
       }
 
       return {
@@ -579,7 +711,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         attachmentFileSizeBytes: fileSizeBytes
       };
     },
-    [applyWorkspaceAuth]
+    [applyWorkspaceAuth, effectiveType, uploadAttachmentWithTus]
   );
 
   const validateUploadSize = useCallback((files = []) => {
@@ -1335,9 +1467,80 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     };
   }, [mediaFiles]);
 
+  const clearDropInteraction = useCallback(() => {
+    windowFileDragDepthRef.current = 0;
+    dropZoneDragDepthRef.current = {
+      image: 0,
+      video: 0,
+      document: 0
+    };
+    setActiveDropZone('');
+    setIsFileDragActive(false);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const handleWindowDragEnter = (event) => {
+      if (!hasFileDragPayload(event.dataTransfer)) return;
+      event.preventDefault();
+      windowFileDragDepthRef.current += 1;
+      setIsFileDragActive(true);
+    };
+
+    const handleWindowDragOver = (event) => {
+      if (!hasFileDragPayload(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+      setIsFileDragActive(true);
+    };
+
+    const handleWindowDragLeave = (event) => {
+      if (!hasFileDragPayload(event.dataTransfer)) return;
+      const nextDepth = Math.max(0, windowFileDragDepthRef.current - 1);
+      windowFileDragDepthRef.current = nextDepth;
+
+      if (
+        nextDepth === 0 &&
+        (!event.relatedTarget || event.relatedTarget === document.documentElement || event.relatedTarget === document.body)
+      ) {
+        clearDropInteraction();
+      }
+    };
+
+    const handleWindowDrop = (event) => {
+      if (!hasFileDragPayload(event.dataTransfer)) return;
+      event.preventDefault();
+      clearDropInteraction();
+    };
+
+    const handleWindowBlur = () => {
+      clearDropInteraction();
+    };
+
+    window.addEventListener('dragenter', handleWindowDragEnter);
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('dragleave', handleWindowDragLeave);
+    window.addEventListener('drop', handleWindowDrop);
+    window.addEventListener('blur', handleWindowBlur);
+
+    return () => {
+      window.removeEventListener('dragenter', handleWindowDragEnter);
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('dragleave', handleWindowDragLeave);
+      window.removeEventListener('drop', handleWindowDrop);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [clearDropInteraction]);
+
   const clearSelectedAttachmentDrafts = () => {
     revokeObjectUrls(mediaPreviewUrls);
     revokeObjectUrls(documentPreviewUrls);
+    clearDropInteraction();
     setMediaFiles([]);
     setMediaPreviewUrls([]);
     setMediaDimensionsByKey({});
@@ -1915,31 +2118,51 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     }
   };
 
+  const handleDropZoneDragEnter = (zone) => (event) => {
+    if (!hasFileDragPayload(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dropZoneDragDepthRef.current[zone] = (dropZoneDragDepthRef.current[zone] || 0) + 1;
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy';
+    }
+    setIsFileDragActive(true);
+    setActiveDropZone(zone);
+  };
+
   const handleDropZoneDragOver = (zone) => (event) => {
+    if (!hasFileDragPayload(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = 'copy';
     }
+    setIsFileDragActive(true);
     setActiveDropZone(zone);
   };
 
   const handleDropZoneDragLeave = (zone) => (event) => {
+    if (!hasFileDragPayload(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
-    const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
-      return;
+    const nextDepth = Math.max(0, (dropZoneDragDepthRef.current[zone] || 0) - 1);
+    dropZoneDragDepthRef.current[zone] = nextDepth;
+    if (nextDepth === 0) {
+      setActiveDropZone((previous) => (previous === zone ? '' : previous));
     }
-    setActiveDropZone((previous) => (previous === zone ? '' : previous));
+    const hasActiveZone = DROP_ZONE_KEYS.some((key) => (dropZoneDragDepthRef.current[key] || 0) > 0);
+    if (!hasActiveZone && windowFileDragDepthRef.current === 0) {
+      setIsFileDragActive(false);
+    }
   };
 
   const handleDropZoneDrop = (zone) => (event) => {
+    if (!hasFileDragPayload(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
-    setActiveDropZone((previous) => (previous === zone ? '' : previous));
+    clearDropInteraction();
 
-    const droppedFiles = Array.from(event.dataTransfer?.files || []);
+    const droppedFiles = extractDroppedFiles(event.dataTransfer);
     if (droppedFiles.length === 0) return;
 
     if (zone === 'document') {
@@ -3279,9 +3502,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             <div className="field">
               <label htmlFor="announcement-image">Image Upload</label>
               <div
-                className={`upload-dropzone ${activeDropZone === 'image' ? 'is-active' : ''}`.trim()}
+                className={`upload-dropzone ${isFileDragActive ? 'is-file-drag' : ''} ${activeDropZone === 'image' ? 'is-active' : ''}`.trim()}
                 role="button"
                 tabIndex={0}
+                aria-label="Image upload dropzone"
                 onClick={() => openUploadPicker('image')}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -3289,7 +3513,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     openUploadPicker('image');
                   }
                 }}
-                onDragEnter={handleDropZoneDragOver('image')}
+                onDragEnter={handleDropZoneDragEnter('image')}
                 onDragOver={handleDropZoneDragOver('image')}
                 onDragLeave={handleDropZoneDragLeave('image')}
                 onDrop={handleDropZoneDrop('image')}
@@ -3331,9 +3555,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             <div className="field">
               <label htmlFor="announcement-video">Video Upload</label>
               <div
-                className={`upload-dropzone ${activeDropZone === 'video' ? 'is-active' : ''}`.trim()}
+                className={`upload-dropzone ${isFileDragActive ? 'is-file-drag' : ''} ${activeDropZone === 'video' ? 'is-active' : ''}`.trim()}
                 role="button"
                 tabIndex={0}
+                aria-label="Video upload dropzone"
                 onClick={() => openUploadPicker('video')}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -3341,7 +3566,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     openUploadPicker('video');
                   }
                 }}
-                onDragEnter={handleDropZoneDragOver('video')}
+                onDragEnter={handleDropZoneDragEnter('video')}
                 onDragOver={handleDropZoneDragOver('video')}
                 onDragLeave={handleDropZoneDragLeave('video')}
                 onDrop={handleDropZoneDrop('video')}
@@ -3392,9 +3617,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
             <div className="field">
               <label htmlFor="announcement-document">Document Upload (PDF/Word/PPT/Etc)</label>
               <div
-                className={`upload-dropzone ${activeDropZone === 'document' ? 'is-active' : ''}`.trim()}
+                className={`upload-dropzone ${isFileDragActive ? 'is-file-drag' : ''} ${activeDropZone === 'document' ? 'is-active' : ''}`.trim()}
                 role="button"
                 tabIndex={0}
+                aria-label="Document upload dropzone"
                 onClick={() => openUploadPicker('document')}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -3402,7 +3628,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                     openUploadPicker('document');
                   }
                 }}
-                onDragEnter={handleDropZoneDragOver('document')}
+                onDragEnter={handleDropZoneDragEnter('document')}
                 onDragOver={handleDropZoneDragOver('document')}
                 onDragLeave={handleDropZoneDragLeave('document')}
                 onDrop={handleDropZoneDrop('document')}

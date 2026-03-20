@@ -173,6 +173,18 @@ const IS_SERVERLESS_RUNTIME = IS_VERCEL || String(process.env.SERVERLESS || '').
 const SUPABASE_STORAGE_BUCKET =
   String(process.env.SUPABASE_STORAGE_BUCKET || 'notice-board-uploads').trim() || 'notice-board-uploads';
 const SUPABASE_STORAGE_PUBLIC_URL_MARKER = `/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/`;
+const SUPABASE_RESUMABLE_UPLOAD_URL = (() => {
+  try {
+    const parsed = new URL(SUPABASE_URL);
+    if (/\.storage\.supabase\.co$/i.test(parsed.hostname)) {
+      return `${parsed.origin}/storage/v1/upload/resumable`;
+    }
+    const directStorageHost = parsed.hostname.replace(/\.supabase\.co$/i, '.storage.supabase.co');
+    return `${parsed.protocol}//${directStorageHost}/storage/v1/upload/resumable`;
+  } catch {
+    return `${String(SUPABASE_URL || '').replace(/\/+$/, '')}/storage/v1/upload/resumable`;
+  }
+})();
 const DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES = 150 * 1024 * 1024;
 const DESIRED_DIRECT_UPLOAD_MAX_SIZE_MB = Math.floor(DESIRED_DIRECT_UPLOAD_MAX_SIZE_BYTES / (1024 * 1024));
 const SUPABASE_FREE_PLAN_FALLBACK_MAX_SIZE_BYTES = 50 * 1024 * 1024;
@@ -2934,6 +2946,8 @@ app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, r
       signedUrl: signedUploadData && signedUploadData.signedUrl ? signedUploadData.signedUrl : null,
       token: signedUploadData && signedUploadData.token ? signedUploadData.token : null,
       objectPath,
+      bucketName: SUPABASE_STORAGE_BUCKET,
+      resumableUploadUrl: SUPABASE_RESUMABLE_UPLOAD_URL,
       publicUrl: publicUrlData.publicUrl,
       fileName,
       mimeType,
