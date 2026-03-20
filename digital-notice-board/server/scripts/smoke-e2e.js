@@ -209,6 +209,17 @@ async function run() {
     assert(opsAgentAction && typeof opsAgentAction === 'object', 'Ops agent action response is invalid.');
     assert(Boolean(opsAgentAction?.result), 'Ops agent action result is missing.');
 
+    logStep('Checking upload capabilities endpoint');
+    const uploadCapabilities = await request('/api/uploads/capabilities', {
+      method: 'GET',
+      token: adminToken
+    });
+    assert(
+      Number.isFinite(Number(uploadCapabilities?.maxFileSizeBytes)) &&
+        Number(uploadCapabilities.maxFileSizeBytes) > 0,
+      'Upload capabilities maxFileSizeBytes is missing.'
+    );
+
     logStep('Creating temporary category');
     const category = await request('/api/categories', {
       method: 'POST',

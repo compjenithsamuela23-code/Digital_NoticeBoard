@@ -440,6 +440,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [mediaDimensionsByKey, setMediaDimensionsByKey] = useState({});
   const [documentFiles, setDocumentFiles] = useState([]);
   const [documentPreviewUrls, setDocumentPreviewUrls] = useState([]);
+  const [uploadCapabilities, setUploadCapabilities] = useState({
+    maxFileSizeBytes: MAX_ATTACHMENT_UPLOAD_BYTES,
+    maxFileSizeMb: MAX_ATTACHMENT_UPLOAD_MB
+  });
   const [formData, setFormData] = useState({
     title: '',
     content: '',
@@ -507,6 +511,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const announcementsRequestRef = useRef(null);
   const liveStatusRequestRef = useRef(null);
   const categoriesRequestRef = useRef(null);
+  const uploadCapabilitiesRequestRef = useRef(null);
   const displayUsersRequestRef = useRef(null);
   const staffUsersRequestRef = useRef(null);
   const maintenanceAgentRequestRef = useRef(null);
@@ -640,8 +645,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       if (Number.isNaN(fileSizeBytes) || fileSizeBytes <= 0) {
         throw new Error('Selected file is invalid.');
       }
-      if (fileSizeBytes > MAX_ATTACHMENT_UPLOAD_BYTES) {
-        throw new Error(`"${fileName}" exceeds the ${MAX_ATTACHMENT_UPLOAD_MB}MB upload limit.`);
+      if (fileSizeBytes > activeUploadMaxSizeBytes) {
+        throw new Error(`"${fileName}" exceeds the ${activeUploadMaxSizeMb}MB upload limit.`);
       }
 
       const presignResponse = await apiClient.post(
@@ -711,13 +716,13 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
         attachmentFileSizeBytes: fileSizeBytes
       };
     },
-    [applyWorkspaceAuth, effectiveType, uploadAttachmentWithTus]
+    [activeUploadMaxSizeBytes, activeUploadMaxSizeMb, applyWorkspaceAuth, effectiveType, uploadAttachmentWithTus]
   );
 
   const validateUploadSize = useCallback((files = []) => {
     const oversizedFile = (Array.isArray(files) ? files : []).find((file) => {
       const size = Number.parseInt(file?.size, 10);
-      return Number.isFinite(size) && size > MAX_ATTACHMENT_UPLOAD_BYTES;
+      return Number.isFinite(size) && size > activeUploadMaxSizeBytes;
     });
 
     if (!oversizedFile) {
@@ -725,10 +730,10 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     }
 
     setRequestError(
-      `${oversizedFile.name || 'Selected file'} exceeds the ${MAX_ATTACHMENT_UPLOAD_MB}MB upload limit.`
+      `${oversizedFile.name || 'Selected file'} exceeds the ${activeUploadMaxSizeMb}MB upload limit.`
     );
     return false;
-  }, []);
+  }, [activeUploadMaxSizeBytes, activeUploadMaxSizeMb]);
 
   const summary = useMemo(() => {
     const total = announcements.length;
@@ -744,6 +749,20 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const matchedCategory = categories.find((category) => category.id === liveCategory);
     return matchedCategory ? matchedCategory.name : 'Selected category';
   }, [categories, liveCategory]);
+  const activeUploadMaxSizeBytes = useMemo(() => {
+    const configuredLimit = Number.parseInt(uploadCapabilities?.maxFileSizeBytes, 10);
+    if (Number.isFinite(configuredLimit) && configuredLimit > 0) {
+      return Math.min(configuredLimit, MAX_ATTACHMENT_UPLOAD_BYTES);
+    }
+    return MAX_ATTACHMENT_UPLOAD_BYTES;
+  }, [uploadCapabilities]);
+  const activeUploadMaxSizeMb = useMemo(() => {
+    const configuredMb = Number.parseInt(uploadCapabilities?.maxFileSizeMb, 10);
+    if (Number.isFinite(configuredMb) && configuredMb > 0) {
+      return Math.min(configuredMb, MAX_ATTACHMENT_UPLOAD_MB);
+    }
+    return Math.max(1, Math.floor(activeUploadMaxSizeBytes / (1024 * 1024)));
+  }, [activeUploadMaxSizeBytes, uploadCapabilities]);
   const maintenanceAgentDetails = useMemo(
     () => maintenanceAgentPayload?.agent || maintenanceAgentPayload || null,
     [maintenanceAgentPayload]
@@ -965,6 +984,38 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       }
     });
   }, [applyWorkspaceAuth, handleRequestError, isOnline]);
+
+  const fetchUploadCapabilities = useCallback(async () => {
+    if (!isOnline) {
+      return;
+    }
+
+    await runSingleFlight(uploadCapabilitiesRequestRef, async () => {
+      try {
+        const response = await apiClient.get(apiUrl('/api/uploads/capabilities'), applyWorkspaceAuth());
+        const payload = response.data || {};
+        const nextMaxFileSizeBytes = Number.parseInt(payload.maxFileSizeBytes, 10);
+        const nextMaxFileSizeMb = Number.parseInt(payload.maxFileSizeMb, 10);
+
+        setUploadCapabilities({
+          maxFileSizeBytes:
+            Number.isFinite(nextMaxFileSizeBytes) && nextMaxFileSizeBytes > 0
+              ? Math.min(nextMaxFileSizeBytes, MAX_ATTACHMENT_UPLOAD_BYTES)
+              : MAX_ATTACHMENT_UPLOAD_BYTES,
+          maxFileSizeMb:
+            Number.isFinite(nextMaxFileSizeMb) && nextMaxFileSizeMb > 0
+              ? Math.min(nextMaxFileSizeMb, MAX_ATTACHMENT_UPLOAD_MB)
+              : MAX_ATTACHMENT_UPLOAD_MB
+        });
+      } catch (error) {
+        if (error.response?.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        console.error('Error fetching upload capabilities:', error);
+      }
+    });
+  }, [applyWorkspaceAuth, handleAuthFailure, isOnline]);
 
   const fetchDisplayUsers = useCallback(async () => {
     if (!isAdminWorkspace) {
@@ -1231,6 +1282,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchAnnouncements();
     fetchLiveStatus();
     fetchCategories();
+    fetchUploadCapabilities();
     fetchMaintenanceAgentStatus();
     fetchOpsAgentSettings();
     fetchPlatformStatus();
@@ -1251,6 +1303,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     fetchOpsAgentStatus,
     fetchPlatformStatus,
     fetchStaffUsers,
+    fetchUploadCapabilities,
     isAdminWorkspace,
     isStaffWorkspace,
     navigate,
@@ -3521,8 +3574,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 <div className="upload-dropzone__copy">
                   <p className="upload-dropzone__title">Drag and drop image files here</p>
                   <p className="upload-dropzone__hint">
-                    JPG, PNG, WEBP, HEIC and other image formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file
-                    when storage plan allows it.
+                    JPG, PNG, WEBP, HEIC and other image formats. Currently up to {activeUploadMaxSizeMb} MB
+                    per file on this workspace.
                   </p>
                 </div>
                 <div className="upload-dropzone__actions">
@@ -3574,8 +3627,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 <div className="upload-dropzone__copy">
                   <p className="upload-dropzone__title">Drag and drop video files here</p>
                   <p className="upload-dropzone__hint">
-                    MP4, MOV, WEBM, MKV and other video formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file
-                    when storage plan allows it.
+                    MP4, MOV, WEBM, MKV and other video formats. Currently up to {activeUploadMaxSizeMb} MB
+                    per file on this workspace.
                   </p>
                 </div>
                 <div className="upload-dropzone__actions">
@@ -3636,8 +3689,8 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 <div className="upload-dropzone__copy">
                   <p className="upload-dropzone__title">Drag and drop document files here</p>
                   <p className="upload-dropzone__hint">
-                    PDF, Word, PowerPoint, Excel and archive files. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file
-                    when storage plan allows it.
+                    PDF, Word, PowerPoint, Excel and archive files. Currently up to {activeUploadMaxSizeMb} MB
+                    per file on this workspace.
                   </p>
                 </div>
                 <div className="upload-dropzone__actions">

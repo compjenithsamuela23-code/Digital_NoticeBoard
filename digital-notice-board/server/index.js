@@ -2907,6 +2907,23 @@ app.post('/api/display-auth/logout', simpleAuth, async (req, res) => {
   }
 });
 
+app.get('/api/uploads/capabilities', simpleAuth, requireWorkspaceRole, async (req, res) => {
+  try {
+    await ensureStorageBucketReady();
+    const directUploadMaxSizeBytes = getDirectUploadMaxSizeBytes();
+    const directUploadMaxSizeMb = getDirectUploadMaxSizeMb();
+
+    res.json({
+      bucketName: SUPABASE_STORAGE_BUCKET,
+      maxFileSizeBytes: directUploadMaxSizeBytes,
+      maxFileSizeMb: directUploadMaxSizeMb,
+      resumableUploadUrl: SUPABASE_RESUMABLE_UPLOAD_URL
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/uploads/presign', simpleAuth, requireWorkspaceRole, async (req, res) => {
   try {
     const fileName = sanitizeOriginalFileName(req.body && req.body.fileName);
