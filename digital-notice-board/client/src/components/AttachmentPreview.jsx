@@ -150,6 +150,8 @@ const AttachmentPreview = ({
   documentSlideshow = false,
   documentSlideshowAutoplay = true,
   documentSlideshowIntervalMs,
+  documentSlideshowShowControls = true,
+  documentSlideshowShowDots = true,
   onDocumentSlideCountChange,
   onDocumentSlideIndexChange,
   showActions = true,
@@ -253,6 +255,8 @@ const AttachmentPreview = ({
           slideshow={documentSlideshow}
           slideshowAutoplay={documentSlideshowAutoplay}
           slideshowIntervalMs={documentSlideshowIntervalMs}
+          slideshowShowControls={documentSlideshowShowControls}
+          slideshowShowDots={documentSlideshowShowDots}
           onSlideCountChange={onDocumentSlideCountChange}
           onSlideIndexChange={onDocumentSlideIndexChange}
           title={title}

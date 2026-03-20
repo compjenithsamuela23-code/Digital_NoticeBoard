@@ -171,14 +171,14 @@ const IS_SERVERLESS_RUNTIME = IS_VERCEL || String(process.env.SERVERLESS || '').
 const SUPABASE_STORAGE_BUCKET =
   String(process.env.SUPABASE_STORAGE_BUCKET || 'notice-board-uploads').trim() || 'notice-board-uploads';
 const SUPABASE_STORAGE_PUBLIC_URL_MARKER = `/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/`;
-const LOCAL_MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
+const DIRECT_UPLOAD_MAX_SIZE_BYTES = 150 * 1024 * 1024;
+const DIRECT_UPLOAD_MAX_SIZE_MB = Math.floor(DIRECT_UPLOAD_MAX_SIZE_BYTES / (1024 * 1024));
+const LOCAL_MAX_UPLOAD_SIZE_BYTES = DIRECT_UPLOAD_MAX_SIZE_BYTES;
 const SERVERLESS_MAX_UPLOAD_SIZE_BYTES = 4 * 1024 * 1024;
 const MAX_UPLOAD_SIZE_BYTES = IS_SERVERLESS_RUNTIME
   ? SERVERLESS_MAX_UPLOAD_SIZE_BYTES
   : LOCAL_MAX_UPLOAD_SIZE_BYTES;
 const MAX_UPLOAD_SIZE_MB = Math.floor(MAX_UPLOAD_SIZE_BYTES / (1024 * 1024));
-const DIRECT_UPLOAD_MAX_SIZE_BYTES = 50 * 1024 * 1024;
-const DIRECT_UPLOAD_MAX_SIZE_MB = Math.floor(DIRECT_UPLOAD_MAX_SIZE_BYTES / (1024 * 1024));
 const CACHE_CONTROL_SHORT_PUBLIC = 'public, max-age=8, stale-while-revalidate=40';
 const CACHE_CONTROL_CATEGORIES_PUBLIC = 'public, max-age=30, stale-while-revalidate=120';
 const CACHE_CONTROL_UPLOAD_ASSETS = 'public, max-age=3600, stale-while-revalidate=86400';
@@ -847,14 +847,37 @@ async function ensureStorageBucketReady() {
       throw new Error(`Error listing Supabase storage buckets: ${listError.message}`);
     }
 
-    const hasBucket = (buckets || []).some((bucket) => bucket && bucket.name === SUPABASE_STORAGE_BUCKET);
+    const existingBucket = (buckets || []).find((bucket) => bucket && bucket.name === SUPABASE_STORAGE_BUCKET);
+    const existingFileLimitBytes = Number.parseInt(
+      existingBucket?.fileSizeLimit ?? existingBucket?.file_size_limit,
+      10
+    );
+    const shouldUpdateBucket =
+      Boolean(existingBucket) &&
+      (existingBucket.public !== true ||
+        !Number.isFinite(existingFileLimitBytes) ||
+        existingFileLimitBytes < DIRECT_UPLOAD_MAX_SIZE_BYTES);
+
+    if (shouldUpdateBucket) {
+      const { error: updateError } = await supabase.storage.updateBucket(SUPABASE_STORAGE_BUCKET, {
+        public: true,
+        fileSizeLimit: DIRECT_UPLOAD_MAX_SIZE_BYTES
+      });
+      if (updateError) {
+        throw new Error(
+          `Error updating Supabase storage bucket "${SUPABASE_STORAGE_BUCKET}": ${updateError.message}`
+        );
+      }
+    }
+
+    const hasBucket = Boolean(existingBucket);
     if (hasBucket) {
       return;
     }
 
     const { error: createError } = await supabase.storage.createBucket(SUPABASE_STORAGE_BUCKET, {
       public: true,
-      fileSizeLimit: 50 * 1024 * 1024
+      fileSizeLimit: DIRECT_UPLOAD_MAX_SIZE_BYTES
     });
 
     if (createError) {

@@ -285,6 +285,22 @@ const DisplayBoard = () => {
     return true;
   }, [isImageMedia, isVideoMedia]);
 
+  const isPresentationMedia = useCallback((announcement) => {
+    if (!announcement || !announcement.image) return false;
+    const mime = String(announcement.fileMimeType || '').toLowerCase();
+    const references = [
+      String(announcement.fileName || ''),
+      String(announcement.image || '')
+    ].join(' ');
+
+    return (
+      mime === 'application/vnd.ms-powerpoint' ||
+      mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+      mime === 'application/vnd.openxmlformats-officedocument.presentationml.slideshow' ||
+      /\.(ppt|pptx|pps|ppsx)\b/i.test(references)
+    );
+  }, []);
+
   const handleDocumentSlideCountChange = useCallback((count) => {
     const parsed = Number.parseInt(count, 10);
     const next = Number.isNaN(parsed) || parsed <= 0 ? 1 : parsed;
@@ -520,6 +536,7 @@ const DisplayBoard = () => {
   const currentAnnouncementId = currentAnnouncement ? String(currentAnnouncement.id || '') : '';
   const currentAnnouncementHasVideo = isVideoMedia(currentAnnouncement);
   const currentAnnouncementHasDocument = isDocumentMedia(currentAnnouncement);
+  const currentAnnouncementIsPresentation = isPresentationMedia(currentAnnouncement);
   const currentAnnouncementHasAnyMedia = currentAnnouncementMediaGroupCount > 0;
   const currentAnnouncementTitle = String((currentAnnouncement && currentAnnouncement.title) || '').trim();
   const currentAnnouncementContent = String((currentAnnouncement && currentAnnouncement.content) || '').trim();
@@ -542,10 +559,11 @@ const DisplayBoard = () => {
     if (hasMediaDimensions) {
       return { aspectRatio: `${currentAnnouncementMediaWidth} / ${currentAnnouncementMediaHeight}` };
     }
-    return { aspectRatio: '16 / 10' };
+    return { aspectRatio: currentAnnouncementIsPresentation ? '16 / 9' : '16 / 10' };
   }, [
     currentAnnouncementHasAnyMedia,
     currentAnnouncementHasDocument,
+    currentAnnouncementIsPresentation,
     currentAnnouncementMediaHeight,
     currentAnnouncementMediaWidth,
     hasMediaDimensions
@@ -568,6 +586,11 @@ const DisplayBoard = () => {
   const isLiveOn = liveStatus === 'ON' && isLiveVisibleForDisplay;
   const hasAnnouncementStreams = announcementLiveLinks.length > 0;
   const showLivePanel = isLiveOn || hasAnnouncementStreams;
+  const shouldUsePresentationFocusLayout =
+    !showLivePanel &&
+    currentAnnouncementMediaGroupCount <= 1 &&
+    currentAnnouncementIsPresentation &&
+    !currentAnnouncementHasText;
   const activeLiveStreamEmbeds = useMemo(() => {
     const parentHost =
       typeof window !== 'undefined' && window.location && window.location.hostname
@@ -606,7 +629,8 @@ const DisplayBoard = () => {
     if (!showLivePanel) return [];
     return liveSourceTiles;
   }, [liveSourceTiles, showLivePanel]);
-  const showAnnouncementMediaPanel = !showLivePanel && currentAnnouncementMediaGroupCount > 0;
+  const showAnnouncementMediaPanel =
+    !showLivePanel && currentAnnouncementMediaGroupCount > 0 && !shouldUsePresentationFocusLayout;
   const isAnnouncementMediaShownInLivePanel = false;
   const showSecondaryPanel = showLivePanel || showAnnouncementMediaPanel;
   const isSingleColumnLayout = !showSecondaryPanel;
@@ -665,8 +689,10 @@ const DisplayBoard = () => {
     }
     return `${visibleCount} ${visibleCount === 1 ? 'stream' : 'streams'} live`;
   }, [activeLiveStreamEmbeds.length, hiddenLiveStreamCount, liveSourceTiles.length]);
-  const showAnnouncementFallbackText = currentAnnouncementHasAnyMedia && !currentAnnouncementHasText;
-  const announcementPanelTitle = currentAnnouncementTitle || 'Notice Attachment';
+  const showAnnouncementFallbackText =
+    currentAnnouncementHasAnyMedia && !currentAnnouncementHasText && !shouldUsePresentationFocusLayout;
+  const announcementPanelTitle =
+    currentAnnouncementTitle || (currentAnnouncementIsPresentation ? 'Presentation' : 'Notice Attachment');
   const announcementPanelContent =
     currentAnnouncementContent || 'Media has been posted without additional text content.';
 
@@ -791,7 +817,9 @@ const DisplayBoard = () => {
       return `${announcementLabel} • Split view (${currentAnnouncementMediaGroupCount} attachments)`;
     }
     if (!showLivePanel && currentAnnouncementHasDocument && documentSlideCount > 1) {
-      return `${announcementLabel} • Page ${documentSlideIndex} of ${documentSlideCount}`;
+      const slideLabel = currentAnnouncementIsPresentation ? 'Slide' : 'Page';
+      const suffix = currentAnnouncementIsPresentation ? ' • Presentation loop active' : '';
+      return `${announcementLabel} • ${slideLabel} ${documentSlideIndex} of ${documentSlideCount}${suffix}`;
     }
     return announcementLabel;
   }, [
@@ -801,6 +829,7 @@ const DisplayBoard = () => {
     announcementMediaPageCount,
     currentAnnouncementMediaGroupCount,
     currentAnnouncementHasDocument,
+    currentAnnouncementIsPresentation,
     displaySlides.length,
     documentSlideCount,
     documentSlideIndex,
@@ -1100,14 +1129,16 @@ const DisplayBoard = () => {
                       fileSizeBytes={currentAnnouncement.fileSizeBytes}
                       className="media-preview--full media-preview--display media-preview--emergency"
                       documentPreview
-                      documentHideHeader
-                      documentShowActions={false}
-                      documentSlideshow
-                      documentSlideshowAutoplay={isPlaying}
-                      documentSlideshowIntervalMs={6000}
-                      showActions={false}
-                      title={currentAnnouncementTitle || 'Attachment'}
-                      imageAlt={currentAnnouncementTitle || 'Attachment'}
+                    documentHideHeader
+                    documentShowActions={false}
+                    documentSlideshow
+                    documentSlideshowAutoplay={isPlaying}
+                    documentSlideshowIntervalMs={6000}
+                    documentSlideshowShowControls={false}
+                    documentSlideshowShowDots={false}
+                    showActions={false}
+                    title={currentAnnouncementTitle || 'Attachment'}
+                    imageAlt={currentAnnouncementTitle || 'Attachment'}
                     />
                   </div>
                 </section>
@@ -1266,6 +1297,8 @@ const DisplayBoard = () => {
                             documentSlideshow
                             documentSlideshowAutoplay={isPlaying}
                             documentSlideshowIntervalMs={6000}
+                            documentSlideshowShowControls={false}
+                            documentSlideshowShowDots={false}
                             title={item.title || `Attachment ${index + 1}`}
                             imageAlt={item.title || `Attachment ${index + 1}`}
                             showActions={false}
@@ -1298,13 +1331,17 @@ const DisplayBoard = () => {
                         currentAnnouncementMediaGroup[0]?.fileSizeBytes ||
                         currentAnnouncement.fileSizeBytes
                       }
-                      className="media-preview--full media-preview--display media-preview--display-panel"
+                      className={`media-preview--full media-preview--display media-preview--display-panel ${
+                        currentAnnouncementIsPresentation ? 'media-preview--presentation-stage' : ''
+                      }`.trim()}
                       documentPreview
                       documentHideHeader
                       documentShowActions={false}
                       documentSlideshow
                       documentSlideshowAutoplay={isPlaying}
                       documentSlideshowIntervalMs={6000}
+                      documentSlideshowShowControls={false}
+                      documentSlideshowShowDots={false}
                       onDocumentSlideCountChange={
                         currentAnnouncementHasDocument && currentAnnouncementMediaGroupCount <= 1
                           ? handleDocumentSlideCountChange
@@ -1325,20 +1362,32 @@ const DisplayBoard = () => {
             </section>
           ) : null}
 
-          <section className={`announcement-panel display-panel ${isEmergency ? 'emergency-frame' : ''}`}>
-            <div className="panel-head">
-              <h2>Current Announcement</h2>
-              <div className="inline-actions">
-                <span className="pill pill--info">Priority {currentAnnouncement.priority || 1}</span>
-                {categoryLabel ? <span className="pill">{categoryLabel}</span> : null}
+          <section
+            className={`announcement-panel display-panel ${
+              shouldUsePresentationFocusLayout ? 'display-panel--media-only' : ''
+            } ${isEmergency ? 'emergency-frame' : ''}`.trim()}
+          >
+            {!shouldUsePresentationFocusLayout ? (
+              <div className="panel-head">
+                <h2>Current Announcement</h2>
+                <div className="inline-actions">
+                  <span className="pill pill--info">Priority {currentAnnouncement.priority || 1}</span>
+                  {categoryLabel ? <span className="pill">{categoryLabel}</span> : null}
+                </div>
               </div>
-            </div>
+            ) : null}
 
-            <div className="announcement-body">
-              <p className="announcement-kicker">
-                {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
-              </p>
-              {currentAnnouncementTitle || showAnnouncementFallbackText ? (
+            <div
+              className={`announcement-body ${
+                shouldUsePresentationFocusLayout ? 'announcement-body--media-only' : ''
+              }`.trim()}
+            >
+              {!shouldUsePresentationFocusLayout ? (
+                <p className="announcement-kicker">
+                  {isEmergency ? 'Immediate Attention Required' : 'Scheduled Notice'}
+                </p>
+              ) : null}
+              {!shouldUsePresentationFocusLayout && (currentAnnouncementTitle || showAnnouncementFallbackText) ? (
                 <h3 className="announcement-title">{announcementPanelTitle}</h3>
               ) : null}
 
@@ -1346,19 +1395,30 @@ const DisplayBoard = () => {
               !showAnnouncementMediaPanel &&
               !isAnnouncementMediaShownInLivePanel &&
               (!currentAnnouncementHasVideo || !showLivePanel) ? (
-                <div className="announcement-media-frame announcement-media-frame--inline" style={mediaAspectStyle}>
+                <div
+                  className={`announcement-media-frame ${
+                    shouldUsePresentationFocusLayout
+                      ? 'announcement-media-frame--fullscreen'
+                      : 'announcement-media-frame--inline'
+                  }`.trim()}
+                  style={mediaAspectStyle}
+                >
                   <AttachmentPreview
                     filePath={currentAnnouncement.image}
                     fileName={currentAnnouncement.fileName}
                     typeHint={currentAnnouncement.fileMimeType || currentAnnouncement.type}
                     fileSizeBytes={currentAnnouncement.fileSizeBytes}
-                    className="media-preview--full media-preview--display"
+                    className={`media-preview--full media-preview--display ${
+                      shouldUsePresentationFocusLayout ? 'media-preview--display-fullscreen' : ''
+                    } ${currentAnnouncementIsPresentation ? 'media-preview--presentation-stage' : ''}`.trim()}
                     documentPreview
                     documentHideHeader
                     documentShowActions={false}
                     documentSlideshow
                     documentSlideshowAutoplay={isPlaying}
                     documentSlideshowIntervalMs={6000}
+                    documentSlideshowShowControls={false}
+                    documentSlideshowShowDots={false}
                     onDocumentSlideCountChange={
                       currentAnnouncementHasDocument ? handleDocumentSlideCountChange : undefined
                     }
@@ -1372,7 +1432,7 @@ const DisplayBoard = () => {
                 </div>
               ) : null}
 
-              {currentAnnouncementContent || showAnnouncementFallbackText ? (
+              {!shouldUsePresentationFocusLayout && (currentAnnouncementContent || showAnnouncementFallbackText) ? (
                 <p className="announcement-content">{announcementPanelContent}</p>
               ) : null}
             </div>

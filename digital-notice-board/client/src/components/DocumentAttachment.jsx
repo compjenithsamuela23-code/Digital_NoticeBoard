@@ -92,6 +92,7 @@ const MAX_PREVIEW_CHARS = 30000;
 const MAX_BINARY_PREVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_INLINE_PARSE_BYTES = 20 * 1024 * 1024;
 const MAX_SLIDESHOW_PARSE_BYTES = 50 * 1024 * 1024;
+const MAX_PRESENTATION_PARSE_BYTES = 150 * 1024 * 1024;
 const TEXT_SLIDE_MAX_CHARS = 2600;
 const TEXT_SLIDE_MAX_LINES = 26;
 const DEFAULT_SLIDESHOW_INTERVAL_MS = 6000;
@@ -514,6 +515,8 @@ const DocumentAttachment = ({
   slideshow = false,
   slideshowAutoplay = true,
   slideshowIntervalMs = DEFAULT_SLIDESHOW_INTERVAL_MS,
+  slideshowShowControls = true,
+  slideshowShowDots = true,
   onSlideCountChange,
   onSlideIndexChange
 }) => {
@@ -700,7 +703,11 @@ const DocumentAttachment = ({
       setSlides([]);
 
       const isPdfSlideshow = previewMode === 'pdf' && isSlideshowEnabled;
-      if (parsedFileSizeBytes && parsedFileSizeBytes > MAX_INLINE_PARSE_BYTES && !isPdfSlideshow) {
+      const maxInlineParseBytes =
+        previewMode === 'presentation' ? MAX_PRESENTATION_PARSE_BYTES : MAX_INLINE_PARSE_BYTES;
+      const maxSlideshowParseBytes =
+        previewMode === 'presentation' ? MAX_PRESENTATION_PARSE_BYTES : MAX_SLIDESHOW_PARSE_BYTES;
+      if (parsedFileSizeBytes && parsedFileSizeBytes > maxInlineParseBytes && !isPdfSlideshow) {
         setTextLoading(false);
         setTextError(
           `File is too large for inline parsing (${formatFileSize(
@@ -710,7 +717,7 @@ const DocumentAttachment = ({
         return;
       }
 
-      if (isPdfSlideshow && parsedFileSizeBytes && parsedFileSizeBytes > MAX_SLIDESHOW_PARSE_BYTES) {
+      if (isPdfSlideshow && parsedFileSizeBytes && parsedFileSizeBytes > maxSlideshowParseBytes) {
         setTextLoading(false);
         setTextError(
           `File is too large for slide-by-slide preview (${formatFileSize(
@@ -1135,7 +1142,7 @@ const DocumentAttachment = ({
 
           {activeSlide ? renderSlideFrame(activeSlide) : null}
 
-          {hasSlideDeck ? (
+          {hasSlideDeck && slideshowShowControls ? (
             <div className="document-preview__slideshow-controls">
               <button
                 type="button"
@@ -1166,7 +1173,7 @@ const DocumentAttachment = ({
             </div>
           ) : null}
 
-          {slideIndicatorIndexes.length > 1 ? (
+          {slideshowShowDots && slideIndicatorIndexes.length > 1 ? (
             <div className="document-preview__dots" role="tablist" aria-label="Document pages">
               {slideIndicatorIndexes.map((index) => (
                 <button

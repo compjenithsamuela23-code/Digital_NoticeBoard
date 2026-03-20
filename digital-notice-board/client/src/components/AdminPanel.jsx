@@ -93,6 +93,8 @@ const IMAGE_ACCEPT =
 const VIDEO_ACCEPT =
   'video/*,.mp4,.m4v,.m4p,.mov,.avi,.mkv,.webm,.ogg,.ogv,.flv,.f4v,.wmv,.asf,.ts,.m2ts,.mts,.3gp,.3g2,.mpg,.mpeg,.mpe,.vob,.mxf,.rm,.rmvb,.qt,.hevc,.h265,.h264,.r3d,.braw,.cdng,.prores,.dnxhd,.dnxhr,.dv,.mjpeg';
 const MEDIA_ACCEPT = `${IMAGE_ACCEPT},${VIDEO_ACCEPT}`;
+const MAX_ATTACHMENT_UPLOAD_BYTES = 150 * 1024 * 1024;
+const MAX_ATTACHMENT_UPLOAD_MB = Math.floor(MAX_ATTACHMENT_UPLOAD_BYTES / (1024 * 1024));
 const MULTIPART_FALLBACK_MAX_BYTES = Math.floor(3.5 * 1024 * 1024);
 const MAX_BATCH_ATTACHMENTS = 24;
 const MAX_LIVE_LINKS = 24;
@@ -426,6 +428,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
   const [opsAgentError, setOpsAgentError] = useState('');
   const [opsAgentActionPending, setOpsAgentActionPending] = useState('');
   const [opsAgentActionResult, setOpsAgentActionResult] = useState(null);
+  const [activeDropZone, setActiveDropZone] = useState('');
   const mediaInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const mediaReplaceInputRef = useRef(null);
@@ -506,6 +509,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
       if (Number.isNaN(fileSizeBytes) || fileSizeBytes <= 0) {
         throw new Error('Selected file is invalid.');
       }
+      if (fileSizeBytes > MAX_ATTACHMENT_UPLOAD_BYTES) {
+        throw new Error(`"${fileName}" exceeds the ${MAX_ATTACHMENT_UPLOAD_MB}MB upload limit.`);
+      }
 
       const presignResponse = await apiClient.post(
         apiUrl('/api/uploads/presign'),
@@ -552,6 +558,22 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     },
     [applyWorkspaceAuth]
   );
+
+  const validateUploadSize = useCallback((files = []) => {
+    const oversizedFile = (Array.isArray(files) ? files : []).find((file) => {
+      const size = Number.parseInt(file?.size, 10);
+      return Number.isFinite(size) && size > MAX_ATTACHMENT_UPLOAD_BYTES;
+    });
+
+    if (!oversizedFile) {
+      return true;
+    }
+
+    setRequestError(
+      `${oversizedFile.name || 'Selected file'} exceeds the ${MAX_ATTACHMENT_UPLOAD_MB}MB upload limit.`
+    );
+    return false;
+  }, []);
 
   const summary = useMemo(() => {
     const total = announcements.length;
@@ -1541,6 +1563,9 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     if (!Array.isArray(incomingFiles) || incomingFiles.length === 0) {
       return;
     }
+    if (!validateUploadSize(incomingFiles)) {
+      return;
+    }
 
     const filteredFiles = incomingFiles.filter((file) => {
       if (!file) return false;
@@ -1611,28 +1636,11 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     setMediaPreviewUrls((previous) => [...previous, ...nextPreviewUrls]);
   };
 
-  const handleImageChange = (event) => {
-    const incomingFiles = Array.from(event.target.files || []);
-    if (mediaInputRef.current) {
-      mediaInputRef.current.value = '';
+  const appendDocumentFiles = (incomingFiles) => {
+    if (!Array.isArray(incomingFiles) || incomingFiles.length === 0) return;
+    if (!validateUploadSize(incomingFiles)) {
+      return;
     }
-    appendMediaFiles(incomingFiles, 'image');
-  };
-
-  const handleVideoChange = (event) => {
-    const incomingFiles = Array.from(event.target.files || []);
-    if (videoInputRef.current) {
-      videoInputRef.current.value = '';
-    }
-    appendMediaFiles(incomingFiles, 'video');
-  };
-
-  const handleDocumentChange = (event) => {
-    const incomingFiles = Array.from(event.target.files || []);
-    if (documentInputRef.current) {
-      documentInputRef.current.value = '';
-    }
-    if (incomingFiles.length === 0) return;
 
     const invalidMediaFile = incomingFiles.find((file) => {
       const mime = String(file.type || '').toLowerCase();
@@ -1683,6 +1691,79 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
     const nextPreviewUrls = boundedFiles.map((file) => URL.createObjectURL(file));
     setDocumentFiles((previous) => [...previous, ...boundedFiles]);
     setDocumentPreviewUrls((previous) => [...previous, ...nextPreviewUrls]);
+  };
+
+  const openUploadPicker = (zone) => {
+    if (zone === 'image') {
+      mediaInputRef.current?.click();
+      return;
+    }
+    if (zone === 'video') {
+      videoInputRef.current?.click();
+      return;
+    }
+    if (zone === 'document') {
+      documentInputRef.current?.click();
+    }
+  };
+
+  const handleDropZoneDragOver = (zone) => (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy';
+    }
+    setActiveDropZone(zone);
+  };
+
+  const handleDropZoneDragLeave = (zone) => (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setActiveDropZone((previous) => (previous === zone ? '' : previous));
+  };
+
+  const handleDropZoneDrop = (zone) => (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setActiveDropZone((previous) => (previous === zone ? '' : previous));
+
+    const droppedFiles = Array.from(event.dataTransfer?.files || []);
+    if (droppedFiles.length === 0) return;
+
+    if (zone === 'document') {
+      appendDocumentFiles(droppedFiles);
+      return;
+    }
+
+    appendMediaFiles(droppedFiles, zone);
+  };
+
+  const handleImageChange = (event) => {
+    const incomingFiles = Array.from(event.target.files || []);
+    if (mediaInputRef.current) {
+      mediaInputRef.current.value = '';
+    }
+    appendMediaFiles(incomingFiles, 'image');
+  };
+
+  const handleVideoChange = (event) => {
+    const incomingFiles = Array.from(event.target.files || []);
+    if (videoInputRef.current) {
+      videoInputRef.current.value = '';
+    }
+    appendMediaFiles(incomingFiles, 'video');
+  };
+
+  const handleDocumentChange = (event) => {
+    const incomingFiles = Array.from(event.target.files || []);
+    if (documentInputRef.current) {
+      documentInputRef.current.value = '';
+    }
+    appendDocumentFiles(incomingFiles);
   };
 
   const removeMediaAt = (index) => {
@@ -2783,6 +2864,44 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
             <div className="field">
               <label htmlFor="announcement-image">Image Upload</label>
+              <div
+                className={`upload-dropzone ${activeDropZone === 'image' ? 'is-active' : ''}`.trim()}
+                role="button"
+                tabIndex={0}
+                onClick={() => openUploadPicker('image')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openUploadPicker('image');
+                  }
+                }}
+                onDragEnter={handleDropZoneDragOver('image')}
+                onDragOver={handleDropZoneDragOver('image')}
+                onDragLeave={handleDropZoneDragLeave('image')}
+                onDrop={handleDropZoneDrop('image')}
+              >
+                <div className="upload-dropzone__copy">
+                  <p className="upload-dropzone__title">Drag and drop image files here</p>
+                  <p className="upload-dropzone__hint">
+                    JPG, PNG, WEBP, HEIC and other image formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file.
+                  </p>
+                </div>
+                <div className="upload-dropzone__actions">
+                  <button
+                    className="btn btn--ghost btn--tiny"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openUploadPicker('image');
+                    }}
+                  >
+                    Browse Images
+                  </button>
+                  <span className="upload-dropzone__meta">
+                    {editingId ? 'One replacement file' : 'Multiple files allowed'}
+                  </span>
+                </div>
+              </div>
               <input
                 id="announcement-image"
                 type="file"
@@ -2790,11 +2909,50 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 multiple
                 onChange={handleImageChange}
                 ref={mediaInputRef}
+                className="visually-hidden"
               />
             </div>
 
             <div className="field">
               <label htmlFor="announcement-video">Video Upload</label>
+              <div
+                className={`upload-dropzone ${activeDropZone === 'video' ? 'is-active' : ''}`.trim()}
+                role="button"
+                tabIndex={0}
+                onClick={() => openUploadPicker('video')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openUploadPicker('video');
+                  }
+                }}
+                onDragEnter={handleDropZoneDragOver('video')}
+                onDragOver={handleDropZoneDragOver('video')}
+                onDragLeave={handleDropZoneDragLeave('video')}
+                onDrop={handleDropZoneDrop('video')}
+              >
+                <div className="upload-dropzone__copy">
+                  <p className="upload-dropzone__title">Drag and drop video files here</p>
+                  <p className="upload-dropzone__hint">
+                    MP4, MOV, WEBM, MKV and other video formats. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file.
+                  </p>
+                </div>
+                <div className="upload-dropzone__actions">
+                  <button
+                    className="btn btn--ghost btn--tiny"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openUploadPicker('video');
+                    }}
+                  >
+                    Browse Videos
+                  </button>
+                  <span className="upload-dropzone__meta">
+                    {editingId ? 'One replacement file' : 'Multiple files allowed'}
+                  </span>
+                </div>
+              </div>
               <input
                 id="announcement-video"
                 type="file"
@@ -2802,6 +2960,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 multiple
                 onChange={handleVideoChange}
                 ref={videoInputRef}
+                className="visually-hidden"
               />
               <input
                 type="file"
@@ -2816,6 +2975,44 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
 
             <div className="field">
               <label htmlFor="announcement-document">Document Upload (PDF/Word/PPT/Etc)</label>
+              <div
+                className={`upload-dropzone ${activeDropZone === 'document' ? 'is-active' : ''}`.trim()}
+                role="button"
+                tabIndex={0}
+                onClick={() => openUploadPicker('document')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openUploadPicker('document');
+                  }
+                }}
+                onDragEnter={handleDropZoneDragOver('document')}
+                onDragOver={handleDropZoneDragOver('document')}
+                onDragLeave={handleDropZoneDragLeave('document')}
+                onDrop={handleDropZoneDrop('document')}
+              >
+                <div className="upload-dropzone__copy">
+                  <p className="upload-dropzone__title">Drag and drop document files here</p>
+                  <p className="upload-dropzone__hint">
+                    PDF, Word, PowerPoint, Excel and archive files. Up to {MAX_ATTACHMENT_UPLOAD_MB} MB per file.
+                  </p>
+                </div>
+                <div className="upload-dropzone__actions">
+                  <button
+                    className="btn btn--ghost btn--tiny"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openUploadPicker('document');
+                    }}
+                  >
+                    Browse Documents
+                  </button>
+                  <span className="upload-dropzone__meta">
+                    {editingId ? 'One replacement file' : 'Multiple files allowed'}
+                  </span>
+                </div>
+              </div>
               <input
                 id="announcement-document"
                 type="file"
@@ -2823,6 +3020,7 @@ const AdminPanel = ({ workspaceRole = 'admin' }) => {
                 multiple
                 onChange={handleDocumentChange}
                 ref={documentInputRef}
+                className="visually-hidden"
               />
               <input
                 type="file"
